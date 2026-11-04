@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "Kasa-xuexitong-helper",
+  "version": "1.0.0",
+  "description": "超星学习通课程与作业辅助扩展",
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "*://*.chaoxing.com/*",
+    "*://*.mti100.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.chaoxing.com/*",
+        "*://*.mti100.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_end",
+      "all_frames": true
+    }
+  ]
+}

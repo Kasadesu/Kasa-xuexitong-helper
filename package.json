@@ -1,0 +1,19 @@
+{
+  "name": "kasa-xuexitong-helper",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "description": "超星学习通课程与作业辅助脚本",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "npx tsx --test tests/quiz_adapter.test.ts"
+  },
+  "devDependencies": {
+    "tsx": "^4.23.0",
+    "typescript": "^5.7.0",
+    "vite": "^8.0.0",
+    "vite-plugin-monkey": "^8.1.1"
+  }
+}
