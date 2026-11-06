@@ -938,4 +938,48 @@ C 是温迪（风神巴巴托斯）
       }
     });
   });
+
+  describe('【第 14 关】配置持久化与一键备份恢复 (Store Persistence & Backup) 验收测试', () => {
+    it('14.1 exportConfigString 能够将当前配置正确编码导出', () => {
+      const oldKey = store.config.aiApiKey;
+      const oldModel = store.config.aiModel;
+      try {
+        store.config.aiApiKey = 'sk-backup-test-key-12345';
+        store.config.aiModel = 'deepseek-reasoner';
+        const exported = store.exportConfigString();
+        assert.ok(exported && exported.length > 20);
+        const decoded = JSON.parse(decodeURIComponent(escape(atob(exported))));
+        assert.equal(decoded.aiApiKey, 'sk-backup-test-key-12345');
+        assert.equal(decoded.aiModel, 'deepseek-reasoner');
+      } finally {
+        store.config.aiApiKey = oldKey;
+        store.config.aiModel = oldModel;
+      }
+    });
+
+    it('14.2 importConfigString 能够成功解析配置代码并一键还原设置', () => {
+      const payload = {
+        aiProvider: 'siliconflow',
+        aiApiKey: 'sk-imported-key-67890',
+        aiBaseUrl: 'https://api.siliconflow.cn/v1',
+        aiModel: 'deepseek-ai/DeepSeek-V3',
+        reasoningEffort: 'medium',
+        autoNextChapter: false
+      };
+      const code = btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
+      const ok = store.importConfigString(code);
+      assert.equal(ok, true);
+      assert.equal(store.config.aiProvider, 'siliconflow');
+      assert.equal(store.config.aiApiKey, 'sk-imported-key-67890');
+      assert.equal(store.config.aiModel, 'deepseek-ai/DeepSeek-V3');
+      assert.equal(store.config.reasoningEffort, 'medium');
+      assert.equal(store.config.autoNextChapter, false);
+    });
+
+    it('14.3 importConfigString 对非法字符串容错返回 false 且不崩溃', () => {
+      assert.equal(store.importConfigString('not-a-base64'), false);
+      assert.equal(store.importConfigString(''), false);
+      assert.equal(store.importConfigString('  '), false);
+    });
+  });
 });

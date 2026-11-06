@@ -1,6 +1,11 @@
 import { AppConfig, LogItem, Question, LogLevel, TaskProgress } from '../types';
 
 const STORAGE_KEY = 'kasa_xuexitong_config_v2';
+const LEGACY_STORAGE_KEYS = [
+  'kasa_xuexitong_config',
+  'kasa_config',
+  'xuexitong_helper_config'
+];
 
 export const AI_PROVIDER_PRESETS: Record<AppConfig['aiProvider'], { baseUrl: string; model: string }> = {
   deepseek: {
@@ -61,26 +66,73 @@ class Store {
   }
 
   private loadConfig(): AppConfig {
+    const keysToTry = [STORAGE_KEY, ...LEGACY_STORAGE_KEYS];
     try {
       // @ts-ignore
       if (typeof GM_getValue === 'function') {
-        // @ts-ignore
-        const gmRaw = GM_getValue(STORAGE_KEY, null);
-        if (gmRaw) {
-          const parsed = typeof gmRaw === 'string' ? JSON.parse(gmRaw) : gmRaw;
-          return { ...DEFAULT_CONFIG, ...parsed };
+        for (const key of keysToTry) {
+          // @ts-ignore
+          const gmRaw = GM_getValue(key, null);
+          if (gmRaw) {
+            const parsed = typeof gmRaw === 'string' ? JSON.parse(gmRaw) : gmRaw;
+            if (parsed && typeof parsed === 'object') {
+              return { ...DEFAULT_CONFIG, ...parsed };
+            }
+          }
         }
       }
       if (typeof localStorage !== 'undefined') {
-        const raw = localStorage.getItem(STORAGE_KEY);
-        if (raw) {
-          return { ...DEFAULT_CONFIG, ...JSON.parse(raw) };
+        for (const key of keysToTry) {
+          const raw = localStorage.getItem(key);
+          if (raw) {
+            const parsed = JSON.parse(raw);
+            if (parsed && typeof parsed === 'object') {
+              return { ...DEFAULT_CONFIG, ...parsed };
+            }
+          }
         }
       }
     } catch (e) {
       console.warn('[KasaStore] Failed to load config from storage', e);
     }
     return { ...DEFAULT_CONFIG };
+  }
+
+  public exportConfigString(): string {
+    try {
+      const exportData = {
+        aiProvider: this.config.aiProvider,
+        aiApiKey: this.config.aiApiKey,
+        aiBaseUrl: this.config.aiBaseUrl,
+        aiModel: this.config.aiModel,
+        reasoningEffort: this.config.reasoningEffort,
+        autoNextChapter: this.config.autoNextChapter,
+        cachedModelList: this.config.cachedModelList
+      };
+      return btoa(unescape(encodeURIComponent(JSON.stringify(exportData))));
+    } catch {
+      return '';
+    }
+  }
+
+  public importConfigString(encoded: string): boolean {
+    try {
+      const jsonStr = decodeURIComponent(escape(atob(encoded.trim())));
+      const data = JSON.parse(jsonStr);
+      if (typeof data !== 'object' || !data) return false;
+      this.updateConfig({
+        aiProvider: data.aiProvider || this.config.aiProvider,
+        aiApiKey: data.aiApiKey !== undefined ? data.aiApiKey : this.config.aiApiKey,
+        aiBaseUrl: data.aiBaseUrl || this.config.aiBaseUrl,
+        aiModel: data.aiModel || this.config.aiModel,
+        reasoningEffort: data.reasoningEffort || this.config.reasoningEffort,
+        autoNextChapter: data.autoNextChapter !== undefined ? data.autoNextChapter : this.config.autoNextChapter,
+        cachedModelList: Array.isArray(data.cachedModelList) ? data.cachedModelList : this.config.cachedModelList
+      });
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   public reloadConfig() {

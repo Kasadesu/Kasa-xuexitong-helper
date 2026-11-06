@@ -268,15 +268,22 @@ export class FloatingCard extends HTMLElement {
         <div style="margin-top: 16px; margin-bottom: 6px;">
           <button type="button" class="kasa-btn-save" id="btn-save-config">保存设置</button>
         </div>
+        <div style="display:flex;justify-content:space-between;margin-bottom:8px;gap:8px;">
+          <button type="button" class="kasa-btn-secondary" id="btn-export-config">📋 备份配置</button>
+          <button type="button" class="kasa-btn-secondary" id="btn-import-config">📥 恢复配置</button>
+        </div>
       `;
     }
 
     return `
       <div style="font-size:12px;color:#4b5563;line-height:1.7;">
-        <p><strong>Kasa-xuexitong-helper (v1.0.0)</strong></p>
-        <p>· 支持课程音视频原速播放、切屏自动恢复与章节自动跳转。</p>
-        <p>· 支持章节测验与课程作业自动解析作答。</p>
-        <p>· 接口配置仅保存在本地浏览器，直接请求所填服务商接口。</p>
+        <div style="font-weight:600;margin-bottom:6px;color:#1f2937;">使用说明</div>
+        <p style="margin:4px 0;">• <strong>课程学习</strong>：进入章节后自动原速播放音视频、浏览课件，完成后自动跳转下一节。</p>
+        <p style="margin:4px 0;">• <strong>作业与测验</strong>：在「AI 设置」中填好 API Key 与模型，点击右上角「开始答题」即可自动作答。</p>
+        <p style="margin:4px 0;">• <strong>数据安全</strong>：配置与 Key 仅保存在当前浏览器本地，直接请求服务商接口。</p>
+        <div style="margin-top:12px;padding-top:8px;border-top:1px solid #f3f4f6;color:#9ca3af;font-size:11px;">
+          提示：遇到遮挡可点击右上角最小化面板 · v1.0.0
+        </div>
       </div>
     `;
   }
@@ -480,6 +487,45 @@ export class FloatingCard extends HTMLElement {
             saveBtn.textContent = '保存设置';
           }
         }, 2000);
+      }
+    });
+
+    const exportBtn = tabContent.querySelector('#btn-export-config') as HTMLButtonElement | null;
+    exportBtn?.addEventListener('click', (e) => {
+      e.preventDefault();
+      const code = store.exportConfigString();
+      if (!code) {
+        store.addLog('导出失败: 当前无有效配置', 'warning');
+        return;
+      }
+      if (typeof navigator !== 'undefined' && navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(code).then(() => {
+          store.addLog('配置已复制到剪贴板，可粘贴保存到便签备用', 'success');
+          if (exportBtn) {
+            exportBtn.textContent = '已复制备份！';
+            setTimeout(() => {
+              if (exportBtn) exportBtn.textContent = '📋 备份配置';
+            }, 2000);
+          }
+        }).catch(() => {
+          prompt('请复制以下配置备份代码：', code);
+        });
+      } else {
+        prompt('请复制以下配置备份代码：', code);
+      }
+    });
+
+    const importBtn = tabContent.querySelector('#btn-import-config') as HTMLButtonElement | null;
+    importBtn?.addEventListener('click', (e) => {
+      e.preventDefault();
+      const code = prompt('请粘贴之前备份的配置代码：');
+      if (!code || !code.trim()) return;
+      const success = store.importConfigString(code.trim());
+      if (success) {
+        store.addLog('配置恢复成功！', 'success');
+        this.refreshSettingTab(tabContent);
+      } else {
+        store.addLog('恢复失败: 配置代码无效或损坏', 'error');
       }
     });
   }
