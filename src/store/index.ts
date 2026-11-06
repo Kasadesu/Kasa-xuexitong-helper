@@ -12,14 +12,6 @@ export const AI_PROVIDER_PRESETS: Record<AppConfig['aiProvider'], { baseUrl: str
     baseUrl: 'https://api.deepseek.com/v1',
     model: 'deepseek-chat'
   },
-  siliconflow: {
-    baseUrl: 'https://api.siliconflow.cn/v1',
-    model: 'deepseek-ai/DeepSeek-V3'
-  },
-  openai: {
-    baseUrl: 'https://api.openai.com/v1',
-    model: 'gpt-4o-mini'
-  },
   custom: {
     baseUrl: 'https://api.openai.com/v1',
     model: 'gpt-4o-mini'
@@ -73,6 +65,17 @@ class Store {
   }
 
   private loadConfig(): AppConfig {
+    const sanitizeConfig = (parsed: any): AppConfig => {
+      const provider: AppConfig['aiProvider'] = (parsed.aiProvider === 'deepseek' || parsed.aiProvider === 'custom')
+        ? parsed.aiProvider
+        : 'custom';
+      return {
+        ...DEFAULT_CONFIG,
+        ...parsed,
+        aiProvider: provider
+      };
+    };
+
     const keysToTry = [STORAGE_KEY, ...LEGACY_STORAGE_KEYS];
     try {
       // @ts-ignore
@@ -83,7 +86,7 @@ class Store {
           if (gmRaw) {
             const parsed = typeof gmRaw === 'string' ? JSON.parse(gmRaw) : gmRaw;
             if (parsed && typeof parsed === 'object') {
-              return { ...DEFAULT_CONFIG, ...parsed };
+              return sanitizeConfig(parsed);
             }
           }
         }
@@ -94,7 +97,7 @@ class Store {
           if (raw) {
             const parsed = JSON.parse(raw);
             if (parsed && typeof parsed === 'object') {
-              return { ...DEFAULT_CONFIG, ...parsed };
+              return sanitizeConfig(parsed);
             }
           }
         }
@@ -128,8 +131,11 @@ class Store {
       const jsonStr = decodeURIComponent(escape(atob(encoded.trim())));
       const data = JSON.parse(jsonStr);
       if (typeof data !== 'object' || !data) return false;
+      const provider: AppConfig['aiProvider'] = (data.aiProvider === 'deepseek' || data.aiProvider === 'custom')
+        ? data.aiProvider
+        : 'custom';
       this.updateConfig({
-        aiProvider: data.aiProvider || this.config.aiProvider,
+        aiProvider: provider,
         aiApiKey: data.aiApiKey !== undefined ? data.aiApiKey : this.config.aiApiKey,
         aiBaseUrl: data.aiBaseUrl || this.config.aiBaseUrl,
         aiModel: data.aiModel || this.config.aiModel,

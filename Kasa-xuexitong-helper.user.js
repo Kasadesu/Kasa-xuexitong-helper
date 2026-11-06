@@ -32,14 +32,6 @@
 			baseUrl: "https://api.deepseek.com/v1",
 			model: "deepseek-chat"
 		},
-		siliconflow: {
-			baseUrl: "https://api.siliconflow.cn/v1",
-			model: "deepseek-ai/DeepSeek-V3"
-		},
-		openai: {
-			baseUrl: "https://api.openai.com/v1",
-			model: "gpt-4o-mini"
-		},
 		custom: {
 			baseUrl: "https://api.openai.com/v1",
 			model: "gpt-4o-mini"
@@ -87,26 +79,28 @@
 			this.config = this.loadConfig();
 		}
 		loadConfig() {
+			const sanitizeConfig = (parsed) => {
+				const provider = parsed.aiProvider === "deepseek" || parsed.aiProvider === "custom" ? parsed.aiProvider : "custom";
+				return {
+					...DEFAULT_CONFIG,
+					...parsed,
+					aiProvider: provider
+				};
+			};
 			const keysToTry = [STORAGE_KEY, ...LEGACY_STORAGE_KEYS];
 			try {
 				if (typeof GM_getValue === "function") for (const key of keysToTry) {
 					const gmRaw = GM_getValue(key, null);
 					if (gmRaw) {
 						const parsed = typeof gmRaw === "string" ? JSON.parse(gmRaw) : gmRaw;
-						if (parsed && typeof parsed === "object") return {
-							...DEFAULT_CONFIG,
-							...parsed
-						};
+						if (parsed && typeof parsed === "object") return sanitizeConfig(parsed);
 					}
 				}
 				if (typeof localStorage !== "undefined") for (const key of keysToTry) {
 					const raw = localStorage.getItem(key);
 					if (raw) {
 						const parsed = JSON.parse(raw);
-						if (parsed && typeof parsed === "object") return {
-							...DEFAULT_CONFIG,
-							...parsed
-						};
+						if (parsed && typeof parsed === "object") return sanitizeConfig(parsed);
 					}
 				}
 			} catch (e) {
@@ -136,8 +130,9 @@
 				const jsonStr = decodeURIComponent(escape(atob(encoded.trim())));
 				const data = JSON.parse(jsonStr);
 				if (typeof data !== "object" || !data) return false;
+				const provider = data.aiProvider === "deepseek" || data.aiProvider === "custom" ? data.aiProvider : "custom";
 				this.updateConfig({
-					aiProvider: data.aiProvider || this.config.aiProvider,
+					aiProvider: provider,
 					aiApiKey: data.aiApiKey !== void 0 ? data.aiApiKey : this.config.aiApiKey,
 					aiBaseUrl: data.aiBaseUrl || this.config.aiBaseUrl,
 					aiModel: data.aiModel || this.config.aiModel,
@@ -1150,8 +1145,6 @@ input:checked + .toggle-slider:before {
           </div>
           <select class="setting-select" id="cfg-provider">
             <option value="deepseek" ${cfg.aiProvider === "deepseek" ? "selected" : ""}>DeepSeek</option>
-            <option value="siliconflow" ${cfg.aiProvider === "siliconflow" ? "selected" : ""}>SiliconFlow (硅基流动)</option>
-            <option value="openai" ${cfg.aiProvider === "openai" ? "selected" : ""}>OpenAI</option>
             <option value="custom" ${cfg.aiProvider === "custom" ? "selected" : ""}>自定义接口</option>
           </select>
         </div>

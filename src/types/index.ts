@@ -22,7 +22,7 @@ export interface AppConfig {
   minWorkAccuracy: number;
   randomDelayBase: number;
   randomDelayJitter: number;
-  aiProvider: 'deepseek' | 'siliconflow' | 'openai' | 'custom';
+  aiProvider: 'deepseek' | 'custom';
   aiApiKey: string;
   aiBaseUrl: string;
   aiModel: string;

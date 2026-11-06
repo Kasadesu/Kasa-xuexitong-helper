@@ -206,8 +206,6 @@ export class FloatingCard extends HTMLElement {
           </div>
           <select class="setting-select" id="cfg-provider">
             <option value="deepseek" ${cfg.aiProvider === 'deepseek' ? 'selected' : ''}>DeepSeek</option>
-            <option value="siliconflow" ${cfg.aiProvider === 'siliconflow' ? 'selected' : ''}>SiliconFlow (硅基流动)</option>
-            <option value="openai" ${cfg.aiProvider === 'openai' ? 'selected' : ''}>OpenAI</option>
             <option value="custom" ${cfg.aiProvider === 'custom' ? 'selected' : ''}>自定义接口</option>
           </select>
         </div>

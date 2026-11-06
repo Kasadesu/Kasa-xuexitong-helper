@@ -959,19 +959,19 @@ C 是温迪（风神巴巴托斯）
 
     it('14.2 importConfigString 能够成功解析配置代码并一键还原设置', () => {
       const payload = {
-        aiProvider: 'siliconflow',
+        aiProvider: 'custom',
         aiApiKey: 'sk-imported-key-67890',
-        aiBaseUrl: 'https://api.siliconflow.cn/v1',
-        aiModel: 'deepseek-ai/DeepSeek-V3',
+        aiBaseUrl: 'https://api.my-custom-proxy.com/v1',
+        aiModel: 'custom-model-v1',
         reasoningEffort: 'medium',
         autoNextChapter: false
       };
       const code = btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
       const ok = store.importConfigString(code);
       assert.equal(ok, true);
-      assert.equal(store.config.aiProvider, 'siliconflow');
+      assert.equal(store.config.aiProvider, 'custom');
       assert.equal(store.config.aiApiKey, 'sk-imported-key-67890');
-      assert.equal(store.config.aiModel, 'deepseek-ai/DeepSeek-V3');
+      assert.equal(store.config.aiModel, 'custom-model-v1');
       assert.equal(store.config.reasoningEffort, 'medium');
       assert.equal(store.config.autoNextChapter, false);
     });
@@ -980,6 +980,17 @@ C 是温迪（风神巴巴托斯）
       assert.equal(store.importConfigString('not-a-base64'), false);
       assert.equal(store.importConfigString(''), false);
       assert.equal(store.importConfigString('  '), false);
+    });
+
+    it('14.4 loadConfig / importConfigString 遇到历史遗留 provider 自动平滑映射为 custom', () => {
+      const payload = {
+        aiProvider: 'siliconflow',
+        aiApiKey: 'sk-legacy-key'
+      };
+      const code = btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
+      const ok = store.importConfigString(code);
+      assert.equal(ok, true);
+      assert.equal(store.config.aiProvider, 'custom');
     });
   });
 
