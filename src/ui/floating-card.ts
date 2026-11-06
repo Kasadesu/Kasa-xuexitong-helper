@@ -1,6 +1,6 @@
 import { store, AI_PROVIDER_PRESETS } from '../store';
 import { PANEL_STYLES } from './style';
-import { AppConfig } from '../types';
+import { AppConfig, EnabledQuestionTypes } from '../types';
 import { fetchRemoteModels, getModelSupportedReasoningEfforts } from '../adapters/ai-solver/client';
 
 export class FloatingCard extends HTMLElement {
@@ -265,12 +265,21 @@ export class FloatingCard extends HTMLElement {
           </select>
         </div>
 
+        <div class="setting-item">
+          <div class="setting-label">
+            <span>作答题型范围</span>
+          </div>
+          <div style="display:flex;flex-wrap:wrap;gap:8px 12px;padding:4px 0;font-size:12px;color:#374151;">
+            <label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" id="cfg-type-single" ${cfg.enabledQuestionTypes?.single !== false ? 'checked' : ''}> 单选</label>
+            <label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" id="cfg-type-multiple" ${cfg.enabledQuestionTypes?.multiple !== false ? 'checked' : ''}> 多选</label>
+            <label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" id="cfg-type-judge" ${cfg.enabledQuestionTypes?.judge !== false ? 'checked' : ''}> 判断</label>
+            <label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" id="cfg-type-fill" ${cfg.enabledQuestionTypes?.fill !== false ? 'checked' : ''}> 填空</label>
+            <label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" id="cfg-type-essay" ${cfg.enabledQuestionTypes?.essay !== false ? 'checked' : ''}> 简答</label>
+          </div>
+        </div>
+
         <div style="margin-top: 16px; margin-bottom: 6px;">
           <button type="button" class="kasa-btn-save" id="btn-save-config">保存设置</button>
-        </div>
-        <div style="display:flex;justify-content:space-between;margin-bottom:8px;gap:8px;">
-          <button type="button" class="kasa-btn-secondary" id="btn-export-config">📋 备份配置</button>
-          <button type="button" class="kasa-btn-secondary" id="btn-import-config">📥 恢复配置</button>
         </div>
       `;
     }
@@ -467,13 +476,28 @@ export class FloatingCard extends HTMLElement {
         ? (reasoningEffortSelect.value as AppConfig['reasoningEffort'])
         : (store.config.reasoningEffort || 'none');
 
+      const typeSingle = tabContent.querySelector('#cfg-type-single') as HTMLInputElement | null;
+      const typeMultiple = tabContent.querySelector('#cfg-type-multiple') as HTMLInputElement | null;
+      const typeJudge = tabContent.querySelector('#cfg-type-judge') as HTMLInputElement | null;
+      const typeFill = tabContent.querySelector('#cfg-type-fill') as HTMLInputElement | null;
+      const typeEssay = tabContent.querySelector('#cfg-type-essay') as HTMLInputElement | null;
+
+      const enabledQuestionTypes: EnabledQuestionTypes = {
+        single: typeSingle ? typeSingle.checked : (store.config.enabledQuestionTypes?.single !== false),
+        multiple: typeMultiple ? typeMultiple.checked : (store.config.enabledQuestionTypes?.multiple !== false),
+        judge: typeJudge ? typeJudge.checked : (store.config.enabledQuestionTypes?.judge !== false),
+        fill: typeFill ? typeFill.checked : (store.config.enabledQuestionTypes?.fill !== false),
+        essay: typeEssay ? typeEssay.checked : (store.config.enabledQuestionTypes?.essay !== false)
+      };
+
       store.updateConfig({
         autoNextChapter: nextChapter,
         aiProvider: provider,
         aiApiKey: apiKey,
         aiBaseUrl: baseUrl,
         aiModel: model,
-        reasoningEffort: reasoning
+        reasoningEffort: reasoning,
+        enabledQuestionTypes
       });
 
       store.addLog('AI 配置已成功保存！', 'success');
@@ -487,45 +511,6 @@ export class FloatingCard extends HTMLElement {
             saveBtn.textContent = '保存设置';
           }
         }, 2000);
-      }
-    });
-
-    const exportBtn = tabContent.querySelector('#btn-export-config') as HTMLButtonElement | null;
-    exportBtn?.addEventListener('click', (e) => {
-      e.preventDefault();
-      const code = store.exportConfigString();
-      if (!code) {
-        store.addLog('导出失败: 当前无有效配置', 'warning');
-        return;
-      }
-      if (typeof navigator !== 'undefined' && navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(code).then(() => {
-          store.addLog('配置已复制到剪贴板，可粘贴保存到便签备用', 'success');
-          if (exportBtn) {
-            exportBtn.textContent = '已复制备份！';
-            setTimeout(() => {
-              if (exportBtn) exportBtn.textContent = '📋 备份配置';
-            }, 2000);
-          }
-        }).catch(() => {
-          prompt('请复制以下配置备份代码：', code);
-        });
-      } else {
-        prompt('请复制以下配置备份代码：', code);
-      }
-    });
-
-    const importBtn = tabContent.querySelector('#btn-import-config') as HTMLButtonElement | null;
-    importBtn?.addEventListener('click', (e) => {
-      e.preventDefault();
-      const code = prompt('请粘贴之前备份的配置代码：');
-      if (!code || !code.trim()) return;
-      const success = store.importConfigString(code.trim());
-      if (success) {
-        store.addLog('配置恢复成功！', 'success');
-        this.refreshSettingTab(tabContent);
-      } else {
-        store.addLog('恢复失败: 配置代码无效或损坏', 'error');
       }
     });
   }

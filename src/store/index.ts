@@ -39,6 +39,13 @@ const DEFAULT_CONFIG: AppConfig = {
   reasoningEffort: 'none',
   cachedModelList: [],
   cachedModelItems: [],
+  enabledQuestionTypes: {
+    single: true,
+    multiple: true,
+    judge: true,
+    fill: true,
+    essay: true
+  },
   panelMinimized: false,
   panelPosition: {
     x: typeof window !== 'undefined' && typeof window.innerWidth === 'number' ? window.innerWidth - 340 : 1000,
@@ -107,7 +114,8 @@ class Store {
         aiModel: this.config.aiModel,
         reasoningEffort: this.config.reasoningEffort,
         autoNextChapter: this.config.autoNextChapter,
-        cachedModelList: this.config.cachedModelList
+        cachedModelList: this.config.cachedModelList,
+        enabledQuestionTypes: this.config.enabledQuestionTypes
       };
       return btoa(unescape(encodeURIComponent(JSON.stringify(exportData))));
     } catch {
@@ -127,7 +135,8 @@ class Store {
         aiModel: data.aiModel || this.config.aiModel,
         reasoningEffort: data.reasoningEffort || this.config.reasoningEffort,
         autoNextChapter: data.autoNextChapter !== undefined ? data.autoNextChapter : this.config.autoNextChapter,
-        cachedModelList: Array.isArray(data.cachedModelList) ? data.cachedModelList : this.config.cachedModelList
+        cachedModelList: Array.isArray(data.cachedModelList) ? data.cachedModelList : this.config.cachedModelList,
+        enabledQuestionTypes: data.enabledQuestionTypes || this.config.enabledQuestionTypes
       });
       return true;
     } catch {

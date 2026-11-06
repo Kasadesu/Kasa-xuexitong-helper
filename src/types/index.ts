@@ -8,6 +8,14 @@ export interface RemoteModelItem {
   [key: string]: any;
 }
 
+export interface EnabledQuestionTypes {
+  single: boolean;
+  multiple: boolean;
+  judge: boolean;
+  fill: boolean;
+  essay: boolean;
+}
+
 export interface AppConfig {
   autoNextChapter: boolean;
   autoSubmitWork: boolean;
@@ -21,6 +29,7 @@ export interface AppConfig {
   reasoningEffort?: 'none' | 'low' | 'medium' | 'high' | 'max' | string;
   cachedModelList?: string[];
   cachedModelItems?: RemoteModelItem[];
+  enabledQuestionTypes?: EnabledQuestionTypes;
   panelMinimized: boolean;
   panelPosition: { x: number; y: number };
 }

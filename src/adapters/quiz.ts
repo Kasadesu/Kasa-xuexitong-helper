@@ -579,6 +579,31 @@ export async function doQuizTask(
       timuEl.innerText || ''
     );
 
+    // Check if the current question type is enabled in user settings
+    const enabledTypes = store.config.enabledQuestionTypes;
+    if (enabledTypes) {
+      const typeKey = qType === 'unknown' ? 'single' : (qType as keyof typeof enabledTypes);
+      if (enabledTypes[typeKey] === false) {
+        const typeNames: Record<string, string> = {
+          single: '单选题',
+          multiple: '多选题',
+          judge: '判断题',
+          fill: '填空题',
+          essay: '简答题'
+        };
+        store.addLog(
+          `第 ${idx + 1}/${timuNodes.length} 题为 [${typeNames[qType] || qType}]，设置中已取消勾选此题型，自动跳过`,
+          'info'
+        );
+        store.updateProgress({
+          percent: Math.round(((idx + 1) / timuNodes.length) * 100),
+          status: 'playing',
+          currentTime: `第 ${idx + 1}/${timuNodes.length} 题`
+        });
+        continue;
+      }
+    }
+
     // Skip already answered questions
     if (isQuestionAnswered(timuEl, quizDoc)) {
       store.addLog(

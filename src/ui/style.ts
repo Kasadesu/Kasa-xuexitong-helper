@@ -401,29 +401,6 @@ input:checked + .toggle-slider:before {
   box-shadow: 0 2px 4px rgba(22, 163, 74, 0.3) !important;
 }
 
-.kasa-btn-secondary {
-  flex: 1;
-  padding: 6px 10px;
-  background: #f8fafc;
-  color: #475569;
-  border: 1px solid #cbd5e1;
-  border-radius: 6px;
-  font-size: 11px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-}
-
-.kasa-btn-secondary:hover {
-  background: #e2e8f0;
-  color: #1e293b;
-  border-color: #94a3b8;
-}
-
 .kasa-link-btn {
   background: none;
   border: none;

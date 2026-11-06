@@ -982,4 +982,45 @@ C 是温迪（风神巴巴托斯）
       assert.equal(store.importConfigString('  '), false);
     });
   });
+
+  describe('【第 15 关】作答题型范围勾选过滤 (enabledQuestionTypes) 测试', () => {
+    it('15.1 默认配置下 5 种核心题型均应默认启用 (true)', () => {
+      const types = store.config.enabledQuestionTypes;
+      assert.ok(types);
+      assert.equal(types?.single !== false, true);
+      assert.equal(types?.multiple !== false, true);
+      assert.equal(types?.judge !== false, true);
+      assert.equal(types?.fill !== false, true);
+      assert.equal(types?.essay !== false, true);
+    });
+
+    it('15.2 当取消勾选某种题型时，能够精准识别为禁用', () => {
+      store.updateConfig({
+        enabledQuestionTypes: {
+          single: true,
+          multiple: true,
+          judge: true,
+          fill: false,
+          essay: false
+        }
+      });
+      const types = store.config.enabledQuestionTypes!;
+      assert.equal(types.single, true);
+      assert.equal(types.multiple, true);
+      assert.equal(types.judge, true);
+      assert.equal(types.fill, false);
+      assert.equal(types.essay, false);
+
+      // 恢复默认全选
+      store.updateConfig({
+        enabledQuestionTypes: {
+          single: true,
+          multiple: true,
+          judge: true,
+          fill: true,
+          essay: true
+        }
+      });
+    });
+  });
 });

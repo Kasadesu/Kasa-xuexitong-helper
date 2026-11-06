@@ -58,6 +58,13 @@
 		reasoningEffort: "none",
 		cachedModelList: [],
 		cachedModelItems: [],
+		enabledQuestionTypes: {
+			single: true,
+			multiple: true,
+			judge: true,
+			fill: true,
+			essay: true
+		},
 		panelMinimized: false,
 		panelPosition: {
 			x: typeof window !== "undefined" && typeof window.innerWidth === "number" ? window.innerWidth - 340 : 1e3,
@@ -116,7 +123,8 @@
 					aiModel: this.config.aiModel,
 					reasoningEffort: this.config.reasoningEffort,
 					autoNextChapter: this.config.autoNextChapter,
-					cachedModelList: this.config.cachedModelList
+					cachedModelList: this.config.cachedModelList,
+					enabledQuestionTypes: this.config.enabledQuestionTypes
 				};
 				return btoa(unescape(encodeURIComponent(JSON.stringify(exportData))));
 			} catch {
@@ -135,7 +143,8 @@
 					aiModel: data.aiModel || this.config.aiModel,
 					reasoningEffort: data.reasoningEffort || this.config.reasoningEffort,
 					autoNextChapter: data.autoNextChapter !== void 0 ? data.autoNextChapter : this.config.autoNextChapter,
-					cachedModelList: Array.isArray(data.cachedModelList) ? data.cachedModelList : this.config.cachedModelList
+					cachedModelList: Array.isArray(data.cachedModelList) ? data.cachedModelList : this.config.cachedModelList,
+					enabledQuestionTypes: data.enabledQuestionTypes || this.config.enabledQuestionTypes
 				});
 				return true;
 			} catch {
@@ -598,29 +607,6 @@ input:checked + .toggle-slider:before {
 .kasa-btn-save.saved {
   background: #16a34a !important;
   box-shadow: 0 2px 4px rgba(22, 163, 74, 0.3) !important;
-}
-
-.kasa-btn-secondary {
-  flex: 1;
-  padding: 6px 10px;
-  background: #f8fafc;
-  color: #475569;
-  border: 1px solid #cbd5e1;
-  border-radius: 6px;
-  font-size: 11px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-}
-
-.kasa-btn-secondary:hover {
-  background: #e2e8f0;
-  color: #1e293b;
-  border-color: #94a3b8;
 }
 
 .kasa-link-btn {
@@ -1223,12 +1209,21 @@ input:checked + .toggle-slider:before {
           </select>
         </div>
 
+        <div class="setting-item">
+          <div class="setting-label">
+            <span>作答题型范围</span>
+          </div>
+          <div style="display:flex;flex-wrap:wrap;gap:8px 12px;padding:4px 0;font-size:12px;color:#374151;">
+            <label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" id="cfg-type-single" ${cfg.enabledQuestionTypes?.single !== false ? "checked" : ""}> 单选</label>
+            <label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" id="cfg-type-multiple" ${cfg.enabledQuestionTypes?.multiple !== false ? "checked" : ""}> 多选</label>
+            <label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" id="cfg-type-judge" ${cfg.enabledQuestionTypes?.judge !== false ? "checked" : ""}> 判断</label>
+            <label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" id="cfg-type-fill" ${cfg.enabledQuestionTypes?.fill !== false ? "checked" : ""}> 填空</label>
+            <label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" id="cfg-type-essay" ${cfg.enabledQuestionTypes?.essay !== false ? "checked" : ""}> 简答</label>
+          </div>
+        </div>
+
         <div style="margin-top: 16px; margin-bottom: 6px;">
           <button type="button" class="kasa-btn-save" id="btn-save-config">保存设置</button>
-        </div>
-        <div style="display:flex;justify-content:space-between;margin-bottom:8px;gap:8px;">
-          <button type="button" class="kasa-btn-secondary" id="btn-export-config">📋 备份配置</button>
-          <button type="button" class="kasa-btn-secondary" id="btn-import-config">📥 恢复配置</button>
         </div>
       `;
 			}
@@ -1383,13 +1378,26 @@ input:checked + .toggle-slider:before {
 				if (modelSelect) model = modelSelect.value;
 				else if (modelInput) model = modelInput.value.trim();
 				const reasoning = reasoningEffortSelect ? reasoningEffortSelect.value : store.config.reasoningEffort || "none";
+				const typeSingle = tabContent.querySelector("#cfg-type-single");
+				const typeMultiple = tabContent.querySelector("#cfg-type-multiple");
+				const typeJudge = tabContent.querySelector("#cfg-type-judge");
+				const typeFill = tabContent.querySelector("#cfg-type-fill");
+				const typeEssay = tabContent.querySelector("#cfg-type-essay");
+				const enabledQuestionTypes = {
+					single: typeSingle ? typeSingle.checked : store.config.enabledQuestionTypes?.single !== false,
+					multiple: typeMultiple ? typeMultiple.checked : store.config.enabledQuestionTypes?.multiple !== false,
+					judge: typeJudge ? typeJudge.checked : store.config.enabledQuestionTypes?.judge !== false,
+					fill: typeFill ? typeFill.checked : store.config.enabledQuestionTypes?.fill !== false,
+					essay: typeEssay ? typeEssay.checked : store.config.enabledQuestionTypes?.essay !== false
+				};
 				store.updateConfig({
 					autoNextChapter: nextChapter,
 					aiProvider: provider,
 					aiApiKey: apiKey,
 					aiBaseUrl: baseUrl,
 					aiModel: model,
-					reasoningEffort: reasoning
+					reasoningEffort: reasoning,
+					enabledQuestionTypes
 				});
 				store.addLog("AI 配置已成功保存！", "success");
 				if (saveBtn) {
@@ -1402,36 +1410,6 @@ input:checked + .toggle-slider:before {
 						}
 					}, 2e3);
 				}
-			});
-			const exportBtn = tabContent.querySelector("#btn-export-config");
-			exportBtn?.addEventListener("click", (e) => {
-				e.preventDefault();
-				const code = store.exportConfigString();
-				if (!code) {
-					store.addLog("导出失败: 当前无有效配置", "warning");
-					return;
-				}
-				if (typeof navigator !== "undefined" && navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(code).then(() => {
-					store.addLog("配置已复制到剪贴板，可粘贴保存到便签备用", "success");
-					if (exportBtn) {
-						exportBtn.textContent = "已复制备份！";
-						setTimeout(() => {
-							if (exportBtn) exportBtn.textContent = "📋 备份配置";
-						}, 2e3);
-					}
-				}).catch(() => {
-					prompt("请复制以下配置备份代码：", code);
-				});
-				else prompt("请复制以下配置备份代码：", code);
-			});
-			tabContent.querySelector("#btn-import-config")?.addEventListener("click", (e) => {
-				e.preventDefault();
-				const code = prompt("请粘贴之前备份的配置代码：");
-				if (!code || !code.trim()) return;
-				if (store.importConfigString(code.trim())) {
-					store.addLog("配置恢复成功！", "success");
-					this.refreshSettingTab(tabContent);
-				} else store.addLog("恢复失败: 配置代码无效或损坏", "error");
 			});
 		}
 		setupDragging(handle, isBall) {
@@ -24640,6 +24618,24 @@ input:checked + .toggle-slider:before {
 			const rawTitleText = extractRawTitleFromTimu(timuEl);
 			const cleanTitle = cleanQuestionTitle(rawTitleText);
 			const qType = detectQuestionType(rawTitleText, !!timuEl.querySelector("input[type=\"checkbox\"]"), timuEl.querySelectorAll("input[type=\"radio\"]").length, timuEl.innerText || "");
+			const enabledTypes = store.config.enabledQuestionTypes;
+			if (enabledTypes) {
+				if (enabledTypes[qType === "unknown" ? "single" : qType] === false) {
+					store.addLog(`第 ${idx + 1}/${timuNodes.length} 题为 [${{
+						single: "单选题",
+						multiple: "多选题",
+						judge: "判断题",
+						fill: "填空题",
+						essay: "简答题"
+					}[qType] || qType}]，设置中已取消勾选此题型，自动跳过`, "info");
+					store.updateProgress({
+						percent: Math.round((idx + 1) / timuNodes.length * 100),
+						status: "playing",
+						currentTime: `第 ${idx + 1}/${timuNodes.length} 题`
+					});
+					continue;
+				}
+			}
 			if (isQuestionAnswered(timuEl, quizDoc)) {
 				store.addLog(`第 ${idx + 1}/${timuNodes.length} 题已作答，自动跳过: "${cleanTitle.slice(0, 20)}..."`, "info");
 				const questionObj = {
