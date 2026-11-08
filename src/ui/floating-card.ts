@@ -61,7 +61,7 @@ export class FloatingCard extends HTMLElement {
       const isRunning = store.isQuizRunning;
       const isPaused = store.progress.status === 'paused';
       const btnText = isRunning ? '暂停答题' : (isPaused ? '继续答题' : '开始答题');
-      const btnBg = isRunning ? '#d97706' : '#2563eb';
+      const btnStateClass = isRunning ? 'pause' : (isPaused ? 'resume' : 'start');
 
       container.innerHTML = `
         <div class="kasa-card">
@@ -71,7 +71,7 @@ export class FloatingCard extends HTMLElement {
               <span class="kasa-title">Kasa 学习通助手</span>
             </div>
             <div class="kasa-actions">
-              <button class="kasa-btn-action" id="btn-start-quiz" title="${btnText}" style="font-size:12px;padding:3px 8px;background:${btnBg};color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:500;margin-right:4px;">${btnText}</button>
+              <button class="kasa-btn-quiz ${btnStateClass}" id="btn-start-quiz" title="${btnText}">${btnText}</button>
               <button class="kasa-btn-icon" id="btn-minimize" title="最小化">一</button>
             </div>
           </div>
@@ -137,10 +137,10 @@ export class FloatingCard extends HTMLElement {
       const isRunning = store.isQuizRunning;
       const isPaused = store.progress.status === 'paused';
       const btnText = isRunning ? '暂停答题' : (isPaused ? '继续答题' : '开始答题');
-      const btnBg = isRunning ? '#d97706' : '#2563eb';
+      const btnStateClass = isRunning ? 'pause' : (isPaused ? 'resume' : 'start');
       startQuizBtn.textContent = btnText;
       startQuizBtn.title = btnText;
-      startQuizBtn.style.background = btnBg;
+      startQuizBtn.className = `kasa-btn-quiz ${btnStateClass}`;
     }
 
     // Only update log view if current tab is log

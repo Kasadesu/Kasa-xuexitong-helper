@@ -174,6 +174,57 @@ export const PANEL_STYLES = `
   gap: 6px;
 }
 
+.kasa-btn-quiz {
+  font-size: 12px;
+  padding: 4px 10px;
+  color: #ffffff;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 600;
+  margin-right: 4px;
+  transition: all 0.2s ease;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+}
+
+.kasa-btn-quiz:hover {
+  transform: translateY(-1px);
+}
+
+.kasa-btn-quiz:active {
+  transform: translateY(0);
+}
+
+.kasa-btn-quiz.start {
+  background: linear-gradient(135deg, #10b981, #059669);
+  box-shadow: 0 2px 8px rgba(16, 185, 129, 0.45);
+}
+
+.kasa-btn-quiz.start:hover {
+  background: linear-gradient(135deg, #059669, #047857);
+  box-shadow: 0 4px 12px rgba(16, 185, 129, 0.55);
+}
+
+.kasa-btn-quiz.pause {
+  background: linear-gradient(135deg, #f59e0b, #d97706);
+  box-shadow: 0 2px 8px rgba(245, 158, 11, 0.45);
+}
+
+.kasa-btn-quiz.pause:hover {
+  background: linear-gradient(135deg, #d97706, #b45309);
+  box-shadow: 0 4px 12px rgba(245, 158, 11, 0.55);
+}
+
+.kasa-btn-quiz.resume {
+  background: linear-gradient(135deg, #06b6d4, #0891b2);
+  box-shadow: 0 2px 8px rgba(6, 182, 212, 0.45);
+}
+
+.kasa-btn-quiz.resume:hover {
+  background: linear-gradient(135deg, #0891b2, #0e7490);
+  box-shadow: 0 4px 12px rgba(6, 182, 212, 0.55);
+}
+
 .kasa-btn-icon {
   background: none;
   border: none;
