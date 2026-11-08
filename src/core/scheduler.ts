@@ -67,8 +67,10 @@ export class ChapterScheduler {
       isCurrent: () => isCurrent()
     };
 
+    let processed = false;
     try {
       if (this.isStandaloneQuiz(document)) {
+        processed = true;
         await doQuizTask(null, document, context);
       } else {
         const allIframes = getAllNestedIframes(document.documentElement);
@@ -87,11 +89,27 @@ export class ChapterScheduler {
             this.isStandaloneQuiz(iframeDoc);
           if (isQuiz) {
             found = true;
+            processed = true;
             await doQuizTask(iframe, iframeDoc, context);
           }
         }
         if (!found) {
-          await doQuizTask(null, document, context);
+          const hasAnyQuestions = !!document.querySelector(
+            '.questionLi, .TiMu.newTiMu, .TiMu, div[data-id], .singleQues, div[id^="question"], .Zy_TItle'
+          );
+          if (hasAnyQuestions) {
+            processed = true;
+            await doQuizTask(null, document, context);
+          } else {
+            store.addLog('当前页面未检测到任何作业或测验任务点', 'warning');
+            store.updateProgress({
+              title: '未检测到作业/测验',
+              status: 'idle',
+              percent: 0,
+              currentTime: '无任务'
+            });
+            return;
+          }
         }
       }
     } catch (err) {
@@ -100,7 +118,7 @@ export class ChapterScheduler {
       }
     } finally {
       store.setQuizRunning(false);
-      if (!signal.aborted) {
+      if (processed && !signal.aborted) {
         store.updateProgress({ status: 'finished' });
       }
     }

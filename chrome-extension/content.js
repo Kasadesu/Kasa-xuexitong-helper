@@ -24564,6 +24564,7 @@ input:checked + .toggle-slider:before {
 			if (signal.aborted) return null;
 			if (isTargetDoc(rootDoc)) return rootDoc;
 			const subIframes = Array.from(rootDoc.querySelectorAll("iframe"));
+			if (subIframes.length === 0 && i >= 2) return null;
 			for (const subIframe of subIframes) try {
 				await waitIframeLoaded(subIframe, signal);
 				const subDoc = subIframe.contentDocument;
@@ -24594,6 +24595,11 @@ input:checked + .toggle-slider:before {
 	};
 	async function doQuizTask(workIframe, workDoc, context) {
 		const { signal, isCurrent } = context;
+		const quizDoc = await locateQuizDocument(workIframe, workDoc, signal);
+		if (!quizDoc || !isCurrent() || signal.aborted) {
+			store.addLog("未在作业模块中检测到题目文档或任务已中断", "warning");
+			return;
+		}
 		store.addLog("发现作业/测验任务点，正在初始化题目定位", "info");
 		store.updateProgress({
 			title: "课程作业/章节测验",
@@ -24602,11 +24608,6 @@ input:checked + .toggle-slider:before {
 			currentTime: "解析中",
 			duration: ""
 		});
-		const quizDoc = await locateQuizDocument(workIframe, workDoc, signal);
-		if (!quizDoc || !isCurrent() || signal.aborted) {
-			store.addLog("未在作业模块中检测到题目文档或任务已中断", "warning");
-			return;
-		}
 		try {
 			const fontMap = decodeChaoxingFont(quizDoc);
 			const mapSize = Object.keys(fontMap).length;
@@ -24978,9 +24979,12 @@ input:checked + .toggle-slider:before {
 				signal,
 				isCurrent: () => isCurrent()
 			};
+			let processed = false;
 			try {
-				if (this.isStandaloneQuiz(document)) await doQuizTask(null, document, context);
-				else {
+				if (this.isStandaloneQuiz(document)) {
+					processed = true;
+					await doQuizTask(null, document, context);
+				} else {
 					const allIframes = getAllNestedIframes(document.documentElement);
 					let found = false;
 					for (const iframe of allIframes) {
@@ -24991,16 +24995,31 @@ input:checked + .toggle-slider:before {
 						const src = iframe.src || "";
 						if (src.includes("work") || src.includes("quiz") || iframe.classList.contains("ans-work-module") || iframe.parentElement?.classList.contains("ans-work-module") || this.isStandaloneQuiz(iframeDoc)) {
 							found = true;
+							processed = true;
 							await doQuizTask(iframe, iframeDoc, context);
 						}
 					}
-					if (!found) await doQuizTask(null, document, context);
+					if (!found) {
+						if (!!document.querySelector(".questionLi, .TiMu.newTiMu, .TiMu, div[data-id], .singleQues, div[id^=\"question\"], .Zy_TItle")) {
+							processed = true;
+							await doQuizTask(null, document, context);
+						} else {
+							store.addLog("当前页面未检测到任何作业或测验任务点", "warning");
+							store.updateProgress({
+								title: "未检测到作业/测验",
+								status: "idle",
+								percent: 0,
+								currentTime: "无任务"
+							});
+							return;
+						}
+					}
 				}
 			} catch (err) {
 				if (err?.name !== "AbortError") store.addLog(`答题执行异常: ${String(err)}`, "error");
 			} finally {
 				store.setQuizRunning(false);
-				if (!signal.aborted) store.updateProgress({ status: "finished" });
+				if (processed && !signal.aborted) store.updateProgress({ status: "finished" });
 			}
 		}
 		pauseQuiz() {

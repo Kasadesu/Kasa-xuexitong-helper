@@ -346,6 +346,10 @@ const locateQuizDocument = async (
 
     // Inspect all sub-iframes
     const subIframes = Array.from(rootDoc.querySelectorAll('iframe'));
+    if (subIframes.length === 0 && i >= 2) {
+      // Fast exit when root document has no sub-iframes and no questions
+      return null;
+    }
     for (const subIframe of subIframes) {
       try {
         await waitIframeLoaded(subIframe, signal);
@@ -421,6 +425,13 @@ export async function doQuizTask(
 ): Promise<void> {
   const { signal, isCurrent } = context;
 
+  // 1. Locate the true inner document containing questions
+  const quizDoc = await locateQuizDocument(workIframe, workDoc, signal);
+  if (!quizDoc || !isCurrent() || signal.aborted) {
+    store.addLog('未在作业模块中检测到题目文档或任务已中断', 'warning');
+    return;
+  }
+
   store.addLog('发现作业/测验任务点，正在初始化题目定位', 'info');
   store.updateProgress({
     title: '课程作业/章节测验',
@@ -429,13 +440,6 @@ export async function doQuizTask(
     currentTime: '解析中',
     duration: ''
   });
-
-  // 1. Locate the true inner document containing questions
-  const quizDoc = await locateQuizDocument(workIframe, workDoc, signal);
-  if (!quizDoc || !isCurrent() || signal.aborted) {
-    store.addLog('未在作业模块中检测到题目文档或任务已中断', 'warning');
-    return;
-  }
 
   // 2. Decode font-cxsecret obfuscated webfont if present
   try {
