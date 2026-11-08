@@ -75,6 +75,7 @@ export class ChapterScheduler {
         let found = false;
         for (const iframe of allIframes) {
           if (!isCurrent() || signal.aborted) break;
+          if (isInternalChildOfTask(iframe)) continue;
           const iframeDoc = iframe.contentDocument;
           if (!iframeDoc) continue;
           const src = iframe.src || '';
@@ -124,7 +125,7 @@ export class ChapterScheduler {
   }
 
   private async triggerScan() {
-    if (this.isProcessing) return;
+    if (this.isProcessing || store.isQuizRunning) return;
     this.isProcessing = true;
 
     try {

@@ -1329,7 +1329,11 @@ input:checked + .toggle-slider:before {
 				e.stopPropagation();
 				store.updateConfig({ panelMinimized: true });
 			});
-			container.querySelector("#btn-start-quiz")?.addEventListener("click", (e) => {
+			const startQuizBtn = container.querySelector("#btn-start-quiz");
+			startQuizBtn?.addEventListener("pointerdown", (e) => {
+				e.stopPropagation();
+			});
+			startQuizBtn?.addEventListener("click", (e) => {
 				e.stopPropagation();
 				window.dispatchEvent(new CustomEvent("kasa:toggle-quiz"));
 			});
@@ -1478,7 +1482,7 @@ input:checked + .toggle-slider:before {
 			if (!handle) return;
 			let hasMoved = false;
 			handle.addEventListener("pointerdown", (e) => {
-				if (e.target.closest("#btn-minimize")) return;
+				if (e.target.closest("button")) return;
 				this.isDragging = true;
 				hasMoved = false;
 				this.dragStartX = e.clientX;
@@ -24981,6 +24985,7 @@ input:checked + .toggle-slider:before {
 					let found = false;
 					for (const iframe of allIframes) {
 						if (!isCurrent() || signal.aborted) break;
+						if (isInternalChildOfTask(iframe)) continue;
 						const iframeDoc = iframe.contentDocument;
 						if (!iframeDoc) continue;
 						const src = iframe.src || "";
@@ -25011,7 +25016,7 @@ input:checked + .toggle-slider:before {
 			return hasQuestions && hasOptions || isQuizUrl && hasQuestions;
 		}
 		async triggerScan() {
-			if (this.isProcessing) return;
+			if (this.isProcessing || store.isQuizRunning) return;
 			this.isProcessing = true;
 			try {
 				await this.runPipeline();

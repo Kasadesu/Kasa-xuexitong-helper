@@ -349,7 +349,11 @@ export class FloatingCard extends HTMLElement {
       store.updateConfig({ panelMinimized: true });
     });
 
-    container.querySelector('#btn-start-quiz')?.addEventListener('click', (e) => {
+    const startQuizBtn = container.querySelector('#btn-start-quiz');
+    startQuizBtn?.addEventListener('pointerdown', (e) => {
+      e.stopPropagation();
+    });
+    startQuizBtn?.addEventListener('click', (e) => {
       e.stopPropagation();
       window.dispatchEvent(new CustomEvent('kasa:toggle-quiz'));
     });
@@ -536,7 +540,7 @@ export class FloatingCard extends HTMLElement {
     let hasMoved = false;
 
     handle.addEventListener('pointerdown', (e: PointerEvent) => {
-      if ((e.target as HTMLElement).closest('#btn-minimize')) return;
+      if ((e.target as HTMLElement).closest('button')) return;
 
       this.isDragging = true;
       hasMoved = false;
