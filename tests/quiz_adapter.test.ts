@@ -1034,4 +1034,25 @@ C 是温迪（风神巴巴托斯）
       });
     });
   });
+
+  describe('【第 16 关】答题控制流与开始/暂停状态流转测试', () => {
+    it('16.1 初始状态下 isQuizRunning 应为 false', () => {
+      assert.equal(store.isQuizRunning, false);
+    });
+
+    it('16.2 setQuizRunning 能够正常切换答题运行态', () => {
+      let notified = false;
+      const unsubscribe = store.subscribe(() => {
+        notified = true;
+      });
+
+      store.setQuizRunning(true);
+      assert.equal(store.isQuizRunning, true);
+      assert.equal(notified, true);
+
+      store.setQuizRunning(false);
+      assert.equal(store.isQuizRunning, false);
+      unsubscribe();
+    });
+  });
 });

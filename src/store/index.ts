@@ -51,6 +51,7 @@ class Store {
   public config: AppConfig;
   public logs: LogItem[] = [];
   public questions: Question[] = [];
+  public isQuizRunning: boolean = false;
   public progress: TaskProgress = {
     title: '等待任务开始...',
     percent: 0,
@@ -62,6 +63,11 @@ class Store {
 
   constructor() {
     this.config = this.loadConfig();
+  }
+
+  public setQuizRunning(running: boolean) {
+    this.isQuizRunning = running;
+    this.notify();
   }
 
   private loadConfig(): AppConfig {

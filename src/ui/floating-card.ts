@@ -58,6 +58,11 @@ export class FloatingCard extends HTMLElement {
       this.shadow.replaceChildren(styleEl, container);
       this.setupDragging(container.querySelector('#drag-handle') as HTMLElement, true);
     } else {
+      const isRunning = store.isQuizRunning;
+      const isPaused = store.progress.status === 'paused';
+      const btnText = isRunning ? '暂停答题' : (isPaused ? '继续答题' : '开始答题');
+      const btnBg = isRunning ? '#d97706' : '#2563eb';
+
       container.innerHTML = `
         <div class="kasa-card">
           <div class="kasa-header" id="drag-handle">
@@ -66,7 +71,7 @@ export class FloatingCard extends HTMLElement {
               <span class="kasa-title">Kasa 学习通助手</span>
             </div>
             <div class="kasa-actions">
-              <button class="kasa-btn-action" id="btn-start-quiz" title="一键开始解析作答当前页面题目" style="font-size:12px;padding:3px 8px;background:#2563eb;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:500;margin-right:4px;">开始答题</button>
+              <button class="kasa-btn-action" id="btn-start-quiz" title="${btnText}" style="font-size:12px;padding:3px 8px;background:${btnBg};color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:500;margin-right:4px;">${btnText}</button>
               <button class="kasa-btn-icon" id="btn-minimize" title="最小化">一</button>
             </div>
           </div>
@@ -125,6 +130,18 @@ export class FloatingCard extends HTMLElement {
     if (progBar) progBar.style.width = `${store.progress.percent}%`;
     if (progTime) progTime.textContent = this.formatProgressTime(store.progress.currentTime, store.progress.duration);
     if (progPercent) progPercent.textContent = `${store.progress.percent}%`;
+
+    // Update start/pause quiz button
+    const startQuizBtn = this.shadow.querySelector('#btn-start-quiz') as HTMLElement | null;
+    if (startQuizBtn) {
+      const isRunning = store.isQuizRunning;
+      const isPaused = store.progress.status === 'paused';
+      const btnText = isRunning ? '暂停答题' : (isPaused ? '继续答题' : '开始答题');
+      const btnBg = isRunning ? '#d97706' : '#2563eb';
+      startQuizBtn.textContent = btnText;
+      startQuizBtn.title = btnText;
+      startQuizBtn.style.background = btnBg;
+    }
 
     // Only update log view if current tab is log
     if (this.currentTab === 'log') {
@@ -334,7 +351,7 @@ export class FloatingCard extends HTMLElement {
 
     container.querySelector('#btn-start-quiz')?.addEventListener('click', (e) => {
       e.stopPropagation();
-      window.dispatchEvent(new CustomEvent('kasa:manual-quiz'));
+      window.dispatchEvent(new CustomEvent('kasa:toggle-quiz'));
     });
 
     container.querySelectorAll('.kasa-tab').forEach((tabEl) => {

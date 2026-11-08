@@ -23,8 +23,20 @@ export class ChapterScheduler {
     }
 
     // Listen for manual quiz trigger from UI button
+    window.addEventListener('kasa:toggle-quiz', () => {
+      if (store.isQuizRunning) {
+        this.pauseQuiz();
+      } else {
+        this.triggerManualQuiz();
+      }
+    });
+
     window.addEventListener('kasa:manual-quiz', () => {
-      this.triggerManualQuiz();
+      if (store.isQuizRunning) {
+        this.pauseQuiz();
+      } else {
+        this.triggerManualQuiz();
+      }
     });
 
     // Observe document mutations to catch async iframe insertions
@@ -42,7 +54,9 @@ export class ChapterScheduler {
   }
 
   public async triggerManualQuiz() {
-    store.addLog('用户手动点击【开始答题】，立即启动全页扫描', 'info');
+    store.addLog('启动答题流程，正在扫描全页题目...', 'info');
+    store.setQuizRunning(true);
+    store.updateProgress({ status: 'playing' });
     this.processedIframeDocs.delete(document);
     const taskId = this.watchdog.renew();
     const signal = this.watchdog.signal;
@@ -52,7 +66,50 @@ export class ChapterScheduler {
       signal,
       isCurrent: () => isCurrent()
     };
-    await doQuizTask(null, document, context);
+
+    try {
+      if (this.isStandaloneQuiz(document)) {
+        await doQuizTask(null, document, context);
+      } else {
+        const allIframes = getAllNestedIframes(document.documentElement);
+        let found = false;
+        for (const iframe of allIframes) {
+          if (!isCurrent() || signal.aborted) break;
+          const iframeDoc = iframe.contentDocument;
+          if (!iframeDoc) continue;
+          const src = iframe.src || '';
+          const isQuiz =
+            src.includes('work') ||
+            src.includes('quiz') ||
+            iframe.classList.contains('ans-work-module') ||
+            iframe.parentElement?.classList.contains('ans-work-module') ||
+            this.isStandaloneQuiz(iframeDoc);
+          if (isQuiz) {
+            found = true;
+            await doQuizTask(iframe, iframeDoc, context);
+          }
+        }
+        if (!found) {
+          await doQuizTask(null, document, context);
+        }
+      }
+    } catch (err) {
+      if ((err as Error)?.name !== 'AbortError') {
+        store.addLog(`答题执行异常: ${String(err)}`, 'error');
+      }
+    } finally {
+      store.setQuizRunning(false);
+      if (!signal.aborted) {
+        store.updateProgress({ status: 'finished' });
+      }
+    }
+  }
+
+  public pauseQuiz() {
+    store.addLog('已暂停答题', 'warning');
+    this.watchdog.renew();
+    store.setQuizRunning(false);
+    store.updateProgress({ status: 'paused' });
   }
 
   private isStandaloneQuiz(doc: Document): boolean {
@@ -91,14 +148,15 @@ export class ChapterScheduler {
     if (this.isStandaloneQuiz(document)) {
       if (!this.processedIframeDocs.has(document)) {
         this.processedIframeDocs.add(document);
-        store.addLog('检测到独立课程作业/考试页面，开始自动解析题目', 'info');
-        const context: IframeContext = {
-          signal,
-          isCurrent: () => isCurrent()
-        };
-        await doQuizTask(null, document, context);
-        return;
+        store.addLog('已检测到作业/测验页面，请点击右上角【开始答题】启动作答', 'info');
+        store.updateProgress({
+          title: '已检测到作业/测验，点击【开始答题】启动',
+          status: 'idle',
+          percent: 0,
+          currentTime: '未开始'
+        });
       }
+      return;
     }
 
     // 1. Gather all iframes on page
@@ -170,7 +228,19 @@ export class ChapterScheduler {
         iframe.classList.contains('ans-work-module') ||
         iframe.parentElement?.classList.contains('ans-work-module')
       ) {
-        await doQuizTask(iframe, iframeDoc, context);
+        if (!isFinishedTask(iframe)) {
+          if (!this.processedIframeDocs.has(iframeDoc)) {
+            store.addLog('已检测到章节测验任务点，请点击右上角【开始答题】启动作答', 'info');
+            store.updateProgress({
+              title: '已检测到章节测验，点击【开始答题】启动',
+              status: 'idle',
+              percent: 0,
+              currentTime: '未开始'
+            });
+            this.processedIframeDocs.add(iframeDoc);
+          }
+        }
+        continue;
       }
 
       this.processedIframeDocs.add(iframeDoc);

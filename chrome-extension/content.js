@@ -67,6 +67,7 @@
 		config;
 		logs = [];
 		questions = [];
+		isQuizRunning = false;
 		progress = {
 			title: "等待任务开始...",
 			percent: 0,
@@ -77,6 +78,10 @@
 		listeners = new Set();
 		constructor() {
 			this.config = this.loadConfig();
+		}
+		setQuizRunning(running) {
+			this.isQuizRunning = running;
+			this.notify();
 		}
 		loadConfig() {
 			const sanitizeConfig = (parsed) => {
@@ -1021,6 +1026,9 @@ input:checked + .toggle-slider:before {
 				this.shadow.replaceChildren(styleEl, container);
 				this.setupDragging(container.querySelector("#drag-handle"), true);
 			} else {
+				const isRunning = store.isQuizRunning;
+				const isPaused = store.progress.status === "paused";
+				const btnText = isRunning ? "暂停答题" : isPaused ? "继续答题" : "开始答题";
 				container.innerHTML = `
         <div class="kasa-card">
           <div class="kasa-header" id="drag-handle">
@@ -1029,7 +1037,7 @@ input:checked + .toggle-slider:before {
               <span class="kasa-title">Kasa 学习通助手</span>
             </div>
             <div class="kasa-actions">
-              <button class="kasa-btn-action" id="btn-start-quiz" title="一键开始解析作答当前页面题目" style="font-size:12px;padding:3px 8px;background:#2563eb;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:500;margin-right:4px;">开始答题</button>
+              <button class="kasa-btn-action" id="btn-start-quiz" title="${btnText}" style="font-size:12px;padding:3px 8px;background:${isRunning ? "#d97706" : "#2563eb"};color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:500;margin-right:4px;">${btnText}</button>
               <button class="kasa-btn-icon" id="btn-minimize" title="最小化">一</button>
             </div>
           </div>
@@ -1083,6 +1091,16 @@ input:checked + .toggle-slider:before {
 			if (progBar) progBar.style.width = `${store.progress.percent}%`;
 			if (progTime) progTime.textContent = this.formatProgressTime(store.progress.currentTime, store.progress.duration);
 			if (progPercent) progPercent.textContent = `${store.progress.percent}%`;
+			const startQuizBtn = this.shadow.querySelector("#btn-start-quiz");
+			if (startQuizBtn) {
+				const isRunning = store.isQuizRunning;
+				const isPaused = store.progress.status === "paused";
+				const btnText = isRunning ? "暂停答题" : isPaused ? "继续答题" : "开始答题";
+				const btnBg = isRunning ? "#d97706" : "#2563eb";
+				startQuizBtn.textContent = btnText;
+				startQuizBtn.title = btnText;
+				startQuizBtn.style.background = btnBg;
+			}
 			if (this.currentTab === "log") {
 				const tabContent = this.shadow.querySelector("#tab-content");
 				if (tabContent) tabContent.innerHTML = this.getTabContentHtml();
@@ -1262,7 +1280,7 @@ input:checked + .toggle-slider:before {
 			});
 			container.querySelector("#btn-start-quiz")?.addEventListener("click", (e) => {
 				e.stopPropagation();
-				window.dispatchEvent(new CustomEvent("kasa:manual-quiz"));
+				window.dispatchEvent(new CustomEvent("kasa:toggle-quiz"));
 			});
 			container.querySelectorAll(".kasa-tab").forEach((tabEl) => {
 				tabEl.addEventListener("click", (e) => {
@@ -24876,8 +24894,13 @@ input:checked + .toggle-slider:before {
 				window.location.href = url + "&mooc2=1";
 				return;
 			}
+			window.addEventListener("kasa:toggle-quiz", () => {
+				if (store.isQuizRunning) this.pauseQuiz();
+				else this.triggerManualQuiz();
+			});
 			window.addEventListener("kasa:manual-quiz", () => {
-				this.triggerManualQuiz();
+				if (store.isQuizRunning) this.pauseQuiz();
+				else this.triggerManualQuiz();
 			});
 			new MutationObserver(() => this.triggerScan()).observe(document.documentElement, {
 				childList: true,
@@ -24889,15 +24912,46 @@ input:checked + .toggle-slider:before {
 			this.triggerScan();
 		}
 		async triggerManualQuiz() {
-			store.addLog("用户手动点击【开始答题】，立即启动全页扫描", "info");
+			store.addLog("启动答题流程，正在扫描全页题目...", "info");
+			store.setQuizRunning(true);
+			store.updateProgress({ status: "playing" });
 			this.processedIframeDocs.delete(document);
 			const taskId = this.watchdog.renew();
 			const signal = this.watchdog.signal;
 			const isCurrent = () => this.watchdog.isCurrent(taskId);
-			await doQuizTask(null, document, {
+			const context = {
 				signal,
 				isCurrent: () => isCurrent()
-			});
+			};
+			try {
+				if (this.isStandaloneQuiz(document)) await doQuizTask(null, document, context);
+				else {
+					const allIframes = getAllNestedIframes(document.documentElement);
+					let found = false;
+					for (const iframe of allIframes) {
+						if (!isCurrent() || signal.aborted) break;
+						const iframeDoc = iframe.contentDocument;
+						if (!iframeDoc) continue;
+						const src = iframe.src || "";
+						if (src.includes("work") || src.includes("quiz") || iframe.classList.contains("ans-work-module") || iframe.parentElement?.classList.contains("ans-work-module") || this.isStandaloneQuiz(iframeDoc)) {
+							found = true;
+							await doQuizTask(iframe, iframeDoc, context);
+						}
+					}
+					if (!found) await doQuizTask(null, document, context);
+				}
+			} catch (err) {
+				if (err?.name !== "AbortError") store.addLog(`答题执行异常: ${String(err)}`, "error");
+			} finally {
+				store.setQuizRunning(false);
+				if (!signal.aborted) store.updateProgress({ status: "finished" });
+			}
+		}
+		pauseQuiz() {
+			store.addLog("已暂停答题", "warning");
+			this.watchdog.renew();
+			store.setQuizRunning(false);
+			store.updateProgress({ status: "paused" });
 		}
 		isStandaloneQuiz(doc) {
 			const hasQuestions = !!doc.querySelector(".questionLi, .TiMu.newTiMu, .TiMu, div[data-id], .singleQues, div[id^=\"question\"], div[id^=\"q_\"]");
@@ -24923,13 +24977,15 @@ input:checked + .toggle-slider:before {
 			if (this.isStandaloneQuiz(document)) {
 				if (!this.processedIframeDocs.has(document)) {
 					this.processedIframeDocs.add(document);
-					store.addLog("检测到独立课程作业/考试页面，开始自动解析题目", "info");
-					await doQuizTask(null, document, {
-						signal,
-						isCurrent: () => isCurrent()
+					store.addLog("已检测到作业/测验页面，请点击右上角【开始答题】启动作答", "info");
+					store.updateProgress({
+						title: "已检测到作业/测验，点击【开始答题】启动",
+						status: "idle",
+						percent: 0,
+						currentTime: "未开始"
 					});
-					return;
 				}
+				return;
 			}
 			const allIframes = getAllNestedIframes(document.documentElement);
 			if (!allIframes.length) return;
@@ -24962,7 +25018,21 @@ input:checked + .toggle-slider:before {
 					"docx",
 					"pdf"
 				].some((t) => src.includes("modules/" + t))) await readDocumentTask(iframeWin, context);
-				else if (src.includes("work") || src.includes("quiz") || iframe.classList.contains("ans-work-module") || iframe.parentElement?.classList.contains("ans-work-module")) await doQuizTask(iframe, iframeDoc, context);
+				else if (src.includes("work") || src.includes("quiz") || iframe.classList.contains("ans-work-module") || iframe.parentElement?.classList.contains("ans-work-module")) {
+					if (!isFinishedTask(iframe)) {
+						if (!this.processedIframeDocs.has(iframeDoc)) {
+							store.addLog("已检测到章节测验任务点，请点击右上角【开始答题】启动作答", "info");
+							store.updateProgress({
+								title: "已检测到章节测验，点击【开始答题】启动",
+								status: "idle",
+								percent: 0,
+								currentTime: "未开始"
+							});
+							this.processedIframeDocs.add(iframeDoc);
+						}
+					}
+					continue;
+				}
 				this.processedIframeDocs.add(iframeDoc);
 			}
 			if (pendingTasksCount > 0 && isCurrent() && !signal.aborted) {
