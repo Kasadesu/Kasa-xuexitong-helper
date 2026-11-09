@@ -220,8 +220,12 @@ export const detectModelReasoningCapability = (
  */
 export const queryAiAnswer = async (
   question: Question,
-  paperContext?: string
+  paperContext?: string,
+  signal?: AbortSignal
 ): Promise<string[]> => {
+  if (signal?.aborted) {
+    return [];
+  }
   if (!store.config.aiApiKey.trim()) {
     store.reloadConfig();
   }
@@ -270,13 +274,19 @@ export const queryAiAnswer = async (
   };
 
   const sendSingleRequest = async (bodyStr: string): Promise<{ ok: boolean; status: number; answers: string[]; errText: string }> => {
+    if (signal?.aborted) {
+      return { ok: false, status: 0, answers: [], errText: '' };
+    }
+
     // @ts-ignore
     const xhr = typeof GM_xmlhttpRequest !== 'undefined' ? GM_xmlhttpRequest : null;
 
     if (!xhr) {
+      const controller = new AbortController();
+      const onExternalAbort = () => controller.abort();
+      signal?.addEventListener('abort', onExternalAbort, { once: true });
+      const timer = window.setTimeout(() => controller.abort(), 60000);
       try {
-        const controller = new AbortController();
-        const timer = window.setTimeout(() => controller.abort(), 60000);
         const res = await window.fetch(endpoint, {
           method: 'POST',
           headers: {
@@ -288,6 +298,10 @@ export const queryAiAnswer = async (
         });
         window.clearTimeout(timer);
 
+        if (signal?.aborted) {
+          return { ok: false, status: 0, answers: [], errText: '' };
+        }
+
         if (res.ok) {
           const data = await res.json();
           return { ok: true, status: res.status, answers: extractAnswersFromData(data), errText: '' };
@@ -296,13 +310,38 @@ export const queryAiAnswer = async (
           return { ok: false, status: res.status, answers: [], errText };
         }
       } catch (err: any) {
+        window.clearTimeout(timer);
+        if (signal?.aborted) {
+          return { ok: false, status: 0, answers: [], errText: '' };
+        }
         const errMsg = err?.name === 'AbortError' ? 'AI 请求超时（60秒）' : String(err);
         return { ok: false, status: 0, answers: [], errText: errMsg };
+      } finally {
+        signal?.removeEventListener('abort', onExternalAbort);
       }
     }
 
     return new Promise((resolve) => {
-      xhr({
+      if (signal?.aborted) {
+        return resolve({ ok: false, status: 0, answers: [], errText: '' });
+      }
+
+      let req: any = null;
+      const cleanupSignal = () => {
+        signal?.removeEventListener('abort', onExternalAbort);
+      };
+      const onExternalAbort = () => {
+        cleanupSignal();
+        try {
+          if (req && typeof req.abort === 'function') {
+            req.abort();
+          }
+        } catch {}
+        resolve({ ok: false, status: 0, answers: [], errText: '' });
+      };
+      signal?.addEventListener('abort', onExternalAbort, { once: true });
+
+      req = xhr({
         url: endpoint,
         method: 'POST',
         headers: {
@@ -312,6 +351,10 @@ export const queryAiAnswer = async (
         data: bodyStr,
         timeout: 60000,
         onload: (res: any) => {
+          cleanupSignal();
+          if (signal?.aborted) {
+            return resolve({ ok: false, status: 0, answers: [], errText: '' });
+          }
           try {
             if (res.status >= 200 && res.status < 300) {
               const data = JSON.parse(res.responseText);
@@ -324,9 +367,17 @@ export const queryAiAnswer = async (
           }
         },
         onerror: (err: any) => {
+          cleanupSignal();
+          if (signal?.aborted) {
+            return resolve({ ok: false, status: 0, answers: [], errText: '' });
+          }
           resolve({ ok: false, status: 0, answers: [], errText: `网络错误: ${String(err)}` });
         },
         ontimeout: () => {
+          cleanupSignal();
+          if (signal?.aborted) {
+            return resolve({ ok: false, status: 0, answers: [], errText: '' });
+          }
           resolve({ ok: false, status: 0, answers: [], errText: 'AI 请求超时（60秒）' });
         }
       });
@@ -335,6 +386,7 @@ export const queryAiAnswer = async (
 
   // Attempt 1: Full configured request
   const firstRes = await sendSingleRequest(buildPayload(true));
+  if (signal?.aborted) return [];
   if (firstRes.ok && firstRes.answers.length > 0) {
     return firstRes.answers;
   }
@@ -351,6 +403,7 @@ export const queryAiAnswer = async (
       : buildPayload(!isParamError);
 
   const secondRes = await sendSingleRequest(retryBody);
+  if (signal?.aborted) return [];
   if (secondRes.ok && secondRes.answers.length > 0) {
     return secondRes.answers;
   }
@@ -358,10 +411,13 @@ export const queryAiAnswer = async (
   // If second attempt still failed with HTTP 400 when downgrading 'max' -> 'high', try once more without reasoning_effort
   if ((secondRes.status === 400 || secondRes.status === 422) && hasEffort && reasoningEffort === 'max') {
     const thirdRes = await sendSingleRequest(buildPayload(false));
+    if (signal?.aborted) return [];
     if (thirdRes.ok && thirdRes.answers.length > 0) {
       return thirdRes.answers;
     }
   }
+
+  if (signal?.aborted) return [];
 
   const finalErr = secondRes.errText || firstRes.errText;
   const finalStatus = secondRes.status || firstRes.status;

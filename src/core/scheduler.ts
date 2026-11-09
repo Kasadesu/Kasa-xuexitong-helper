@@ -11,6 +11,7 @@ export class ChapterScheduler {
   private watchdog = new LifecycleWatchdog();
   private isProcessing = false;
   private processedIframeDocs = new WeakSet<Document>();
+  private scanDebounceTimer: number | null = null;
 
   public start() {
     store.addLog('脚本已启动，正在检测页面任务', 'info');
@@ -39,8 +40,16 @@ export class ChapterScheduler {
       }
     });
 
-    // Observe document mutations to catch async iframe insertions
-    const observer = new MutationObserver(() => this.triggerScan());
+    // Observe document mutations with 500ms debounce to catch async iframe insertions without thrashing
+    const observer = new MutationObserver(() => {
+      if (this.scanDebounceTimer) {
+        window.clearTimeout(this.scanDebounceTimer);
+      }
+      this.scanDebounceTimer = window.setTimeout(() => {
+        this.scanDebounceTimer = null;
+        this.triggerScan();
+      }, 500);
+    });
     observer.observe(document.documentElement, {
       childList: true,
       subtree: true,
@@ -183,6 +192,7 @@ export class ChapterScheduler {
     if (!allIframes.length) return;
 
     let pendingTasksCount = 0;
+    let hasUnfinishedQuiz = false;
 
     // 2. Process tasks sequentially
     for (const iframe of allIframes) {
@@ -225,6 +235,27 @@ export class ChapterScheduler {
         continue;
       }
 
+      const isQuizIframe =
+        src.includes('work') ||
+        src.includes('quiz') ||
+        iframe.classList.contains('ans-work-module') ||
+        iframe.parentElement?.classList.contains('ans-work-module');
+
+      if (isQuizIframe) {
+        hasUnfinishedQuiz = true;
+        if (!this.processedIframeDocs.has(iframeDoc)) {
+          store.addLog('已检测到章节测验任务点，请点击右上角【开始答题】启动作答', 'info');
+          store.updateProgress({
+            title: '已检测到章节测验，点击【开始答题】启动',
+            status: 'idle',
+            percent: 0,
+            currentTime: '未开始'
+          });
+          this.processedIframeDocs.add(iframeDoc);
+        }
+        continue;
+      }
+
       if (this.processedIframeDocs.has(iframeDoc)) {
         continue;
       }
@@ -241,36 +272,24 @@ export class ChapterScheduler {
         await playMediaTask('audio', iframe, iframeDoc, context);
       } else if (['ppt', 'doc', 'pptx', 'docx', 'pdf'].some((t) => src.includes('modules/' + t))) {
         await readDocumentTask(iframeWin, context);
-      } else if (
-        src.includes('work') ||
-        src.includes('quiz') ||
-        iframe.classList.contains('ans-work-module') ||
-        iframe.parentElement?.classList.contains('ans-work-module')
-      ) {
-        if (!isFinishedTask(iframe)) {
-          if (!this.processedIframeDocs.has(iframeDoc)) {
-            store.addLog('已检测到章节测验任务点，请点击右上角【开始答题】启动作答', 'info');
-            store.updateProgress({
-              title: '已检测到章节测验，点击【开始答题】启动',
-              status: 'idle',
-              percent: 0,
-              currentTime: '未开始'
-            });
-            this.processedIframeDocs.add(iframeDoc);
-          }
-        }
-        continue;
       }
 
       this.processedIframeDocs.add(iframeDoc);
     }
 
     // 3. When all tasks in current chapter are finished, navigate to next chapter!
-    if (pendingTasksCount > 0 && isCurrent() && !signal.aborted) {
-      // Re-verify that all visible jobs now have ans-job-finished
+    if (pendingTasksCount > 0 && !hasUnfinishedQuiz && isCurrent() && !signal.aborted) {
+      // Re-verify that all visible jobs and quizzes now have ans-job-finished
       const stillUnfinished = allIframes.some((ifr) => {
+        if (isInternalChildOfTask(ifr)) return false;
+        const ifrSrc = ifr.src || '';
         const hasJob = ifr.parentElement?.querySelector('.ans-job-icon');
-        return hasJob && !isFinishedTask(ifr);
+        const isQuiz =
+          ifrSrc.includes('work') ||
+          ifrSrc.includes('quiz') ||
+          ifr.classList.contains('ans-work-module') ||
+          ifr.parentElement?.classList.contains('ans-work-module');
+        return (hasJob || isQuiz) && !isFinishedTask(ifr);
       });
 
       if (!stillUnfinished) {

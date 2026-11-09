@@ -14,6 +14,7 @@ export class FloatingCard extends HTMLElement {
   private renderedMinimized = false;
   private isManualModelInput = false;
   private isFetchingModels = false;
+  private lastRenderedLogKey = '';
 
   constructor() {
     super();
@@ -101,6 +102,9 @@ export class FloatingCard extends HTMLElement {
           </div>
         </div>
       `;
+      if (this.currentTab === 'log') {
+        this.lastRenderedLogKey = `${store.logs.length}:${store.logs[0]?.id || ''}`;
+      }
       this.shadow.replaceChildren(styleEl, container);
       this.bindCardEvents(container);
       this.setupDragging(container.querySelector('#drag-handle') as HTMLElement, false);
@@ -143,11 +147,15 @@ export class FloatingCard extends HTMLElement {
       startQuizBtn.className = `kasa-btn-quiz ${btnStateClass}`;
     }
 
-    // Only update log view if current tab is log
+    // Only update log view if current tab is log AND logs actually changed
     if (this.currentTab === 'log') {
-      const tabContent = this.shadow.querySelector('#tab-content');
-      if (tabContent) {
-        tabContent.innerHTML = this.getTabContentHtml();
+      const currentLogKey = `${store.logs.length}:${store.logs[0]?.id || ''}`;
+      if (currentLogKey !== this.lastRenderedLogKey) {
+        this.lastRenderedLogKey = currentLogKey;
+        const tabContent = this.shadow.querySelector('#tab-content');
+        if (tabContent) {
+          tabContent.innerHTML = this.getTabContentHtml();
+        }
       }
     }
   }
@@ -212,6 +220,16 @@ export class FloatingCard extends HTMLElement {
             <span>自动下一章节</span>
             <label class="toggle-switch">
               <input type="checkbox" id="cfg-next-chapter" ${cfg.autoNextChapter ? 'checked' : ''}>
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+        </div>
+
+        <div class="setting-item">
+          <div class="setting-label">
+            <span>答完自动提交（关闭则仅暂存）</span>
+            <label class="toggle-switch">
+              <input type="checkbox" id="cfg-auto-submit" ${cfg.autoSubmitWork ? 'checked' : ''}>
               <span class="toggle-slider"></span>
             </label>
           </div>
@@ -369,7 +387,11 @@ export class FloatingCard extends HTMLElement {
           const tabContent = container.querySelector('#tab-content');
           if (tabContent) {
             tabContent.innerHTML = this.getTabContentHtml();
-            this.bindSettingEvents(tabContent);
+            if (tab === 'log') {
+              this.lastRenderedLogKey = `${store.logs.length}:${store.logs[0]?.id || ''}`;
+            } else if (tab === 'setting') {
+              this.bindSettingEvents(tabContent);
+            }
           }
         }
       });
@@ -385,6 +407,11 @@ export class FloatingCard extends HTMLElement {
     const nextChapterCheck = tabContent.querySelector('#cfg-next-chapter') as HTMLInputElement | null;
     nextChapterCheck?.addEventListener('change', () => {
       store.updateConfig({ autoNextChapter: nextChapterCheck.checked });
+    });
+
+    const autoSubmitCheck = tabContent.querySelector('#cfg-auto-submit') as HTMLInputElement | null;
+    autoSubmitCheck?.addEventListener('change', () => {
+      store.updateConfig({ autoSubmitWork: autoSubmitCheck.checked });
     });
 
     const providerSelect = tabContent.querySelector('#cfg-provider') as HTMLSelectElement | null;
@@ -480,6 +507,7 @@ export class FloatingCard extends HTMLElement {
       e.preventDefault();
 
       const nextChapter = nextChapterCheck ? nextChapterCheck.checked : store.config.autoNextChapter;
+      const autoSubmit = autoSubmitCheck ? autoSubmitCheck.checked : store.config.autoSubmitWork;
       const provider = providerSelect ? (providerSelect.value as AppConfig['aiProvider']) : store.config.aiProvider;
       const apiKey = apiKeyInput ? apiKeyInput.value.trim() : store.config.aiApiKey;
       const baseUrl = baseUrlInput ? baseUrlInput.value.trim() : store.config.aiBaseUrl;
@@ -511,6 +539,7 @@ export class FloatingCard extends HTMLElement {
 
       store.updateConfig({
         autoNextChapter: nextChapter,
+        autoSubmitWork: autoSubmit,
         aiProvider: provider,
         aiApiKey: apiKey,
         aiBaseUrl: baseUrl,

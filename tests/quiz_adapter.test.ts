@@ -1054,5 +1054,59 @@ C 是温迪（风神巴巴托斯）
       assert.equal(store.isQuizRunning, false);
       unsubscribe();
     });
+
+    it('16.3 queryAiAnswer 传入已中止的 AbortSignal 时应立即中断并不发起请求', async () => {
+      const oldKey = store.config.aiApiKey;
+      const originalFetch = (globalThis as any).window?.fetch;
+      let fetchCalled = false;
+      try {
+        store.config.aiApiKey = 'sk-test-abort';
+        (globalThis as any).window.fetch = async () => {
+          fetchCalled = true;
+          throw new Error('Should not be called');
+        };
+        const controller = new AbortController();
+        controller.abort();
+
+        const res = await queryAiAnswer(
+          {
+            id: 'q-abort',
+            index: 1,
+            type: 'single',
+            title: '测试中断信号',
+            options: ['A', 'B'],
+            status: 'searching'
+          },
+          '',
+          controller.signal
+        );
+        assert.deepEqual(res, []);
+        assert.equal(fetchCalled, false);
+      } finally {
+        (globalThis as any).window.fetch = originalFetch;
+        store.config.aiApiKey = oldKey;
+      }
+    });
+
+    it('16.4 isQuestionAnswered 能够识别 UEditor 富文本编辑器 iframe 已填入内容的状态', () => {
+      const mockTimuWithFilledUEditor: any = {
+        querySelector: () => null,
+        querySelectorAll: (sel: string) => {
+          if (sel.includes('ueditor_')) {
+            return [
+              {
+                contentDocument: {
+                  body: {
+                    textContent: '这是简答题的教材标准答案'
+                  }
+                }
+              }
+            ];
+          }
+          return [];
+        }
+      };
+      assert.equal(isQuestionAnswered(mockTimuWithFilledUEditor), true);
+    });
   });
 });

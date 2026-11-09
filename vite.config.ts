@@ -17,8 +17,7 @@ export default defineConfig({
           '*://*.edu.cn/*',
           '*://*.nbdlib.cn/*',
           '*://*.hnsyu.net/*',
-          '*://*.gdhkmooc.com/*',
-          '*://*.zhihuishu.com/*'
+          '*://*.gdhkmooc.com/*'
         ],
         connect: ['*'],
         grant: [

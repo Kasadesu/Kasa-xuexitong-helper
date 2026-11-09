@@ -412,6 +412,19 @@ export const isQuestionAnswered = (timuEl: HTMLElement, _quizDoc?: Document): bo
     }
   }
 
+  // 4. Check UEditor rich-text editor iframes
+  const ueditorFrames = Array.from(
+    timuEl.querySelectorAll<HTMLIFrameElement>('iframe[id^="ueditor_"], .edui-editor-iframeholder iframe')
+  );
+  for (const frame of ueditorFrames) {
+    try {
+      const bodyText = frame.contentDocument?.body?.textContent?.trim() || '';
+      if (bodyText.length > 0) {
+        return true;
+      }
+    } catch {}
+  }
+
   return false;
 };
 
@@ -732,8 +745,9 @@ export async function doQuizTask(
 
     store.addLog(`第 ${idx + 1}/${timuNodes.length} 题 [${qType}]: "${cleanTitle.slice(0, 24)}..." 正在查询答案`, 'info');
 
-    // 4. Query AI answer with paper context
-    let answers = await queryAiAnswer(questionObj, paperContext);
+    // 4. Query AI answer with paper context and abort signal
+    let answers = await queryAiAnswer(questionObj, paperContext, signal);
+    if (!isCurrent() || signal.aborted) return;
 
     // Built-in test course / offline fallback with index-based font obfuscation defense
     if (!answers || answers.length === 0) {
@@ -851,15 +865,55 @@ export async function doQuizTask(
         'success'
       );
     } else {
-      // Fill-in-the-blank or essay question inputs
-      const textInputs = Array.from(timuEl.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>('input[type="text"], textarea'));
-      if (textInputs.length > 0 && answers.length > 0) {
-        for (let i = 0; i < textInputs.length; i++) {
-          const inputEl = textInputs[i];
+      // Fill-in-the-blank or essay question inputs (filtering out hidden/system metadata fields + supporting UEditor)
+      const rawInputs = Array.from(
+        timuEl.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>(
+          'textarea.answerText, textarea, input.answerInput, input.newAnswerInput, input[type="text"]'
+        )
+      );
+      const textInputs = rawInputs.filter((input) => {
+        if ((input as HTMLInputElement).type === 'hidden') return false;
+        const meta = `${input.name || ''} ${input.id || ''} ${input.className || ''}`.toLowerCase();
+        if (meta.includes('type') || meta.includes('score')) return false;
+        return true;
+      });
+      const ueditorFrames = Array.from(
+        timuEl.querySelectorAll<HTMLIFrameElement>('iframe[id^="ueditor_"], .edui-editor-iframeholder iframe')
+      );
+      const quizWin = quizDoc.defaultView as any;
+
+      if ((textInputs.length > 0 || ueditorFrames.length > 0) && answers.length > 0) {
+        const slotCount = Math.max(textInputs.length, ueditorFrames.length);
+        for (let i = 0; i < slotCount; i++) {
           const val = answers[i] || answers[0] || '';
-          inputEl.value = val;
-          inputEl.dispatchEvent(new Event('input', { bubbles: true }));
-          inputEl.dispatchEvent(new Event('change', { bubbles: true }));
+          const inputEl = textInputs[i];
+          if (inputEl) {
+            inputEl.value = val;
+            inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+            inputEl.dispatchEvent(new Event('change', { bubbles: true }));
+            inputEl.dispatchEvent(new Event('blur', { bubbles: true }));
+            const editorId = inputEl.id || inputEl.name;
+            if (editorId && typeof quizWin?.UE?.getEditor === 'function') {
+              try {
+                const ueInstance = quizWin.UE.getEditor(editorId);
+                if (ueInstance && typeof ueInstance.setContent === 'function') {
+                  ueInstance.setContent(`<p>${val}</p>`);
+                }
+              } catch {}
+            }
+          }
+          const uFrame = ueditorFrames[i];
+          if (uFrame) {
+            try {
+              const uDoc = uFrame.contentDocument;
+              if (uDoc?.body) {
+                uDoc.body.innerHTML = `<p>${val}</p>`;
+                uDoc.body.dispatchEvent(new Event('input', { bubbles: true }));
+                uDoc.body.dispatchEvent(new Event('keyup', { bubbles: true }));
+                uDoc.body.dispatchEvent(new Event('blur', { bubbles: true }));
+              }
+            } catch {}
+          }
         }
         store.addLog(`第 ${idx + 1}/${timuNodes.length} 题作答完成：已填入文本`, 'success');
       }

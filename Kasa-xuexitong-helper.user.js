@@ -10,7 +10,6 @@
 // @match        *://*.nbdlib.cn/*
 // @match        *://*.hnsyu.net/*
 // @match        *://*.gdhkmooc.com/*
-// @match        *://*.zhihuishu.com/*
 // @connect      *
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -891,7 +890,8 @@ input:checked + .toggle-slider:before {
 		if (/(^|[^a-z0-9])(o1|o3)($|[^a-z0-9])/.test(id) || id.includes("o1-") || id.includes("o3-") || id.includes("o1_") || id.includes("o3_")) return "supported";
 		return "unsupported";
 	};
-	var queryAiAnswer = async (question, paperContext) => {
+	var queryAiAnswer = async (question, paperContext, signal) => {
+		if (signal?.aborted) return [];
 		if (!store.config.aiApiKey.trim()) store.reloadConfig();
 		const { aiApiKey, aiBaseUrl, aiModel, reasoningEffort } = store.config;
 		if (!aiApiKey.trim()) {
@@ -921,47 +921,95 @@ input:checked + .toggle-slider:before {
 			return answers;
 		};
 		const sendSingleRequest = async (bodyStr) => {
+			if (signal?.aborted) return {
+				ok: false,
+				status: 0,
+				answers: [],
+				errText: ""
+			};
 			const xhr = typeof GM_xmlhttpRequest !== "undefined" ? GM_xmlhttpRequest : null;
-			if (!xhr) try {
+			if (!xhr) {
 				const controller = new AbortController();
+				const onExternalAbort = () => controller.abort();
+				signal?.addEventListener("abort", onExternalAbort, { once: true });
 				const timer = window.setTimeout(() => controller.abort(), 6e4);
-				const res = await window.fetch(endpoint, {
-					method: "POST",
-					headers: {
-						"Content-Type": "application/json",
-						Authorization: `Bearer ${aiApiKey.trim()}`
-					},
-					body: bodyStr,
-					signal: controller.signal
-				});
-				window.clearTimeout(timer);
-				if (res.ok) {
-					const data = await res.json();
-					return {
-						ok: true,
-						status: res.status,
-						answers: extractAnswersFromData(data),
+				try {
+					const res = await window.fetch(endpoint, {
+						method: "POST",
+						headers: {
+							"Content-Type": "application/json",
+							Authorization: `Bearer ${aiApiKey.trim()}`
+						},
+						body: bodyStr,
+						signal: controller.signal
+					});
+					window.clearTimeout(timer);
+					if (signal?.aborted) return {
+						ok: false,
+						status: 0,
+						answers: [],
 						errText: ""
 					};
-				} else {
-					const errText = await res.text().catch(() => "");
+					if (res.ok) {
+						const data = await res.json();
+						return {
+							ok: true,
+							status: res.status,
+							answers: extractAnswersFromData(data),
+							errText: ""
+						};
+					} else {
+						const errText = await res.text().catch(() => "");
+						return {
+							ok: false,
+							status: res.status,
+							answers: [],
+							errText
+						};
+					}
+				} catch (err) {
+					window.clearTimeout(timer);
+					if (signal?.aborted) return {
+						ok: false,
+						status: 0,
+						answers: [],
+						errText: ""
+					};
 					return {
 						ok: false,
-						status: res.status,
+						status: 0,
 						answers: [],
-						errText
+						errText: err?.name === "AbortError" ? "AI 请求超时（60秒）" : String(err)
 					};
+				} finally {
+					signal?.removeEventListener("abort", onExternalAbort);
 				}
-			} catch (err) {
-				return {
+			}
+			return new Promise((resolve) => {
+				if (signal?.aborted) return resolve({
 					ok: false,
 					status: 0,
 					answers: [],
-					errText: err?.name === "AbortError" ? "AI 请求超时（60秒）" : String(err)
+					errText: ""
+				});
+				let req = null;
+				const cleanupSignal = () => {
+					signal?.removeEventListener("abort", onExternalAbort);
 				};
-			}
-			return new Promise((resolve) => {
-				xhr({
+				const onExternalAbort = () => {
+					cleanupSignal();
+					try {
+						if (req && typeof req.abort === "function") req.abort();
+					} catch {}
+					resolve({
+						ok: false,
+						status: 0,
+						answers: [],
+						errText: ""
+					});
+				};
+				signal?.addEventListener("abort", onExternalAbort, { once: true });
+				req = xhr({
 					url: endpoint,
 					method: "POST",
 					headers: {
@@ -971,6 +1019,13 @@ input:checked + .toggle-slider:before {
 					data: bodyStr,
 					timeout: 6e4,
 					onload: (res) => {
+						cleanupSignal();
+						if (signal?.aborted) return resolve({
+							ok: false,
+							status: 0,
+							answers: [],
+							errText: ""
+						});
 						try {
 							if (res.status >= 200 && res.status < 300) {
 								const data = JSON.parse(res.responseText);
@@ -996,6 +1051,13 @@ input:checked + .toggle-slider:before {
 						}
 					},
 					onerror: (err) => {
+						cleanupSignal();
+						if (signal?.aborted) return resolve({
+							ok: false,
+							status: 0,
+							answers: [],
+							errText: ""
+						});
 						resolve({
 							ok: false,
 							status: 0,
@@ -1004,6 +1066,13 @@ input:checked + .toggle-slider:before {
 						});
 					},
 					ontimeout: () => {
+						cleanupSignal();
+						if (signal?.aborted) return resolve({
+							ok: false,
+							status: 0,
+							answers: [],
+							errText: ""
+						});
 						resolve({
 							ok: false,
 							status: 0,
@@ -1015,15 +1084,19 @@ input:checked + .toggle-slider:before {
 			});
 		};
 		const firstRes = await sendSingleRequest(buildPayload(true));
+		if (signal?.aborted) return [];
 		if (firstRes.ok && firstRes.answers.length > 0) return firstRes.answers;
 		const isParamError = firstRes.status === 400 || firstRes.status === 422;
 		const hasEffort = Boolean(reasoningEffort && reasoningEffort !== "none");
 		const secondRes = await sendSingleRequest(isParamError && hasEffort ? reasoningEffort === "max" ? buildPayload(true, "high") : buildPayload(false) : buildPayload(!isParamError));
+		if (signal?.aborted) return [];
 		if (secondRes.ok && secondRes.answers.length > 0) return secondRes.answers;
 		if ((secondRes.status === 400 || secondRes.status === 422) && hasEffort && reasoningEffort === "max") {
 			const thirdRes = await sendSingleRequest(buildPayload(false));
+			if (signal?.aborted) return [];
 			if (thirdRes.ok && thirdRes.answers.length > 0) return thirdRes.answers;
 		}
+		if (signal?.aborted) return [];
 		const finalErr = secondRes.errText || firstRes.errText;
 		const finalStatus = secondRes.status || firstRes.status;
 		if (finalStatus > 0) store.addLog(`AI 接口返回错误 HTTP ${finalStatus}: ${finalErr.slice(0, 100)}`, "error");
@@ -1041,6 +1114,7 @@ input:checked + .toggle-slider:before {
 		renderedMinimized = false;
 		isManualModelInput = false;
 		isFetchingModels = false;
+		lastRenderedLogKey = "";
 		constructor() {
 			super();
 			this.shadow = this.attachShadow({ mode: "open" });
@@ -1118,6 +1192,7 @@ input:checked + .toggle-slider:before {
           </div>
         </div>
       `;
+				if (this.currentTab === "log") this.lastRenderedLogKey = `${store.logs.length}:${store.logs[0]?.id || ""}`;
 				this.shadow.replaceChildren(styleEl, container);
 				this.bindCardEvents(container);
 				this.setupDragging(container.querySelector("#drag-handle"), false);
@@ -1153,8 +1228,12 @@ input:checked + .toggle-slider:before {
 				startQuizBtn.className = `kasa-btn-quiz ${btnStateClass}`;
 			}
 			if (this.currentTab === "log") {
-				const tabContent = this.shadow.querySelector("#tab-content");
-				if (tabContent) tabContent.innerHTML = this.getTabContentHtml();
+				const currentLogKey = `${store.logs.length}:${store.logs[0]?.id || ""}`;
+				if (currentLogKey !== this.lastRenderedLogKey) {
+					this.lastRenderedLogKey = currentLogKey;
+					const tabContent = this.shadow.querySelector("#tab-content");
+					if (tabContent) tabContent.innerHTML = this.getTabContentHtml();
+				}
 			}
 		}
 		formatProgressTime(currentTime, duration) {
@@ -1203,6 +1282,16 @@ input:checked + .toggle-slider:before {
             <span>自动下一章节</span>
             <label class="toggle-switch">
               <input type="checkbox" id="cfg-next-chapter" ${cfg.autoNextChapter ? "checked" : ""}>
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+        </div>
+
+        <div class="setting-item">
+          <div class="setting-label">
+            <span>答完自动提交（关闭则仅暂存）</span>
+            <label class="toggle-switch">
+              <input type="checkbox" id="cfg-auto-submit" ${cfg.autoSubmitWork ? "checked" : ""}>
               <span class="toggle-slider"></span>
             </label>
           </div>
@@ -1348,7 +1437,8 @@ input:checked + .toggle-slider:before {
 						const tabContent = container.querySelector("#tab-content");
 						if (tabContent) {
 							tabContent.innerHTML = this.getTabContentHtml();
-							this.bindSettingEvents(tabContent);
+							if (tab === "log") this.lastRenderedLogKey = `${store.logs.length}:${store.logs[0]?.id || ""}`;
+							else if (tab === "setting") this.bindSettingEvents(tabContent);
 						}
 					}
 				});
@@ -1360,6 +1450,10 @@ input:checked + .toggle-slider:before {
 			const nextChapterCheck = tabContent.querySelector("#cfg-next-chapter");
 			nextChapterCheck?.addEventListener("change", () => {
 				store.updateConfig({ autoNextChapter: nextChapterCheck.checked });
+			});
+			const autoSubmitCheck = tabContent.querySelector("#cfg-auto-submit");
+			autoSubmitCheck?.addEventListener("change", () => {
+				store.updateConfig({ autoSubmitWork: autoSubmitCheck.checked });
 			});
 			const providerSelect = tabContent.querySelector("#cfg-provider");
 			providerSelect?.addEventListener("change", () => {
@@ -1437,6 +1531,7 @@ input:checked + .toggle-slider:before {
 			saveBtn?.addEventListener("click", (e) => {
 				e.preventDefault();
 				const nextChapter = nextChapterCheck ? nextChapterCheck.checked : store.config.autoNextChapter;
+				const autoSubmit = autoSubmitCheck ? autoSubmitCheck.checked : store.config.autoSubmitWork;
 				const provider = providerSelect ? providerSelect.value : store.config.aiProvider;
 				const apiKey = apiKeyInput ? apiKeyInput.value.trim() : store.config.aiApiKey;
 				const baseUrl = baseUrlInput ? baseUrlInput.value.trim() : store.config.aiBaseUrl;
@@ -1458,6 +1553,7 @@ input:checked + .toggle-slider:before {
 				};
 				store.updateConfig({
 					autoNextChapter: nextChapter,
+					autoSubmitWork: autoSubmit,
 					aiProvider: provider,
 					aiApiKey: apiKey,
 					aiBaseUrl: baseUrl,
@@ -24591,6 +24687,10 @@ input:checked + .toggle-slider:before {
 			if (nameOrIdOrClass.includes("type") || nameOrIdOrClass.includes("score")) continue;
 			if (input.value && input.value.trim().length > 0) return true;
 		}
+		const ueditorFrames = Array.from(timuEl.querySelectorAll("iframe[id^=\"ueditor_\"], .edui-editor-iframeholder iframe"));
+		for (const frame of ueditorFrames) try {
+			if ((frame.contentDocument?.body?.textContent?.trim() || "").length > 0) return true;
+		} catch {}
 		return false;
 	};
 	async function doQuizTask(workIframe, workDoc, context) {
@@ -24781,7 +24881,8 @@ input:checked + .toggle-slider:before {
 			questionList.push(questionObj);
 			store.setQuestions([...questionList]);
 			store.addLog(`第 ${idx + 1}/${timuNodes.length} 题 [${qType}]: "${cleanTitle.slice(0, 24)}..." 正在查询答案`, "info");
-			let answers = await queryAiAnswer(questionObj, paperContext);
+			let answers = await queryAiAnswer(questionObj, paperContext, signal);
+			if (!isCurrent() || signal.aborted) return;
 			if (!answers || answers.length === 0) {
 				answers = matchFallbackAnswer(cleanTitle, optionsTextList, idx + 1);
 				if (answers.length > 0) store.addLog(`第 ${idx + 1} 题启用保底题库匹配: [${answers.join(", ")}]`, "success");
@@ -24839,13 +24940,40 @@ input:checked + .toggle-slider:before {
 				}
 				store.addLog(`第 ${idx + 1}/${timuNodes.length} 题作答完成：已选 [${selectedLetters.join(", ")}]`, "success");
 			} else {
-				const textInputs = Array.from(timuEl.querySelectorAll("input[type=\"text\"], textarea"));
-				if (textInputs.length > 0 && answers.length > 0) {
-					for (let i = 0; i < textInputs.length; i++) {
+				const textInputs = Array.from(timuEl.querySelectorAll("textarea.answerText, textarea, input.answerInput, input.newAnswerInput, input[type=\"text\"]")).filter((input) => {
+					if (input.type === "hidden") return false;
+					const meta = `${input.name || ""} ${input.id || ""} ${input.className || ""}`.toLowerCase();
+					if (meta.includes("type") || meta.includes("score")) return false;
+					return true;
+				});
+				const ueditorFrames = Array.from(timuEl.querySelectorAll("iframe[id^=\"ueditor_\"], .edui-editor-iframeholder iframe"));
+				const quizWin = quizDoc.defaultView;
+				if ((textInputs.length > 0 || ueditorFrames.length > 0) && answers.length > 0) {
+					const slotCount = Math.max(textInputs.length, ueditorFrames.length);
+					for (let i = 0; i < slotCount; i++) {
+						const val = answers[i] || answers[0] || "";
 						const inputEl = textInputs[i];
-						inputEl.value = answers[i] || answers[0] || "";
-						inputEl.dispatchEvent(new Event("input", { bubbles: true }));
-						inputEl.dispatchEvent(new Event("change", { bubbles: true }));
+						if (inputEl) {
+							inputEl.value = val;
+							inputEl.dispatchEvent(new Event("input", { bubbles: true }));
+							inputEl.dispatchEvent(new Event("change", { bubbles: true }));
+							inputEl.dispatchEvent(new Event("blur", { bubbles: true }));
+							const editorId = inputEl.id || inputEl.name;
+							if (editorId && typeof quizWin?.UE?.getEditor === "function") try {
+								const ueInstance = quizWin.UE.getEditor(editorId);
+								if (ueInstance && typeof ueInstance.setContent === "function") ueInstance.setContent(`<p>${val}</p>`);
+							} catch {}
+						}
+						const uFrame = ueditorFrames[i];
+						if (uFrame) try {
+							const uDoc = uFrame.contentDocument;
+							if (uDoc?.body) {
+								uDoc.body.innerHTML = `<p>${val}</p>`;
+								uDoc.body.dispatchEvent(new Event("input", { bubbles: true }));
+								uDoc.body.dispatchEvent(new Event("keyup", { bubbles: true }));
+								uDoc.body.dispatchEvent(new Event("blur", { bubbles: true }));
+							}
+						} catch {}
 					}
 					store.addLog(`第 ${idx + 1}/${timuNodes.length} 题作答完成：已填入文本`, "success");
 				}
@@ -24943,6 +25071,7 @@ input:checked + .toggle-slider:before {
 		watchdog = new LifecycleWatchdog();
 		isProcessing = false;
 		processedIframeDocs = new WeakSet();
+		scanDebounceTimer = null;
 		start() {
 			store.addLog("脚本已启动，正在检测页面任务", "info");
 			const url = window.location.href;
@@ -24958,7 +25087,13 @@ input:checked + .toggle-slider:before {
 				if (store.isQuizRunning) this.pauseQuiz();
 				else this.triggerManualQuiz();
 			});
-			new MutationObserver(() => this.triggerScan()).observe(document.documentElement, {
+			new MutationObserver(() => {
+				if (this.scanDebounceTimer) window.clearTimeout(this.scanDebounceTimer);
+				this.scanDebounceTimer = window.setTimeout(() => {
+					this.scanDebounceTimer = null;
+					this.triggerScan();
+				}, 500);
+			}).observe(document.documentElement, {
 				childList: true,
 				subtree: true,
 				attributes: true,
@@ -25065,6 +25200,7 @@ input:checked + .toggle-slider:before {
 			const allIframes = getAllNestedIframes(document.documentElement);
 			if (!allIframes.length) return;
 			let pendingTasksCount = 0;
+			let hasUnfinishedQuiz = false;
 			for (const iframe of allIframes) {
 				if (!isCurrent() || signal.aborted) return;
 				if (!iframe.isConnected) continue;
@@ -25078,6 +25214,20 @@ input:checked + .toggle-slider:before {
 				if (isInternalChildOfTask(iframe)) continue;
 				if (isFinishedTask(iframe)) continue;
 				if (!(iframe.parentElement?.querySelector(".ans-job-icon") || src.includes("video") || src.includes("audio") || src.includes("work") || src.includes("quiz") || src.includes("modules/") || iframe.classList.contains("ans-work-module") || iframe.parentElement?.classList.contains("ans-work-module"))) continue;
+				if (src.includes("work") || src.includes("quiz") || iframe.classList.contains("ans-work-module") || iframe.parentElement?.classList.contains("ans-work-module")) {
+					hasUnfinishedQuiz = true;
+					if (!this.processedIframeDocs.has(iframeDoc)) {
+						store.addLog("已检测到章节测验任务点，请点击右上角【开始答题】启动作答", "info");
+						store.updateProgress({
+							title: "已检测到章节测验，点击【开始答题】启动",
+							status: "idle",
+							percent: 0,
+							currentTime: "未开始"
+						});
+						this.processedIframeDocs.add(iframeDoc);
+					}
+					continue;
+				}
 				if (this.processedIframeDocs.has(iframeDoc)) continue;
 				pendingTasksCount++;
 				const context = {
@@ -25093,26 +25243,15 @@ input:checked + .toggle-slider:before {
 					"docx",
 					"pdf"
 				].some((t) => src.includes("modules/" + t))) await readDocumentTask(iframeWin, context);
-				else if (src.includes("work") || src.includes("quiz") || iframe.classList.contains("ans-work-module") || iframe.parentElement?.classList.contains("ans-work-module")) {
-					if (!isFinishedTask(iframe)) {
-						if (!this.processedIframeDocs.has(iframeDoc)) {
-							store.addLog("已检测到章节测验任务点，请点击右上角【开始答题】启动作答", "info");
-							store.updateProgress({
-								title: "已检测到章节测验，点击【开始答题】启动",
-								status: "idle",
-								percent: 0,
-								currentTime: "未开始"
-							});
-							this.processedIframeDocs.add(iframeDoc);
-						}
-					}
-					continue;
-				}
 				this.processedIframeDocs.add(iframeDoc);
 			}
-			if (pendingTasksCount > 0 && isCurrent() && !signal.aborted) {
+			if (pendingTasksCount > 0 && !hasUnfinishedQuiz && isCurrent() && !signal.aborted) {
 				if (!allIframes.some((ifr) => {
-					return ifr.parentElement?.querySelector(".ans-job-icon") && !isFinishedTask(ifr);
+					if (isInternalChildOfTask(ifr)) return false;
+					const ifrSrc = ifr.src || "";
+					const hasJob = ifr.parentElement?.querySelector(".ans-job-icon");
+					const isQuiz = ifrSrc.includes("work") || ifrSrc.includes("quiz") || ifr.classList.contains("ans-work-module") || ifr.parentElement?.classList.contains("ans-work-module");
+					return (hasJob || isQuiz) && !isFinishedTask(ifr);
 				})) {
 					this.watchdog.renew();
 					await tryNavigateNextChapter(document, signal, isCurrent);
