@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Kasa-xuexitong-helper
 // @namespace    kasa.ai
-// @version      1.0.0
+// @version      1.1.0
 // @author       Kasa
 // @description  超星学习通辅助脚本：支持视频自动播放、章节连播与作业测验作答。
 // @icon         data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext x='50' y='54' text-anchor='middle' dominant-baseline='central' font-size='82' font-family='Apple Color Emoji,Segoe UI Emoji,Noto Color Emoji,sans-serif'%3E%F0%9F%92%AF%3C/text%3E%3C/svg%3E
@@ -1483,7 +1483,7 @@ ${baseGuidelines}`;
         <p style="margin:4px 0;">• <strong>作业与测验</strong>：在「AI 设置」中填好 API Key 与模型，点击右上角「开始答题」即可自动作答。</p>
         <p style="margin:4px 0;">• <strong>数据安全</strong>：配置与 Key 仅保存在当前浏览器本地，直接请求服务商接口。</p>
         <div style="margin-top:12px;padding-top:8px;border-top:1px solid #f3f4f6;color:#9ca3af;font-size:11px;">
-          提示：遇到遮挡可点击右上角最小化面板 · v1.0.0
+          提示：遇到遮挡可点击右上角最小化面板 · v1.1.0
         </div>
       </div>
     `;
