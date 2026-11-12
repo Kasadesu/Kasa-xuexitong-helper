@@ -51,9 +51,9 @@ export const detectQuestionSubType = (rawTitleText: string): QuestionSubType | u
 /**
  * 将 Blob 转为 Base64 data URL
  */
-const blobToDataUrl = (blob: any): Promise<string> => {
-  return new Promise((resolve, reject) => {
-    if (typeof FileReader !== 'undefined') {
+const blobToDataUrl = async (blob: any): Promise<string> => {
+  if (typeof FileReader !== 'undefined') {
+    return new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onloadend = () => {
         if (typeof reader.result === 'string') {
@@ -64,10 +64,36 @@ const blobToDataUrl = (blob: any): Promise<string> => {
       };
       reader.onerror = reject;
       reader.readAsDataURL(blob);
-    } else {
-      resolve('');
+    });
+  } else {
+    const NodeBuffer = (globalThis as any).Buffer;
+    if (typeof NodeBuffer !== 'undefined') {
+      if (blob && typeof blob.arrayBuffer === 'function') {
+        const arr = await blob.arrayBuffer();
+        const buf = NodeBuffer.from(arr);
+        const type = blob.type || 'image/png';
+        return `data:${type};base64,${buf.toString('base64')}`;
+      } else if (blob instanceof ArrayBuffer) {
+        const buf = NodeBuffer.from(blob);
+        return `data:image/png;base64,${buf.toString('base64')}`;
+      }
     }
-  });
+  }
+  return '';
+};
+
+/**
+ * 校验输入内容是否包含实质性文本（彻底过滤 HTML 标签、空白实体与零宽字符）
+ */
+export const hasMeaningfulContent = (val: string): boolean => {
+  if (!val || typeof val !== 'string') return false;
+  // 1. 剥离所有 HTML 标签 (<p>, <br>, <div> 等)
+  const noTags = val.replace(/<[^>]+>/g, '');
+  // 2. 剥离 HTML 空白实体与零宽不可见字符 (\u200B-\u200D, \uFEFF, &nbsp; 等)
+  const clean = noTags
+    .replace(/&(?:nbsp|zwnj|zwj|#160|#8203);/gi, '')
+    .replace(/[\u200B-\u200D\uFEFF\s]/g, '');
+  return clean.length > 0;
 };
 
 /**
@@ -85,32 +111,24 @@ export const extractQuestionImages = async (
 
   for (const img of imgElements) {
     if (signal?.aborted) break;
-    const src = (img.currentSrc || img.src || img.getAttribute('src') || '').trim();
-    if (!src || src.startsWith('javascript:')) continue;
 
-    // 过滤已知小图标、emoji、头像、导航及交互按钮
-    const lowerSrc = src.toLowerCase();
-    const className = (img.className || '').toLowerCase();
-    if (
-      lowerSrc.includes('icon') ||
-      lowerSrc.includes('emoji') ||
-      lowerSrc.includes('loading') ||
-      lowerSrc.includes('avatar') ||
-      lowerSrc.includes('arrow') ||
-      lowerSrc.includes('btn') ||
-      lowerSrc.includes('star') ||
-      className.includes('icon') ||
-      className.includes('emoji') ||
-      className.includes('loading') ||
-      className.includes('avatar') ||
-      className.includes('arrow') ||
-      className.includes('btn') ||
-      className.includes('star')
-    ) {
+    // 1. 过滤位于脚本自身悬浮窗或富文本编辑器工具栏内的非题图元素
+    if (typeof img.closest === 'function' && img.closest('.kasa-card, .edui-editor-toolbar, .edui-box')) {
       continue;
     }
 
-    // 过滤 1x1 透明占位符或微型 svg / gif（若包含 data:image/svg+xml 或 data:image/gif 且长度 < 200 直接跳过）
+    const src = (img.currentSrc || img.src || (typeof img.getAttribute === 'function' ? img.getAttribute('src') : '') || '').trim();
+    if (!src || src.startsWith('javascript:')) continue;
+
+    // 2. 仅依据严格的 class 词边界过滤 UI 小图标、emoji、头像、交互按钮及 loading 占位
+    const className = (typeof img.className === 'string' ? img.className : '').toLowerCase();
+    if (/\b(icon|emoji|avatar|btn|loading)\b/.test(className)) {
+      continue;
+    }
+
+    const lowerSrc = src.toLowerCase();
+
+    // 3. 过滤 1x1 透明占位符或微型 svg / gif（若包含 data:image/svg+xml 或 data:image/gif 且长度 < 200 直接跳过）
     if (
       (lowerSrc.includes('data:image/svg+xml') || lowerSrc.includes('data:image/gif')) &&
       lowerSrc.length < 200
@@ -118,14 +136,24 @@ export const extractQuestionImages = async (
       continue;
     }
 
-    // 尺寸过滤穿透防御：优先检查 width/height 属性与样式
-    const attrWidth = parseInt(img.getAttribute('width') || img.style.width || String(img.width || 0), 10);
-    const attrHeight = parseInt(img.getAttribute('height') || img.style.height || String(img.height || 0), 10);
+    // 4. 尺寸过滤穿透防御：优先检查 width/height 属性与样式
+    const attrWidth = parseInt(
+      (typeof img.getAttribute === 'function' ? img.getAttribute('width') : null) ||
+        img.style?.width ||
+        String(img.width || 0),
+      10
+    );
+    const attrHeight = parseInt(
+      (typeof img.getAttribute === 'function' ? img.getAttribute('height') : null) ||
+        img.style?.height ||
+        String(img.height || 0),
+      10
+    );
     if ((attrWidth > 0 && attrWidth <= 20) || (attrHeight > 0 && attrHeight <= 20)) {
       continue;
     }
 
-    // 尺寸过滤：若已加载且 naturalWidth/naturalHeight <= 20 判定为图标跳过
+    // 5. 尺寸过滤：若已加载且 naturalWidth/naturalHeight <= 20 判定为图标跳过
     if (img.complete && img.naturalWidth > 0 && img.naturalHeight > 0) {
       if (img.naturalWidth <= 20 && img.naturalHeight <= 20) {
         continue;
@@ -631,7 +659,7 @@ export const isQuestionAnswered = (timuEl: HTMLElement, _quizDoc?: Document): bo
     if ((input as HTMLInputElement).type === 'hidden') continue;
     const nameOrIdOrClass = `${input.name || ''} ${input.id || ''} ${input.className || ''}`.toLowerCase();
     if (nameOrIdOrClass.includes('type') || nameOrIdOrClass.includes('score')) continue;
-    if (input.value && input.value.trim().length > 0) {
+    if (hasMeaningfulContent(input.value)) {
       return true;
     }
   }
@@ -642,8 +670,8 @@ export const isQuestionAnswered = (timuEl: HTMLElement, _quizDoc?: Document): bo
   );
   for (const frame of ueditorFrames) {
     try {
-      const bodyText = frame.contentDocument?.body?.textContent?.trim() || '';
-      if (bodyText.length > 0) {
+      const html = frame.contentDocument?.body?.innerHTML || frame.contentDocument?.body?.textContent || '';
+      if (hasMeaningfulContent(html)) {
         return true;
       }
     } catch {}

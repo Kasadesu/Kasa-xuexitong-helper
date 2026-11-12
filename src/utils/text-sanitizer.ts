@@ -11,7 +11,7 @@ export const isAiRefusalOrApology = (text: string): boolean => {
   const t = text.trim();
   if (!t) return false;
   // 识别 AI 明确声明无法确定答案、缺少图片/结构式/数据等免责声明
-  return /(?:无法(?:唯一)?确定答案|无法(?:做出)?解答|无法回答|没有(?:给出|提供).*?(?:结构式|图片|图谱|选项|数据)|请提供.*?图片|缺少.*?图片)/i.test(t);
+  return /(?:无法(?:唯一)?确定(?:答案|其名称|其分类)|无法(?:做出)?解答|无法回答|(?:没有|未)(?:给出|提供|包含).*?(?:结构式|图片|图谱|选项|数据)|请(?:提供|补充).*?(?:结构式|图片|题干)|缺少.*?图片)/i.test(t);
 };
 
 /**
@@ -101,7 +101,10 @@ export const cleanRichTextAnswer = (text: string): string => {
     return `${prefixSpace}${p1}`;
   });
 
-  // 5. 按行处理：移除行首 Markdown 标题 (# ## 等) 与引用 (>)
+  // 5. 剥离生硬冗余的别名/释义括号补丁（例如“（又称...）”、“（亦称...）”、“（即...）”、“（俗称...）”）
+  res = res.replace(/[（\(](?:又称|亦称|即|俗称)[^）\)]*[）\)]/g, '');
+
+  // 6. 按行处理：移除行首 Markdown 标题 (# ## 等) 与引用 (>)
   const lines = res.split(/\r?\n/).map((line) => {
     let l = line.trim();
     l = l.replace(/^#{1,6}\s+/, '');

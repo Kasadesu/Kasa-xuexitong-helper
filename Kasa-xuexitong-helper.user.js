@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Kasa-xuexitong-helper
 // @namespace    kasa.ai
-// @version      1.1.0
+// @version      1.2.0
 // @author       Kasa
 // @description  超星学习通辅助脚本：支持视频自动播放、章节连播与作业测验作答。
 // @icon         data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext x='50' y='54' text-anchor='middle' dominant-baseline='central' font-size='82' font-family='Apple Color Emoji,Segoe UI Emoji,Noto Color Emoji,sans-serif'%3E%F0%9F%92%AF%3C/text%3E%3C/svg%3E
@@ -702,10 +702,10 @@ input:checked + .toggle-slider:before {
 				break;
 			case "essay":
 				if (subType === "definition") {
-					typeRule = "这是主观名词解释题。请严格按照高校权威教材标准定义作答，用 1~2 个连贯自然段概括核心定义、关键特征/机理与典型意义，不要重复抄写词条题干前缀。";
+					typeRule = "这是主观名词解释题。请严格按照高校权威教材标准定义与中国高校优秀考生手写口吻作答，概括本质属性、核心机理与典型意义，严禁同义词别名括号打补丁，不要重复抄写词条题干。";
 					outputContract = "严禁使用 Markdown 格式标记（如 **、#、- ）、LaTeX 公式符号（如 $、\\(、\\mathrm）和 JSON 数组，直接输出纯文本标准答案正文（涉及化学式或同位素用普通文本如 13C-NMR 表示）。";
 				} else {
-					typeRule = "这是主观简答/论述题。请给出准确、条理清晰的教材核心答案纯文本正文。";
+					typeRule = "这是主观简答/论述题。请以中国高校优秀本科生在期末考试中手写的标准答案口吻作答，聚焦核心采分点，条理自然凝练，严禁别名打补丁。";
 					outputContract = "严禁使用 Markdown 格式符（如 **、#）、LaTeX 公式符号（如 $、\\(）和 JSON 数组，直接输出纯文本正文。";
 				}
 				break;
@@ -714,9 +714,11 @@ input:checked + .toggle-slider:before {
 				outputContract = "请先简要说明依据，最后一行输出最终答案。";
 		}
 		const baseGuidelines = type === "essay" ? `审题与作答准则：
-1. 【教材定义溯源】：严格依据中国高校统编教材的标准表述作答，定义准确严密，逻辑清晰。
-2. 【纯文本规范】：输出内容将直接注入超星富文本编辑器，严禁携带任何 Markdown（如加粗、标题、列表符号）或 LaTeX 语法标记。
-3. 【输出格式】：${outputContract}` : `审题与作答准则：
+1. 【高校优秀考生作答风格】：严格以中国高校优秀本科生在期末考试中手写的标准答案口吻作答，逻辑自然凝练，直切采分点。
+2. 【杜绝维基百科式报户口】：聚焦核心得分采分点（本质属性 + 核心机制/生理功能 + 关键应用或意义）。除非题目明确要求，否则切勿主动机械罗列化学结构简式（如 H2NCH2CH2SO3H）、分子式或机械套话。
+3. 【严禁解释性括号与别名打补丁】：严禁在正文中使用括号给名词加同义词、英文简称或冗余别名（严禁使用“A（又称B）”、“A（即B）”），直接采用单一最标准教材术语，行文连贯自然。
+4. 【纯文本规范】：输出内容将直接注入超星富文本编辑器，严禁携带任何 Markdown（如加粗、标题、列表符号）、LaTeX 语法标记（如 $、\\(、\\mathrm）或 JSON 数组。
+5. 【输出格式】：${outputContract}` : `审题与作答准则：
 1. 【教材定义溯源】：严格依据中国高校统编教材的标准定义与学科体系作答，切勿使用日常口语或直觉臆测替代专业教材表述。
 2. 【限定词与正反核对】：精准锁定题干中的核心限定词（如“基本模式”、“最基本/首要/根本”、“直接/间接”、“属于/不属于”、“正确/错误”）。
 3. 【相近干扰项辨析】：遇到相近选项时，必须先对比教材定义边界并明确排除干扰项，切勿盲目锚定第一个看似沾边的选项。
@@ -736,7 +738,7 @@ ${baseGuidelines}`;
 				userTail = "\n\n【作答要求】请在最后一行严格输出标准 JSON 字符串数组，按空位顺序对应填入内容，例如：[\"答案1\", \"答案2\"]；严禁使用 Markdown 和 LaTeX。";
 				break;
 			case "essay":
-				userTail = "\n\n【作答要求】请直接输出纯文本标准答案正文，严禁使用 Markdown 格式符（如 **、#）和 LaTeX 公式（如 $、\\(），不要输出 JSON 数组。";
+				userTail = "\n\n【作答要求】请以高校优秀考生手写答案口吻直接输出纯文本标准答案正文，聚焦核心采分点，严禁解释性别名括号（如“（又称...）”），严禁使用 Markdown 格式符（如 **、#）和 LaTeX 公式（如 $、\\(），不要输出 JSON 数组。";
 				break;
 			default: userTail = "";
 		}
@@ -1256,7 +1258,7 @@ ${baseGuidelines}`;
         <div class="kasa-card">
           <div class="kasa-header" id="drag-handle">
             <div class="kasa-title-group">
-              <span class="kasa-badge">v1.1</span>
+              <span class="kasa-badge">v1.2</span>
               <span class="kasa-title">Kasa 学习通助手</span>
             </div>
             <div class="kasa-actions">
@@ -1483,7 +1485,7 @@ ${baseGuidelines}`;
         <p style="margin:4px 0;">• <strong>作业与测验</strong>：在「AI 设置」中填好 API Key 与模型，点击右上角「开始答题」即可自动作答。</p>
         <p style="margin:4px 0;">• <strong>数据安全</strong>：配置与 Key 仅保存在当前浏览器本地，直接请求服务商接口。</p>
         <div style="margin-top:12px;padding-top:8px;border-top:1px solid #f3f4f6;color:#9ca3af;font-size:11px;">
-          提示：遇到遮挡可点击右上角最小化面板 · v1.1.0
+          提示：遇到遮挡可点击右上角最小化面板 · v1.2.0
         </div>
       </div>
     `;
@@ -2012,7 +2014,7 @@ ${baseGuidelines}`;
 		if (!text || typeof text !== "string") return false;
 		const t = text.trim();
 		if (!t) return false;
-		return /(?:无法(?:唯一)?确定答案|无法(?:做出)?解答|无法回答|没有(?:给出|提供).*?(?:结构式|图片|图谱|选项|数据)|请提供.*?图片|缺少.*?图片)/i.test(t);
+		return /(?:无法(?:唯一)?确定(?:答案|其名称|其分类)|无法(?:做出)?解答|无法回答|(?:没有|未)(?:给出|提供|包含).*?(?:结构式|图片|图谱|选项|数据)|请(?:提供|补充).*?(?:结构式|图片|题干)|缺少.*?图片)/i.test(t);
 	};
 	var escapeHtml = (text) => {
 		if (!text) return "";
@@ -2068,6 +2070,7 @@ ${baseGuidelines}`;
 		res = res.replace(/(?:^|\s)\*([^*\n\s]+)\*(?=\s|$)/g, (match, p1) => {
 			return `${match.startsWith(" ") ? " " : ""}${p1}`;
 		});
+		res = res.replace(/[（\(](?:又称|亦称|即|俗称)[^）\)]*[）\)]/g, "");
 		return res.split(/\r?\n/).map((line) => {
 			let l = line.trim();
 			l = l.replace(/^#{1,6}\s+/, "");
@@ -24714,18 +24717,31 @@ ${baseGuidelines}`;
 		if (decrypted.includes("简答题") || decrypted.includes("【简答】") || decrypted.includes("(简答)") || decrypted.includes("（简答）")) return "short_answer";
 		if (decrypted.includes("论述题") || decrypted.includes("【论述】") || decrypted.includes("(论述)") || decrypted.includes("（论述）")) return "discussion";
 	};
-	var blobToDataUrl = (blob) => {
-		return new Promise((resolve, reject) => {
-			if (typeof FileReader !== "undefined") {
-				const reader = new FileReader();
-				reader.onloadend = () => {
-					if (typeof reader.result === "string") resolve(reader.result);
-					else reject(new Error("转换图片 Base64 失败"));
-				};
-				reader.onerror = reject;
-				reader.readAsDataURL(blob);
-			} else resolve("");
+	var blobToDataUrl = async (blob) => {
+		if (typeof FileReader !== "undefined") return new Promise((resolve, reject) => {
+			const reader = new FileReader();
+			reader.onloadend = () => {
+				if (typeof reader.result === "string") resolve(reader.result);
+				else reject(new Error("转换图片 Base64 失败"));
+			};
+			reader.onerror = reject;
+			reader.readAsDataURL(blob);
 		});
+		else {
+			const NodeBuffer = globalThis.Buffer;
+			if (typeof NodeBuffer !== "undefined") {
+				if (blob && typeof blob.arrayBuffer === "function") {
+					const arr = await blob.arrayBuffer();
+					const buf = NodeBuffer.from(arr);
+					return `data:${blob.type || "image/png"};base64,${buf.toString("base64")}`;
+				} else if (blob instanceof ArrayBuffer) return `data:image/png;base64,${NodeBuffer.from(blob).toString("base64")}`;
+			}
+		}
+		return "";
+	};
+	var hasMeaningfulContent = (val) => {
+		if (!val || typeof val !== "string") return false;
+		return val.replace(/<[^>]+>/g, "").replace(/&(?:nbsp|zwnj|zwj|#160|#8203);/gi, "").replace(/[\u200B-\u200D\uFEFF\s]/g, "").length > 0;
 	};
 	var extractQuestionImages = async (timuEl, signal) => {
 		if (!timuEl || typeof timuEl.querySelectorAll !== "function") return [];
@@ -24734,14 +24750,15 @@ ${baseGuidelines}`;
 		const seenUrls = new Set();
 		for (const img of imgElements) {
 			if (signal?.aborted) break;
-			const src = (img.currentSrc || img.src || img.getAttribute("src") || "").trim();
+			if (typeof img.closest === "function" && img.closest(".kasa-card, .edui-editor-toolbar, .edui-box")) continue;
+			const src = (img.currentSrc || img.src || (typeof img.getAttribute === "function" ? img.getAttribute("src") : "") || "").trim();
 			if (!src || src.startsWith("javascript:")) continue;
+			const className = (typeof img.className === "string" ? img.className : "").toLowerCase();
+			if (/\b(icon|emoji|avatar|btn|loading)\b/.test(className)) continue;
 			const lowerSrc = src.toLowerCase();
-			const className = (img.className || "").toLowerCase();
-			if (lowerSrc.includes("icon") || lowerSrc.includes("emoji") || lowerSrc.includes("loading") || lowerSrc.includes("avatar") || lowerSrc.includes("arrow") || lowerSrc.includes("btn") || lowerSrc.includes("star") || className.includes("icon") || className.includes("emoji") || className.includes("loading") || className.includes("avatar") || className.includes("arrow") || className.includes("btn") || className.includes("star")) continue;
 			if ((lowerSrc.includes("data:image/svg+xml") || lowerSrc.includes("data:image/gif")) && lowerSrc.length < 200) continue;
-			const attrWidth = parseInt(img.getAttribute("width") || img.style.width || String(img.width || 0), 10);
-			const attrHeight = parseInt(img.getAttribute("height") || img.style.height || String(img.height || 0), 10);
+			const attrWidth = parseInt((typeof img.getAttribute === "function" ? img.getAttribute("width") : null) || img.style?.width || String(img.width || 0), 10);
+			const attrHeight = parseInt((typeof img.getAttribute === "function" ? img.getAttribute("height") : null) || img.style?.height || String(img.height || 0), 10);
 			if (attrWidth > 0 && attrWidth <= 20 || attrHeight > 0 && attrHeight <= 20) continue;
 			if (img.complete && img.naturalWidth > 0 && img.naturalHeight > 0) {
 				if (img.naturalWidth <= 20 && img.naturalHeight <= 20) continue;
@@ -24985,11 +25002,11 @@ ${baseGuidelines}`;
 			if (input.type === "hidden") continue;
 			const nameOrIdOrClass = `${input.name || ""} ${input.id || ""} ${input.className || ""}`.toLowerCase();
 			if (nameOrIdOrClass.includes("type") || nameOrIdOrClass.includes("score")) continue;
-			if (input.value && input.value.trim().length > 0) return true;
+			if (hasMeaningfulContent(input.value)) return true;
 		}
 		const ueditorFrames = Array.from(timuEl.querySelectorAll("iframe[id^=\"ueditor_\"], .edui-editor-iframeholder iframe"));
 		for (const frame of ueditorFrames) try {
-			if ((frame.contentDocument?.body?.textContent?.trim() || "").length > 0) return true;
+			if (hasMeaningfulContent(frame.contentDocument?.body?.innerHTML || frame.contentDocument?.body?.textContent || "")) return true;
 		} catch {}
 		return false;
 	};

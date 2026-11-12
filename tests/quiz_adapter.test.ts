@@ -38,7 +38,8 @@ import {
   matchOptionToAnswer,
   selectBestOptions,
   isQuestionAnswered,
-  extractQuestionImages
+  extractQuestionImages,
+  hasMeaningfulContent
 } from '../src/adapters/quiz';
 import { parseAiResponse } from '../src/adapters/ai-solver/parser';
 import { buildAiPrompt } from '../src/adapters/ai-solver/prompt';
@@ -1415,6 +1416,190 @@ C 是温迪（风神巴巴托斯）
       const imgs = await extractQuestionImages(fakeTimu);
       assert.equal(imgs.length, 1);
       assert.ok(imgs[0].includes('valid-long-image-data-string'));
+    });
+  });
+
+  describe('【第 21 关】v1.2.0 高优先级修复与高校主观题专项回归测试', () => {
+    it('21.1 hasMeaningfulContent 彻底过滤富文本空标签、HTML 空白实体与零宽字符', () => {
+      // 各种空值/伪空白
+      assert.equal(hasMeaningfulContent(''), false);
+      assert.equal(hasMeaningfulContent('   '), false);
+      assert.equal(hasMeaningfulContent('\n\t  \r'), false);
+      assert.equal(hasMeaningfulContent('<p><br></p>'), false);
+      assert.equal(hasMeaningfulContent('<p><br/></p>'), false);
+      assert.equal(hasMeaningfulContent('<div><p></p></div>'), false);
+      assert.equal(hasMeaningfulContent('<p>&nbsp;</p>'), false);
+      assert.equal(hasMeaningfulContent('<p>&nbsp;&nbsp;&nbsp;</p>'), false);
+      assert.equal(hasMeaningfulContent('<p>&#160;</p>'), false);
+      assert.equal(hasMeaningfulContent('<p>&zwnj;&zwj;&#8203;</p>'), false);
+      assert.equal(hasMeaningfulContent('\u200B\u200C\u200D\uFEFF'), false);
+      assert.equal(hasMeaningfulContent('<p>\u200B</p>'), false);
+      // @ts-ignore
+      assert.equal(hasMeaningfulContent(null), false);
+      // @ts-ignore
+      assert.equal(hasMeaningfulContent(undefined), false);
+
+      // 实质性内容
+      assert.equal(hasMeaningfulContent('这是有效作答'), true);
+      assert.equal(hasMeaningfulContent('<p>这是有效作答</p>'), true);
+      assert.equal(hasMeaningfulContent('<p>含硫氨基酸具有重要生理作用</p>'), true);
+    });
+
+    it('21.2 isQuestionAnswered 消除 UEditor 富文本空白占位符假阳性误判', () => {
+      // 模拟 42 题仅有 <p><br></p> 的空富文本 iframe
+      const emptyIframeTimu = {
+        querySelector: () => null,
+        querySelectorAll: (selector: string) => {
+          if (selector.includes('iframe')) {
+            return [
+              {
+                contentDocument: {
+                  body: {
+                    innerHTML: '<p><br></p>',
+                    textContent: ''
+                  }
+                }
+              }
+            ];
+          }
+          return [];
+        }
+      } as any;
+      assert.equal(isQuestionAnswered(emptyIframeTimu), false);
+
+      // 模拟含 &nbsp; 或 \u200B 的空富文本
+      const zeroWidthIframeTimu = {
+        querySelector: () => null,
+        querySelectorAll: (selector: string) => {
+          if (selector.includes('iframe')) {
+            return [
+              {
+                contentDocument: {
+                  body: {
+                    innerHTML: '<p>&nbsp;\u200B</p>',
+                    textContent: ' \u200B'
+                  }
+                }
+              }
+            ];
+          }
+          return [];
+        }
+      } as any;
+      assert.equal(isQuestionAnswered(zeroWidthIframeTimu), false);
+
+      // 真实已填入回答的富文本
+      const answeredIframeTimu = {
+        querySelector: () => null,
+        querySelectorAll: (selector: string) => {
+          if (selector.includes('iframe')) {
+            return [
+              {
+                contentDocument: {
+                  body: {
+                    innerHTML: '<p>牛磺酸是条件必需氨基酸</p>',
+                    textContent: '牛磺酸是条件必需氨基酸'
+                  }
+                }
+              }
+            ];
+          }
+          return [];
+        }
+      } as any;
+      assert.equal(isQuestionAnswered(answeredIframeTimu), true);
+    });
+
+    it('21.3 extractQuestionImages 确保超星官方 star3 图床题图 100% 正常保留', async () => {
+      const mockTimuWithStar3 = {
+        querySelectorAll: (selector: string) => {
+          if (selector === 'img') {
+            return [
+              // 超星官方图床题图（包含 star3）必须 100% 被保留
+              {
+                src: 'http://p.ananas.chaoxing.com/star3/origin/a8b9c0d1e2f3456789.png',
+                className: '',
+                getAttribute: (k: string) => (k === 'src' ? 'http://p.ananas.chaoxing.com/star3/origin/a8b9c0d1e2f3456789.png' : null),
+                style: { width: '400px', height: '300px' },
+                complete: true,
+                naturalWidth: 400,
+                naturalHeight: 300
+              },
+              // 悬浮窗内部图片（必须被过滤）
+              {
+                src: 'http://p.ananas.chaoxing.com/star3/origin/inside_card.png',
+                className: '',
+                getAttribute: () => null,
+                closest: (sel: string) => sel.includes('.kasa-card'),
+                style: {},
+                complete: true,
+                naturalWidth: 100,
+                naturalHeight: 100
+              },
+              // 评星图标但带有 icon class（必须被过滤）
+              {
+                src: 'http://example.com/assets/star.png',
+                className: 'score-star icon',
+                getAttribute: () => null,
+                style: {},
+                complete: true,
+                naturalWidth: 16,
+                naturalHeight: 16
+              }
+            ];
+          }
+          return [];
+        }
+      } as any;
+
+      // 在 Node.js 环境下模拟网络不可达时返回原始 candidateUrls 或通过 Base64 提取
+      const originalXHR = (globalThis as any).GM_xmlhttpRequest;
+      try {
+        (globalThis as any).GM_xmlhttpRequest = (opts: any) => {
+          opts.onload?.({
+            status: 200,
+            response: new ArrayBuffer(8),
+            getResponseHeader: () => 'image/png'
+          });
+        };
+
+        const imgs = await extractQuestionImages(mockTimuWithStar3);
+        assert.equal(imgs.length, 1);
+        assert.ok(imgs[0].startsWith('data:image/png;base64,'));
+      } finally {
+        (globalThis as any).GM_xmlhttpRequest = originalXHR;
+      }
+    });
+
+    it('21.4 isAiRefusalOrApology 覆盖第 46 题实际发生的未提供结构式变体', () => {
+      assert.equal(isAiRefusalOrApology('由于题目未提供结构式，无法确定其名称和分类'), true);
+      assert.equal(isAiRefusalOrApology('由于没有提供结构式，无法确定其名称'), true);
+      assert.equal(isAiRefusalOrApology('未给出结构式，无法回答该问题'), true);
+      assert.equal(isAiRefusalOrApology('未包含图片或结构式，请补充结构式'), true);
+      assert.equal(isAiRefusalOrApology('无法确定答案，请提供题目结构式图片'), true);
+
+      // 正常主观题答案不误杀
+      assert.equal(isAiRefusalOrApology('该化合物为牛磺酸，属于含硫氨基酸衍生物。'), false);
+    });
+
+    it('21.5 cleanRichTextAnswer 剥离生硬冗余的别名括号补丁', () => {
+      const input = '牛磺酸（又称2-氨基乙磺酸）是一种含硫的非蛋白氨基酸（亦称氨基磺酸），在体内具有重要生理功能。';
+      const cleaned = cleanRichTextAnswer(input);
+      assert.ok(!cleaned.includes('（又称2-氨基乙磺酸）'));
+      assert.ok(!cleaned.includes('（亦称氨基磺酸）'));
+      assert.ok(cleaned.includes('牛磺酸是一种含硫的非蛋白氨基酸'));
+    });
+
+    it('21.6 buildAiPrompt 主观题 Prompt 高校优秀考生答题风格与去 AI 味约束', () => {
+      const messages = buildAiPrompt('essay', '简述牛磺酸的生理功能', []);
+      const sys = typeof messages[0].content === 'string' ? messages[0].content : '';
+      const user = typeof messages[1].content === 'string' ? messages[1].content : '';
+
+      assert.ok(sys.includes('高校优秀考生'));
+      assert.ok(sys.includes('杜绝维基百科式报户口'));
+      assert.ok(sys.includes('严禁解释性括号与别名打补丁'));
+      assert.ok(user.includes('高校优秀考生手写答案口吻'));
+      assert.ok(user.includes('聚焦核心采分点'));
     });
   });
 });
