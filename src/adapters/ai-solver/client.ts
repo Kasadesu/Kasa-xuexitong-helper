@@ -206,7 +206,12 @@ export const detectModelReasoningCapability = (
     id.includes('o1-') ||
     id.includes('o3-') ||
     id.includes('o1_') ||
-    id.includes('o3_')
+    id.includes('o3_') ||
+    id.includes('deepseek-flash') ||
+    id.includes('deepseek-v4-flash') ||
+    id.includes('deepseek-v4-pro') ||
+    id.includes('v4-flash') ||
+    id.includes('v4-pro')
   ) {
     return 'supported';
   }
@@ -242,17 +247,43 @@ export const queryAiAnswer = async (
     endpoint += '/chat/completions';
   }
 
-  const targetModel = aiModel.trim() || 'deepseek-chat';
+  const targetModel = aiModel.trim() || 'deepseek-flash';
   const isReasoning =
     (reasoningEffort && reasoningEffort !== 'none') ||
     detectModelReasoningCapability(targetModel) !== 'unsupported';
 
-  const messages = buildAiPrompt(question.type, question.title, question.options, paperContext);
+  const messages = buildAiPrompt(
+    question.type,
+    question.title,
+    question.options,
+    paperContext,
+    question.images,
+    question.subType
+  );
 
-  const buildPayload = (includeReasoningEffort: boolean, fallbackEffort?: string) => {
+  const formatMessages = (forcePlainText: boolean) => {
+    if (!forcePlainText) return messages;
+    return messages.map((m) => {
+      if (typeof m.content === 'string') return m;
+      if (Array.isArray(m.content)) {
+        const textParts = m.content
+          .filter((p: any) => p && p.type === 'text')
+          .map((p: any) => p.text)
+          .join('\n');
+        return { role: m.role, content: textParts };
+      }
+      return m;
+    });
+  };
+
+  const buildPayload = (
+    includeReasoningEffort: boolean,
+    fallbackEffort?: string,
+    forcePlainText = false
+  ) => {
     const p: any = {
       model: targetModel,
-      messages,
+      messages: formatMessages(forcePlainText),
       temperature: isReasoning ? 0.2 : 0.1,
       stream: false
     };
@@ -266,9 +297,9 @@ export const queryAiAnswer = async (
   const extractAnswersFromData = (data: any): string[] => {
     const msg = data?.choices?.[0]?.message;
     const rawContent = msg?.content || '';
-    let answers = parseAiResponse(rawContent);
+    let answers = parseAiResponse(rawContent, question.type);
     if (answers.length === 0 && msg?.reasoning_content) {
-      answers = parseAiResponse(String(msg.reasoning_content));
+      answers = parseAiResponse(String(msg.reasoning_content), question.type);
     }
     return answers;
   };
@@ -384,43 +415,95 @@ export const queryAiAnswer = async (
     });
   };
 
+  const isMultimodalError = (status: number, errText: string): boolean => {
+    if (status === 413) return true;
+    const lower = (errText || '').toLowerCase();
+    if (
+      lower.includes('payload too large') ||
+      lower.includes('entity too large') ||
+      lower.includes('request too large')
+    ) {
+      return true;
+    }
+    if (status === 400 || status === 422) {
+      return (
+        lower.includes('image') ||
+        lower.includes('vision') ||
+        lower.includes('multimodal') ||
+        lower.includes('content')
+      );
+    }
+    return false;
+  };
+
+  const hasImages = Boolean(question.images && question.images.length > 0);
+  let forcePlainText = false;
+
   // Attempt 1: Full configured request
-  const firstRes = await sendSingleRequest(buildPayload(true));
+  let firstRes = await sendSingleRequest(buildPayload(true, undefined, forcePlainText));
   if (signal?.aborted) return [];
   if (firstRes.ok && firstRes.answers.length > 0) {
     return firstRes.answers;
   }
 
+  // Vision fallback: if model doesn't support images or payload too large
+  // (HTTP 413, or HTTP 400/422 with multimodal/image/content error, or 'too large' text)
+  if (
+    hasImages &&
+    !forcePlainText &&
+    (firstRes.status === 413 ||
+      isMultimodalError(firstRes.status, firstRes.errText) ||
+      firstRes.status === 400 ||
+      firstRes.status === 422)
+  ) {
+    store.addLog('检测到图片过大或当前模型不支持多模态识图，自动降级为纯文本重试', 'warning');
+    forcePlainText = true;
+    firstRes = await sendSingleRequest(buildPayload(true, undefined, forcePlainText));
+    if (signal?.aborted) return [];
+    if (firstRes.ok && firstRes.answers.length > 0) {
+      return firstRes.answers;
+    }
+  }
+
   // Attempt 2: Automatic fallback retry if Attempt 1 failed or returned empty
-  // If HTTP 400/422 occurred with reasoning_effort, downgrade 'max' -> 'high' or strip reasoning_effort
-  const isParamError = firstRes.status === 400 || firstRes.status === 422;
+  // 若包含图片且仍遭遇 413 或 400/422，立即强制纯文本
+  if (
+    hasImages &&
+    (firstRes.status === 413 ||
+      firstRes.status === 400 ||
+      firstRes.status === 422 ||
+      isMultimodalError(firstRes.status, firstRes.errText))
+  ) {
+    forcePlainText = true;
+  }
+
+  const isParamError = firstRes.status === 400 || firstRes.status === 422 || firstRes.status === 413;
   const hasEffort = Boolean(reasoningEffort && reasoningEffort !== 'none');
   const retryBody =
     isParamError && hasEffort
       ? reasoningEffort === 'max'
-        ? buildPayload(true, 'high')
-        : buildPayload(false)
-      : buildPayload(!isParamError);
+        ? buildPayload(true, 'high', forcePlainText)
+        : buildPayload(false, undefined, forcePlainText)
+      : buildPayload(!isParamError, undefined, forcePlainText);
 
-  const secondRes = await sendSingleRequest(retryBody);
+  let secondRes = await sendSingleRequest(retryBody);
   if (signal?.aborted) return [];
   if (secondRes.ok && secondRes.answers.length > 0) {
     return secondRes.answers;
   }
 
-  // If second attempt still failed with HTTP 400 when downgrading 'max' -> 'high', try once more without reasoning_effort
-  if ((secondRes.status === 400 || secondRes.status === 422) && hasEffort && reasoningEffort === 'max') {
-    const thirdRes = await sendSingleRequest(buildPayload(false));
-    if (signal?.aborted) return [];
-    if (thirdRes.ok && thirdRes.answers.length > 0) {
-      return thirdRes.answers;
-    }
+  // Attempt 3: 终极保底重试（无论 Attempt 2 还是 Attempt 1，若带图或参数冲突失败，彻底强制纯文本 + 零 reasoning_effort）
+  const ultimateForcePlain = hasImages ? true : forcePlainText;
+  const thirdRes = await sendSingleRequest(buildPayload(false, undefined, ultimateForcePlain));
+  if (signal?.aborted) return [];
+  if (thirdRes.ok && thirdRes.answers.length > 0) {
+    return thirdRes.answers;
   }
 
   if (signal?.aborted) return [];
 
-  const finalErr = secondRes.errText || firstRes.errText;
-  const finalStatus = secondRes.status || firstRes.status;
+  const finalErr = thirdRes.errText || secondRes.errText || firstRes.errText;
+  const finalStatus = thirdRes.status || secondRes.status || firstRes.status;
   if (finalStatus > 0) {
     store.addLog(`AI 接口返回错误 HTTP ${finalStatus}: ${finalErr.slice(0, 100)}`, 'error');
   } else if (finalErr) {

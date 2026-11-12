@@ -34,12 +34,20 @@ import {
   normalizeText,
   matchFallbackAnswer,
   detectQuestionType,
+  detectQuestionSubType,
   matchOptionToAnswer,
   selectBestOptions,
-  isQuestionAnswered
+  isQuestionAnswered,
+  extractQuestionImages
 } from '../src/adapters/quiz';
 import { parseAiResponse } from '../src/adapters/ai-solver/parser';
 import { buildAiPrompt } from '../src/adapters/ai-solver/prompt';
+import {
+  escapeHtml,
+  cleanRichTextAnswer,
+  formatToUEditorParagraphs,
+  isAiRefusalOrApology
+} from '../src/utils/text-sanitizer';
 import {
   fetchRemoteModels,
   detectModelReasoningCapability,
@@ -1107,6 +1115,306 @@ C 是温迪（风神巴巴托斯）
         }
       };
       assert.equal(isQuestionAnswered(mockTimuWithFilledUEditor), true);
+    });
+  });
+
+  describe('【第 17 关】富文本净化与 HTML 转义验收测试 (text-sanitizer)', () => {
+    it('17.1 escapeHtml 能够转义常见 HTML 特殊字符', () => {
+      assert.equal(escapeHtml('<script>alert("xss")&\'test\'</script>'), '&lt;script&gt;alert(&quot;xss&quot;)&amp;&#39;test&#39;&lt;/script&gt;');
+      assert.equal(escapeHtml(''), '');
+    });
+
+    it('17.2 cleanRichTextAnswer 能够剥离 LaTeX 定界符、还原希腊字母与数学符号', () => {
+      const input = '\\(\\alpha + \\beta = \\gamma\\), \\Delta T = 5^\\circ, \\lambda = 600';
+      const cleaned = cleanRichTextAnswer(input);
+      assert.equal(cleaned, 'α + β = γ, Δ T = 5°, λ = 600');
+    });
+
+    it('17.3 cleanRichTextAnswer 能够解包 LaTeX 宏与简化上下标花括号', () => {
+      const input = '\\(^{13}\\mathrm{C}\\)-NMR 和 \\mathbf{DNA} 结构与 H_{2}O';
+      const cleaned = cleanRichTextAnswer(input);
+      assert.equal(cleaned, '13C-NMR 和 DNA 结构与 H2O');
+    });
+
+    it('17.4 cleanRichTextAnswer 能够消除 Markdown 格式符与标题', () => {
+      const input = '### 核心定义\n**市场细分**是指企业根据*消费者需求*的差异性。\n> 依据马工程教材';
+      const cleaned = cleanRichTextAnswer(input);
+      assert.equal(cleaned, '核心定义\n市场细分是指企业根据消费者需求的差异性。\n依据马工程教材');
+    });
+
+    it('17.5 formatToUEditorParagraphs 能够将数组或换行文本转换为合规的 <p> HTML 标签', () => {
+      const input = ['第一自然段：核心概念。', '第二自然段：特征与机理。'];
+      const html = formatToUEditorParagraphs(input);
+      assert.equal(html, '<p>第一自然段：核心概念。</p><p>第二自然段：特征与机理。</p>');
+
+      const singleInput = '第一行\n\n第二行';
+      const htmlSingle = formatToUEditorParagraphs(singleInput);
+      assert.equal(htmlSingle, '<p>第一行</p><p>第二行</p>');
+
+      assert.equal(formatToUEditorParagraphs(''), '<p></p>');
+    });
+  });
+
+  describe('【第 18 关】细分子题型识别与主观题解析增强测试', () => {
+    it('18.1 detectQuestionSubType 正确识别名词解释、简答题与论述题', () => {
+      assert.equal(detectQuestionSubType('1. (名词解释) (5分) 机会成本'), 'definition');
+      assert.equal(detectQuestionSubType('【名词解释】 边际效用'), 'definition');
+      assert.equal(detectQuestionSubType('2. （简答题） 简述货币乘数的计算公式'), 'short_answer');
+      assert.equal(detectQuestionSubType('【简答】 简述市场营销导向的历史演化'), 'short_answer');
+      assert.equal(detectQuestionSubType('3. (论述题) 试论述宏观经济政策的目标协调'), 'discussion');
+      assert.equal(detectQuestionSubType('【论述】 试述全球化对发展中国家的影响'), 'discussion');
+      assert.equal(detectQuestionSubType('4. (单选题) 以下说法正确的是'), undefined);
+    });
+
+    it('18.2 parseAiResponse 针对主观 essay 题型保留完整段落，绝不强行截断为单字母', () => {
+      const essayOutput = `机会成本（Opportunity Cost）是指在面临多方案择一决策时，被舍弃的选项中的最高价值。
+它是经济学中权衡资源稀缺性与配置效率的核心概念。`;
+      const result = parseAiResponse(essayOutput, 'essay');
+      assert.equal(result.length, 1);
+      assert.ok(result[0].includes('机会成本'));
+      assert.ok(result[0].includes('最高价值'));
+    });
+
+    it('18.3 parseAiResponse 支持包裹符如 **D**、**A. 氯仿** 与 **A**、**C**', () => {
+      assert.deepEqual(parseAiResponse('[答案: **D**, 解析: 此化合物为手性分子]'), ['D']);
+      assert.deepEqual(parseAiResponse('经过判断，答案: **A. 氯仿**'), ['A']);
+      assert.deepEqual(parseAiResponse('本题正确结论，答案：**A**、**C**'), ['A', 'C']);
+      assert.deepEqual(parseAiResponse('根据综合分析，故选 **B**'), ['B']);
+    });
+  });
+
+  describe('【第 19 关】高校真实考题样本与六大缺陷专项独立回归测试', () => {
+    it('19.1 Q23 / Q22 / Q20 真实模型输出样本解析测试', () => {
+      // Q23 真实样本解析（中括号+加粗字母+长解析）
+      const q23Sample = '[答案: **D**, 解析: 大孔树脂的吸附性主要与范德华力、氢键有关，与分子的极性和氢键结合能力密切相关。由于大孔树脂吸附多属于物理吸附，当洗脱液的洗脱能力大于吸附力时，被吸附物即可被洗脱下来。]';
+      assert.deepEqual(parseAiResponse(q23Sample), ['D']);
+
+      // Q22 真实样本解析（加粗字母+选项文本）
+      const q22Sample = '[答案: **A. 氯仿**, 氯仿适合提取亲脂性有机酸，极性较小，不易与亲脂性弱酸形成竞争。]';
+      assert.deepEqual(parseAiResponse(q22Sample), ['A']);
+
+      // Q20 真实样本解析（含多行与嵌套加粗解析）
+      const q20Sample = '[答案: **D**, 解析: 聚酰胺色谱的吸附以**氢键吸附**为主，通常：\n- 形成氢键的数目越多，吸附力越强；\n- 酚羟基处于对位易形成分子间氢键，吸附力强于邻位；\n- 芳香核与共轭双键增多，吸附力相应增强。]';
+      assert.deepEqual(parseAiResponse(q20Sample), ['D']);
+
+      // 多选题加粗格式：中括号顿号分隔与无括号逗号分隔
+      assert.deepEqual(parseAiResponse('[答案: **A**、**C**]'), ['A', 'C']);
+      assert.deepEqual(parseAiResponse('答案: **A**, **C**'), ['A', 'C']);
+
+      // 否定语境干扰测试（排除项不应被误判，精准抓取最终答案）
+      const negativeContextSample = '经过分析，本题不选 A，也不选 B，最终答案：**C**';
+      assert.deepEqual(parseAiResponse(negativeContextSample), ['C']);
+    });
+
+    it('19.2 Q41 LaTeX 与 Markdown 纯文本清洗测试 (text-sanitizer)', () => {
+      // 19.2.1 cleanRichTextAnswer 剥离 LaTeX/Markdown 并保留希腊字母、同位素与普通文本
+      const q41Sample = 'γ-效应（1,3-效应）：在 \\(^{13}\\mathrm{C}\\)-NMR 中，**化学位移** $\\delta$ 减小。';
+      const cleaned = cleanRichTextAnswer(q41Sample);
+      assert.equal(cleaned, 'γ-效应（1,3-效应）：在 13C-NMR 中，化学位移 δ 减小。');
+      assert.ok(!cleaned.includes('\\('));
+      assert.ok(!cleaned.includes('\\mathrm'));
+      assert.ok(!cleaned.includes('$'));
+      assert.ok(!cleaned.includes('**'));
+      assert.ok(cleaned.includes('γ'));
+      assert.ok(cleaned.includes('13C-NMR'));
+      assert.ok(cleaned.includes('δ'));
+
+      // 19.2.2 formatToUEditorParagraphs XSS 特殊字符转义与多段落封装
+      const xssSample = '<script>alert(1)</script>\n第一点：A > B & C';
+      const formattedHtml = formatToUEditorParagraphs(xssSample);
+      assert.equal(
+        formattedHtml,
+        '<p>&lt;script&gt;alert(1)&lt;/script&gt;</p><p>第一点：A &gt; B &amp; C</p>'
+      );
+    });
+
+    it('19.3 Q48 主观简答题多行完整保留与 UEditor 段落转换测试', () => {
+      const q48Sample = 'DHA 与 EPA 都属于 ω-3 多不饱和脂肪酸，生理活性侧重不同：\n1. DHA：促进大脑神经发育与视网膜光敏色素形成，改善记忆。\n2. EPA：具有显著降低血清三酰甘油、抗血小板聚集与抗炎作用。';
+      
+      // parseAiResponse 主观题不截断多行，保留完整文本
+      const parsed = parseAiResponse(q48Sample, 'essay');
+      assert.equal(parsed.length, 1);
+      assert.ok(parsed[0].includes('DHA 与 EPA 都属于 ω-3 多不饱和脂肪酸'));
+      assert.ok(parsed[0].includes('1. DHA：'));
+      assert.ok(parsed[0].includes('2. EPA：'));
+
+      // formatToUEditorParagraphs 确保完整转换为 3 个段落，绝不截断丢弃后续行
+      const html = formatToUEditorParagraphs(parsed);
+      const matchP = html.match(/<p>[\s\S]*?<\/p>/g);
+      assert.ok(matchP !== null);
+      assert.equal(matchP.length, 3);
+      assert.ok(html.includes('&omega;-3') || html.includes('ω-3'));
+      assert.ok(html.includes('促进大脑神经发育'));
+      assert.ok(html.includes('抗血小板聚集'));
+    });
+
+    it('19.4 名词解释子题型识别与 Prompt 规范测试', () => {
+      // 子题型精准识别
+      const subType = detectQuestionSubType('41. (名词解释) γ-效应(1,3-效应)');
+      assert.equal(subType, 'definition');
+
+      // Prompt 构造无历史硬编码干扰、无选择题格式
+      const messages = buildAiPrompt(
+        'essay',
+        'γ-效应(1,3-效应)',
+        [],
+        '天然药物化学',
+        undefined,
+        subType
+      );
+      assert.equal(messages.length, 2);
+
+      const sysText = typeof messages[0].content === 'string' ? messages[0].content : '';
+      const userText = typeof messages[1].content === 'string' ? messages[1].content : '';
+
+      // 绝不包含市场营销硬编码
+      assert.ok(!sysText.includes('分销渠道'));
+      assert.ok(!sysText.includes('愿望竞争者'));
+      assert.ok(!userText.includes('分销渠道'));
+      assert.ok(!userText.includes('愿望竞争者'));
+
+      // 绝不要求选择题 JSON 格式
+      assert.ok(!sysText.includes('["B"]'));
+      assert.ok(!userText.includes('["B"]'));
+
+      // 明确包含教材名词解释定义规范与纯文本禁用 Markdown/LaTeX 指导
+      assert.ok(sysText.includes('名词解释'));
+      assert.ok(sysText.includes('教材'));
+      assert.ok(sysText.includes('严禁使用 Markdown'));
+      assert.ok(sysText.includes('LaTeX'));
+      assert.ok(userText.includes('纯文本标准答案正文'));
+    });
+
+    it('19.5 Q50 多模态图片 Prompt 构造与思考模型能力适配测试', () => {
+      // 多模态图片 Prompt 结构验证
+      const imagePayload = ['data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=='];
+      const messages = buildAiPrompt('essay', '请根据图示写出该化合物的化学名称及所属结构类型', [], undefined, imagePayload);
+
+      assert.equal(messages.length, 2);
+      const userContent = messages[1].content;
+      assert.ok(Array.isArray(userContent));
+      assert.equal(userContent.length, 2);
+      assert.equal(userContent[0].type, 'text');
+      assert.ok(userContent[0].text.includes('请根据图示写出该化合物的化学名称'));
+      assert.equal(userContent[1].type, 'image_url');
+      assert.equal(userContent[1].image_url?.url, imagePayload[0]);
+
+      // 推理能力探测验证
+      assert.equal(detectModelReasoningCapability('deepseek-flash'), 'supported');
+      assert.equal(detectModelReasoningCapability('deepseek-v4-pro'), 'supported');
+      assert.equal(detectModelReasoningCapability('deepseek-chat'), 'unsupported');
+      assert.equal(detectModelReasoningCapability('deepseek-reasoner'), 'built_in');
+    });
+  });
+
+  describe('【第 20 关】风控审计致命缺陷与中度缺陷专项回归测试', () => {
+    it('20.1 isAiRefusalOrApology 免责与无解文本高精度拦截测试', () => {
+      // 各种免责/抱歉/缺少关键图片或结构式的模型输出必须被精准识别
+      assert.equal(isAiRefusalOrApology('抱歉，本题缺少关键化学反应式图片，无法做出解答'), true);
+      assert.equal(isAiRefusalOrApology('题目中没有给出图谱和结构式，无法唯一确定答案'), true);
+      assert.equal(isAiRefusalOrApology('缺少选项对应图片，请提供选项图片以供分析'), true);
+      assert.equal(isAiRefusalOrApology('由于没有提供结构式，无法回答该问题'), true);
+      assert.equal(isAiRefusalOrApology('没有给出选项数据，无法解答'), true);
+
+      // 正常主观题答案绝不应被误判为拒答
+      assert.equal(isAiRefusalOrApology('本化合物结构式为 C6H12O6，属于单糖，具有较强还原性。'), false);
+      assert.equal(isAiRefusalOrApology('市场细分是指企业根据消费者需求的差异性将市场进行细分。'), false);
+      assert.equal(isAiRefusalOrApology('A. 氯仿提取亲脂性有机酸，极性较低。'), false);
+      assert.equal(isAiRefusalOrApology(''), false);
+      // @ts-ignore
+      assert.equal(isAiRefusalOrApology(null), false);
+    });
+
+    it('20.2 parseAiResponse 汉字单词边界与科学术语单选/多选防御测试', () => {
+      // 场景 1：含有科学术语后缀（B族维生素、A型肉毒毒素、D-构型、C环）绝不能被误判为多选项
+      assert.deepEqual(parseAiResponse('答案: **A. 含有 B 族维生素**', 'single'), ['A']);
+      assert.deepEqual(parseAiResponse('答案: A. 含有 B 族维生素'), ['A']);
+      assert.deepEqual(parseAiResponse('经过分析，答案是: A. 本品含有A型肉毒毒素'), ['A']);
+      assert.deepEqual(parseAiResponse('最终结论: D. 属于D-构型分子'), ['D']);
+      assert.deepEqual(parseAiResponse('本题选择 A. 肽链与C环结构'), ['A']);
+
+      // 场景 2：单选题传入时，即使 AI 给出多选混淆，也保底提取唯一首项
+      assert.deepEqual(parseAiResponse('答案是 A、B', 'single'), ['A']);
+      assert.deepEqual(parseAiResponse('["A", "B"]', 'single'), ['A']);
+
+      // 场景 3：真实多选题格式正常提取
+      assert.deepEqual(parseAiResponse('答案: **A**、**C**', 'multiple'), ['A', 'C']);
+      assert.deepEqual(parseAiResponse('答案: A, C', 'multiple'), ['A', 'C']);
+    });
+
+    it('20.3 cleanRichTextAnswer 嵌套花括号解包、金融美元符号与算术乘号保护测试', () => {
+      // 1. 嵌套花括号多轮安全解包：\mathrm{H_{2}O} -> H2O
+      assert.equal(cleanRichTextAnswer('\\mathrm{H_{2}O}'), 'H2O');
+      assert.equal(cleanRichTextAnswer('\\mathrm{Fe_{2}O_{3}} 沉淀'), 'Fe2O3 沉淀');
+
+      // 2. 金融题中的单 $ 必须完整保留，不得无差别删除
+      const financeText = '商品单价为 $100 每件，预计亏损 $50';
+      assert.equal(cleanRichTextAnswer(financeText), '商品单价为 $100 每件，预计亏损 $50');
+
+      // 3. 成对公式定界符仍能正常解包
+      const formulaText = '在化学位移 $\\delta$ 处存在特征峰';
+      assert.equal(cleanRichTextAnswer(formulaText), '在化学位移 δ 处存在特征峰');
+
+      // 4. 算术乘号 2 * 3 = 6 绝不被误判为 Markdown 斜体
+      const mathText = '计算过程：2 * 3 = 6 且 4 * 5 = 20';
+      assert.equal(cleanRichTextAnswer(mathText), '计算过程：2 * 3 = 6 且 4 * 5 = 20');
+    });
+
+    it('20.4 extractQuestionImages 小图标与透明占位符过滤穿透防御', async () => {
+      // 模拟 DOM 题目容器
+      const fakeTimu = {
+        querySelectorAll: (selector: string) => {
+          if (selector === 'img') {
+            return [
+              // 1x1 透明 gif 占位符（应该被过滤）
+              {
+                src: 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7',
+                className: '',
+                getAttribute: () => null,
+                style: {},
+                complete: true,
+                naturalWidth: 1,
+                naturalHeight: 1
+              },
+              // 导航图标或按钮图标（应该被过滤）
+              {
+                src: 'https://example.com/assets/icon_arrow.png',
+                className: 'arrow-icon btn-icon',
+                getAttribute: () => null,
+                style: {},
+                complete: true,
+                naturalWidth: 16,
+                naturalHeight: 16
+              },
+              // width=16 的小图标（应该被过滤）
+              {
+                src: 'https://example.com/assets/badge.png',
+                className: 'badge',
+                getAttribute: (k: string) => (k === 'width' ? '16' : k === 'height' ? '16' : null),
+                style: {},
+                complete: false,
+                naturalWidth: 0,
+                naturalHeight: 0
+              },
+              // 真实题干图片（合规图片，长度超过 200 的合规 data URL）
+              {
+                src: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==valid-long-image-data-string-with-extra-padding-to-exceed-two-hundred-characters-threshold-for-defense-testing',
+                className: 'formula-img',
+                getAttribute: () => null,
+                style: { width: '300px', height: '200px' },
+                complete: true,
+                naturalWidth: 300,
+                naturalHeight: 200
+              }
+            ];
+          }
+          return [];
+        }
+      } as any;
+
+      const imgs = await extractQuestionImages(fakeTimu);
+      assert.equal(imgs.length, 1);
+      assert.ok(imgs[0].includes('valid-long-image-data-string'));
     });
   });
 });

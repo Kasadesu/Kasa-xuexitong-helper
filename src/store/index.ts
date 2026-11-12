@@ -10,7 +10,7 @@ const LEGACY_STORAGE_KEYS = [
 export const AI_PROVIDER_PRESETS: Record<AppConfig['aiProvider'], { baseUrl: string; model: string }> = {
   deepseek: {
     baseUrl: 'https://api.deepseek.com/v1',
-    model: 'deepseek-chat'
+    model: 'deepseek-flash'
   },
   custom: {
     baseUrl: 'https://api.openai.com/v1',

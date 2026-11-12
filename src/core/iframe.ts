@@ -1,5 +1,3 @@
-import { sleep } from './lifecycle';
-
 /**
  * Checks if a given DOM element or any of its ancestors (including across iframe boundaries) has the official completed class
  */
@@ -75,8 +73,8 @@ export const isInternalChildOfTask = (iframe: HTMLIFrameElement): boolean => {
         if (host.parentElement) {
           host = host.parentElement;
         } else {
-          const outerDoc = host.ownerDocument;
-          const outerWin = outerDoc?.defaultView;
+          const outerDoc: Document | null = host.ownerDocument;
+          const outerWin: (Window & typeof globalThis) | null = (outerDoc?.defaultView as any) ?? null;
           if (outerWin && outerWin.frameElement && outerWin.frameElement !== host) {
             host = outerWin.frameElement;
             depth++;

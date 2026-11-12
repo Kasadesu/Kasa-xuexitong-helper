@@ -45,12 +45,20 @@ export interface LogItem {
 
 export type QuestionType = 'single' | 'multiple' | 'judge' | 'fill' | 'essay' | 'unknown';
 
+export type QuestionSubType = 'definition' | 'short_answer' | 'discussion';
+
+export type ContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string } };
+
 export interface Question {
   id: string;
   index: number;
   type: QuestionType;
+  subType?: QuestionSubType;
   title: string;
   options: string[];
+  images?: string[];
   answer?: string[];
   status: 'pending' | 'searching' | 'success' | 'failed';
 }

@@ -1,8 +1,9 @@
 import { store } from '../store';
-import { IframeContext, Question, QuestionType } from '../types';
+import { IframeContext, Question, QuestionType, QuestionSubType } from '../types';
 import { waitIframeLoaded, isFinishedTask } from '../core/iframe';
 import { sleep } from '../core/lifecycle';
 import { queryAiAnswer } from './ai-solver/client';
+import { cleanRichTextAnswer, formatToUEditorParagraphs, isAiRefusalOrApology } from '../utils/text-sanitizer';
 import {
   decodeChaoxingFont,
   decryptString,
@@ -18,6 +19,229 @@ export interface ParsedOptionItem {
   letter: string;
   dataValue?: string;
 }
+
+/**
+ * 识别高校主观题细分子题型 (名词解释 / 简答题 / 论述题)
+ */
+export const detectQuestionSubType = (rawTitleText: string): QuestionSubType | undefined => {
+  if (!rawTitleText || typeof rawTitleText !== 'string') return undefined;
+  const decrypted = decryptString(rawTitleText);
+  if (decrypted.includes('名词解释')) {
+    return 'definition';
+  }
+  if (
+    decrypted.includes('简答题') ||
+    decrypted.includes('【简答】') ||
+    decrypted.includes('(简答)') ||
+    decrypted.includes('（简答）')
+  ) {
+    return 'short_answer';
+  }
+  if (
+    decrypted.includes('论述题') ||
+    decrypted.includes('【论述】') ||
+    decrypted.includes('(论述)') ||
+    decrypted.includes('（论述）')
+  ) {
+    return 'discussion';
+  }
+  return undefined;
+};
+
+/**
+ * 将 Blob 转为 Base64 data URL
+ */
+const blobToDataUrl = (blob: any): Promise<string> => {
+  return new Promise((resolve, reject) => {
+    if (typeof FileReader !== 'undefined') {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        if (typeof reader.result === 'string') {
+          resolve(reader.result);
+        } else {
+          reject(new Error('转换图片 Base64 失败'));
+        }
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    } else {
+      resolve('');
+    }
+  });
+};
+
+/**
+ * 提取题干和选项内的图片并转换为 Base64
+ */
+export const extractQuestionImages = async (
+  timuEl: HTMLElement,
+  signal?: AbortSignal
+): Promise<string[]> => {
+  if (!timuEl || typeof timuEl.querySelectorAll !== 'function') return [];
+
+  const imgElements = Array.from(timuEl.querySelectorAll<HTMLImageElement>('img'));
+  const candidateUrls: string[] = [];
+  const seenUrls = new Set<string>();
+
+  for (const img of imgElements) {
+    if (signal?.aborted) break;
+    const src = (img.currentSrc || img.src || img.getAttribute('src') || '').trim();
+    if (!src || src.startsWith('javascript:')) continue;
+
+    // 过滤已知小图标、emoji、头像、导航及交互按钮
+    const lowerSrc = src.toLowerCase();
+    const className = (img.className || '').toLowerCase();
+    if (
+      lowerSrc.includes('icon') ||
+      lowerSrc.includes('emoji') ||
+      lowerSrc.includes('loading') ||
+      lowerSrc.includes('avatar') ||
+      lowerSrc.includes('arrow') ||
+      lowerSrc.includes('btn') ||
+      lowerSrc.includes('star') ||
+      className.includes('icon') ||
+      className.includes('emoji') ||
+      className.includes('loading') ||
+      className.includes('avatar') ||
+      className.includes('arrow') ||
+      className.includes('btn') ||
+      className.includes('star')
+    ) {
+      continue;
+    }
+
+    // 过滤 1x1 透明占位符或微型 svg / gif（若包含 data:image/svg+xml 或 data:image/gif 且长度 < 200 直接跳过）
+    if (
+      (lowerSrc.includes('data:image/svg+xml') || lowerSrc.includes('data:image/gif')) &&
+      lowerSrc.length < 200
+    ) {
+      continue;
+    }
+
+    // 尺寸过滤穿透防御：优先检查 width/height 属性与样式
+    const attrWidth = parseInt(img.getAttribute('width') || img.style.width || String(img.width || 0), 10);
+    const attrHeight = parseInt(img.getAttribute('height') || img.style.height || String(img.height || 0), 10);
+    if ((attrWidth > 0 && attrWidth <= 20) || (attrHeight > 0 && attrHeight <= 20)) {
+      continue;
+    }
+
+    // 尺寸过滤：若已加载且 naturalWidth/naturalHeight <= 20 判定为图标跳过
+    if (img.complete && img.naturalWidth > 0 && img.naturalHeight > 0) {
+      if (img.naturalWidth <= 20 && img.naturalHeight <= 20) {
+        continue;
+      }
+    }
+
+    if (!seenUrls.has(src)) {
+      seenUrls.add(src);
+      candidateUrls.push(src);
+      if (candidateUrls.length >= 3) break; // 单题最多收集 3 张候选图片
+    }
+  }
+
+  if (candidateUrls.length === 0) return [];
+
+  const base64Images: string[] = [];
+  // @ts-ignore
+  const xhr = typeof GM_xmlhttpRequest !== 'undefined' ? GM_xmlhttpRequest : null;
+
+  for (const url of candidateUrls) {
+    if (signal?.aborted) break;
+
+    // 如果本身已经是合规的 data:image/ 且非微型占位直接复用
+    if (url.startsWith('data:image/')) {
+      if (url.length > 200) {
+        base64Images.push(url);
+        if (base64Images.length >= 3) break;
+      }
+      continue;
+    }
+
+    try {
+      if (xhr) {
+        const base64 = await new Promise<string | null>((resolve) => {
+          let req: any = null;
+          const onAbort = () => {
+            try {
+              if (req && typeof req.abort === 'function') req.abort();
+            } catch {}
+            resolve(null);
+          };
+          signal?.addEventListener('abort', onAbort, { once: true });
+
+          req = xhr({
+            url,
+            method: 'GET',
+            responseType: 'blob',
+            timeout: 5000,
+            onload: async (res: any) => {
+              signal?.removeEventListener('abort', onAbort);
+              if (res.status >= 200 && res.status < 300 && res.response) {
+                const blob = res.response;
+                // 单图 Blob 体积限制：若 blob.size > 2MB，跳过避免 Base64 膨胀打爆网关
+                if (blob && typeof blob.size === 'number' && blob.size > 2 * 1024 * 1024) {
+                  resolve(null);
+                  return;
+                }
+                try {
+                  const b64 = await blobToDataUrl(blob);
+                  resolve(b64);
+                } catch {
+                  resolve(null);
+                }
+              } else {
+                resolve(null);
+              }
+            },
+            onerror: () => {
+              signal?.removeEventListener('abort', onAbort);
+              resolve(null);
+            },
+            ontimeout: () => {
+              signal?.removeEventListener('abort', onAbort);
+              resolve(null);
+            }
+          });
+        });
+        if (base64) {
+          base64Images.push(base64);
+          if (base64Images.length >= 3) break;
+        }
+      } else if (typeof window !== 'undefined' && typeof window.fetch === 'function') {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 5000);
+        const onAbort = () => controller.abort();
+        signal?.addEventListener('abort', onAbort, { once: true });
+
+        try {
+          const res = await window.fetch(url, { signal: controller.signal });
+          clearTimeout(timer);
+          signal?.removeEventListener('abort', onAbort);
+          if (res.ok) {
+            const blob = await res.blob();
+            // 单图 Blob 体积限制：若 blob.size > 2MB，跳过
+            if (blob && typeof blob.size === 'number' && blob.size > 2 * 1024 * 1024) {
+              // skip
+            } else {
+              const b64 = await blobToDataUrl(blob);
+              if (b64) {
+                base64Images.push(b64);
+                if (base64Images.length >= 3) break;
+              }
+            }
+          }
+        } catch {
+          clearTimeout(timer);
+          signal?.removeEventListener('abort', onAbort);
+        }
+      }
+    } catch {
+      // 降级兜底不抛出
+    }
+  }
+
+  return base64Images;
+};
 
 /**
  * Normalizes question title text for AI queries and fallback matching
@@ -320,7 +544,7 @@ export const selectBestOptions = <T extends { letter: string; cleanText: string;
  * Recursively locates the real quiz document that contains `.TiMu` or `div[data-id]`
  */
 const locateQuizDocument = async (
-  rootIframe: HTMLIFrameElement | null,
+  _rootIframe: HTMLIFrameElement | null,
   rootDoc: Document,
   signal: AbortSignal
 ): Promise<Document | null> => {
@@ -577,6 +801,7 @@ export async function doQuizTask(
     .join(' | ');
 
   const questionList: Question[] = [];
+  let cancelAutoSubmit = false;
 
   // 4. Process and solve each question
   for (let idx = 0; idx < timuNodes.length; idx++) {
@@ -732,18 +957,27 @@ export async function doQuizTask(
       optionsTextList.push(optText);
     }
 
+    const subType = detectQuestionSubType(rawTitleText);
+    const images = await extractQuestionImages(timuEl, signal);
+
     const questionObj: Question = {
       id: timuEl.getAttribute('data-id') || `timu-${idx + 1}`,
       index: idx + 1,
       type: qType,
+      subType,
       title: cleanTitle,
       options: optionsTextList,
+      images,
       status: 'searching'
     };
     questionList.push(questionObj);
     store.setQuestions([...questionList]);
 
-    store.addLog(`第 ${idx + 1}/${timuNodes.length} 题 [${qType}]: "${cleanTitle.slice(0, 24)}..." 正在查询答案`, 'info');
+    const imgTag = images.length > 0 ? `（含 ${images.length} 张图片）` : '';
+    store.addLog(
+      `第 ${idx + 1}/${timuNodes.length} 题 [${qType}]: "${cleanTitle.slice(0, 24)}..." ${imgTag}正在查询答案`,
+      'info'
+    );
 
     // 4. Query AI answer with paper context and abort signal
     let answers = await queryAiAnswer(questionObj, paperContext, signal);
@@ -755,6 +989,18 @@ export async function doQuizTask(
       if (answers.length > 0) {
         store.addLog(`第 ${idx + 1} 题启用保底题库匹配: [${answers.join(', ')}]`, 'success');
       }
+    }
+
+    // 兜底提示：若题目含图片但模型回答明确提示缺少图片或无法识别结构式
+    if (
+      questionObj.images &&
+      questionObj.images.length > 0 &&
+      answers.some((ans) => /无法(?:唯一)?确定答案|没有(?:给出|提供).*?(?:结构式|图片)/.test(ans))
+    ) {
+      store.addLog(
+        `第 ${idx + 1} 题模型提示无法完整识别图片内容，请在交卷前重点人工核对该题！`,
+        'warning'
+      );
     }
 
     questionObj.answer = answers;
@@ -866,56 +1112,112 @@ export async function doQuizTask(
       );
     } else {
       // Fill-in-the-blank or essay question inputs (filtering out hidden/system metadata fields + supporting UEditor)
-      const rawInputs = Array.from(
-        timuEl.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>(
-          'textarea.answerText, textarea, input.answerInput, input.newAnswerInput, input[type="text"]'
-        )
-      );
-      const textInputs = rawInputs.filter((input) => {
-        if ((input as HTMLInputElement).type === 'hidden') return false;
-        const meta = `${input.name || ''} ${input.id || ''} ${input.className || ''}`.toLowerCase();
-        if (meta.includes('type') || meta.includes('score')) return false;
-        return true;
-      });
-      const ueditorFrames = Array.from(
-        timuEl.querySelectorAll<HTMLIFrameElement>('iframe[id^="ueditor_"], .edui-editor-iframeholder iframe')
-      );
-      const quizWin = quizDoc.defaultView as any;
+      const hasRefusal = answers.some((ans) => isAiRefusalOrApology(ans));
+      if (hasRefusal) {
+        questionObj.status = 'failed';
+        store.setQuestions([...questionList]);
+        store.addLog(
+          `第 ${idx + 1} 题 AI 反映缺少关键图片或数据，已放弃自动填入并保留空白，请人工核对！`,
+          'warning'
+        );
+        if (store.config.autoSubmitWork) {
+          cancelAutoSubmit = true;
+          store.addLog(
+            `检测到第 ${idx + 1} 题未成功获得有效作答，为防学业事故，已自动取消自动提交，请人工复核后手动提交！`,
+            'warning'
+          );
+        }
+      } else {
+        const rawInputs = Array.from(
+          timuEl.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>(
+            'textarea.answerText, textarea, input.answerInput, input.newAnswerInput, input[type="text"]'
+          )
+        );
+        const textInputs = rawInputs.filter((input) => {
+          if ((input as HTMLInputElement).type === 'hidden') return false;
+          const meta = `${input.name || ''} ${input.id || ''} ${input.className || ''}`.toLowerCase();
+          if (meta.includes('type') || meta.includes('score')) return false;
+          return true;
+        });
+        const ueditorFrames = Array.from(
+          timuEl.querySelectorAll<HTMLIFrameElement>('iframe[id^="ueditor_"], .edui-editor-iframeholder iframe')
+        );
+        const quizWin = quizDoc.defaultView as any;
 
-      if ((textInputs.length > 0 || ueditorFrames.length > 0) && answers.length > 0) {
-        const slotCount = Math.max(textInputs.length, ueditorFrames.length);
-        for (let i = 0; i < slotCount; i++) {
-          const val = answers[i] || answers[0] || '';
-          const inputEl = textInputs[i];
-          if (inputEl) {
-            inputEl.value = val;
-            inputEl.dispatchEvent(new Event('input', { bubbles: true }));
-            inputEl.dispatchEvent(new Event('change', { bubbles: true }));
-            inputEl.dispatchEvent(new Event('blur', { bubbles: true }));
-            const editorId = inputEl.id || inputEl.name;
-            if (editorId && typeof quizWin?.UE?.getEditor === 'function') {
+        if ((textInputs.length > 0 || ueditorFrames.length > 0) && answers.length > 0) {
+          const slotCount = Math.max(textInputs.length, ueditorFrames.length);
+          if (slotCount === 1) {
+            // 主观简答 / 单空：合并全部段落并净化，生成标准 UEditor 段落
+            const cleanFullText = answers.map((a) => cleanRichTextAnswer(a)).filter(Boolean).join('\n');
+            const paragraphsHtml = formatToUEditorParagraphs(answers);
+
+            const inputEl = textInputs[0];
+            if (inputEl) {
+              inputEl.value = cleanFullText;
+              inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+              inputEl.dispatchEvent(new Event('change', { bubbles: true }));
+              inputEl.dispatchEvent(new Event('blur', { bubbles: true }));
+              const editorId = inputEl.id || inputEl.name;
+              if (editorId && typeof quizWin?.UE?.getEditor === 'function') {
+                try {
+                  const ueInstance = quizWin.UE.getEditor(editorId);
+                  if (ueInstance && typeof ueInstance.setContent === 'function') {
+                    ueInstance.setContent(paragraphsHtml);
+                  }
+                } catch {}
+              }
+            }
+            const uFrame = ueditorFrames[0];
+            if (uFrame) {
               try {
-                const ueInstance = quizWin.UE.getEditor(editorId);
-                if (ueInstance && typeof ueInstance.setContent === 'function') {
-                  ueInstance.setContent(`<p>${val}</p>`);
+                const uDoc = uFrame.contentDocument;
+                if (uDoc?.body) {
+                  uDoc.body.innerHTML = paragraphsHtml;
+                  uDoc.body.dispatchEvent(new Event('input', { bubbles: true }));
+                  uDoc.body.dispatchEvent(new Event('keyup', { bubbles: true }));
+                  uDoc.body.dispatchEvent(new Event('blur', { bubbles: true }));
                 }
               } catch {}
             }
-          }
-          const uFrame = ueditorFrames[i];
-          if (uFrame) {
-            try {
-              const uDoc = uFrame.contentDocument;
-              if (uDoc?.body) {
-                uDoc.body.innerHTML = `<p>${val}</p>`;
-                uDoc.body.dispatchEvent(new Event('input', { bubbles: true }));
-                uDoc.body.dispatchEvent(new Event('keyup', { bubbles: true }));
-                uDoc.body.dispatchEvent(new Event('blur', { bubbles: true }));
+          } else {
+            // 多空填空题：按槽位分配清洗后的文本
+            for (let i = 0; i < slotCount; i++) {
+              const rawVal = answers[i] ?? answers[0] ?? '';
+              const cleanVal = cleanRichTextAnswer(rawVal);
+              const paragraphHtml = formatToUEditorParagraphs(cleanVal);
+
+              const inputEl = textInputs[i];
+              if (inputEl) {
+                inputEl.value = cleanVal;
+                inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+                inputEl.dispatchEvent(new Event('change', { bubbles: true }));
+                inputEl.dispatchEvent(new Event('blur', { bubbles: true }));
+                const editorId = inputEl.id || inputEl.name;
+                if (editorId && typeof quizWin?.UE?.getEditor === 'function') {
+                  try {
+                    const ueInstance = quizWin.UE.getEditor(editorId);
+                    if (ueInstance && typeof ueInstance.setContent === 'function') {
+                      ueInstance.setContent(paragraphHtml);
+                    }
+                  } catch {}
+                }
               }
-            } catch {}
+              const uFrame = ueditorFrames[i];
+              if (uFrame) {
+                try {
+                  const uDoc = uFrame.contentDocument;
+                  if (uDoc?.body) {
+                    uDoc.body.innerHTML = paragraphHtml;
+                    uDoc.body.dispatchEvent(new Event('input', { bubbles: true }));
+                    uDoc.body.dispatchEvent(new Event('keyup', { bubbles: true }));
+                    uDoc.body.dispatchEvent(new Event('blur', { bubbles: true }));
+                  }
+                } catch {}
+              }
+            }
           }
+          store.addLog(`第 ${idx + 1}/${timuNodes.length} 题作答完成：已填入文本`, 'success');
         }
-        store.addLog(`第 ${idx + 1}/${timuNodes.length} 题作答完成：已填入文本`, 'success');
       }
     }
 
@@ -949,7 +1251,7 @@ export async function doQuizTask(
     }
   } catch {}
 
-  if (autoSubmitWork) {
+  if (autoSubmitWork && !cancelAutoSubmit) {
     store.addLog('已开启自动提交模式，正在定位提交按钮', 'info');
     // Call Chaoxing native method btnBlueSubmit if present
     if (typeof targetWin?.btnBlueSubmit === 'function') {
@@ -988,7 +1290,11 @@ export async function doQuizTask(
       store.addLog('未找到明确的提交按钮，作业已保持作答状态', 'warning');
     }
   } else {
-    store.addLog('当前为自动暂存模式，正在定位暂存按钮', 'info');
+    if (autoSubmitWork && cancelAutoSubmit) {
+      store.addLog('因存在未成功有效作答的题目，为防学业事故已自动取消自动提交，转为暂存模式，请人工复核后手动提交！', 'warning');
+    } else {
+      store.addLog('当前为自动暂存模式，正在定位暂存按钮', 'info');
+    }
     // Call Chaoxing native method noSubmit if present
     if (typeof targetWin?.noSubmit === 'function') {
       try {

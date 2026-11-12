@@ -281,7 +281,7 @@ export class FloatingCard extends HTMLElement {
               `).join('')}
             </select>
           ` : `
-            <input type="text" class="setting-input" id="cfg-model" placeholder="例如 deepseek-chat" value="${this.escapeHtml(cfg.aiModel)}">
+            <input type="text" class="setting-input" id="cfg-model" placeholder="例如 deepseek-flash" value="${this.escapeHtml(cfg.aiModel)}">
           `}
         </div>
 

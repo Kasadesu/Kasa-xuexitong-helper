@@ -29,7 +29,7 @@
 	var AI_PROVIDER_PRESETS = {
 		deepseek: {
 			baseUrl: "https://api.deepseek.com/v1",
-			model: "deepseek-chat"
+			model: "deepseek-flash"
 		},
 		custom: {
 			baseUrl: "https://api.openai.com/v1",
@@ -680,34 +680,74 @@ input:checked + .toggle-slider:before {
   align-items: center;
 }
 `;
-	var buildAiPrompt = (type, stem, options, paperContext) => {
-		let rule = "";
+	var buildAiPrompt = (type, stem, options, paperContext, images, subType) => {
+		let typeRule = "";
+		let outputContract = "";
 		switch (type) {
 			case "judge":
-				rule = "这是判断题。答案必须是“对”或“错”，亦可直接使用字母标号（A 代表对/正确，B 代表错/错误）。";
+				typeRule = "这是判断题。答案必须是“对”或“错”，亦可直接使用字母标号（A 代表对/正确，B 代表错/错误）。";
+				outputContract = "请先简要陈述教材依据，最后一行务必输出标准 JSON 数组包含你的最终答案（例如：[\"对\"] 或 [\"A\"]）。";
 				break;
 			case "single":
-				rule = "这是单选题。请给出唯一正确选项的字母标号（如 A、B、C 或 D）。可直接返回字母或字母+选项文本（如 [\"B\"] 或 [\"B. 选项文本\"]）。";
+				typeRule = "这是单选题。请给出唯一正确选项的字母标号（如 A、B、C 或 D）。可直接返回字母或字母+选项文本（如 [\"B\"] 或 [\"B. 选项文本\"]）。";
+				outputContract = "请先用 1~2 句话简要陈述教材依据与选项辨析，最后一行务必输出标准 JSON 数组包含你的最终答案项，例如：[\"B\"]。";
 				break;
 			case "multiple":
-				rule = "这是多选题。请逐一核验每个选项，给出所有正确选项的字母标号数组（如 [\"A\", \"C\"] 或 [\"A. 选项1\", \"C. 选项2\"]）。";
+				typeRule = "这是多选题。请逐一核验每个选项，给出所有正确选项的字母标号数组（如 [\"A\", \"C\"] 或 [\"A. 选项1\", \"C. 选项2\"]）。";
+				outputContract = "请先用 1~2 句话简要陈述教材依据与选项辨析，最后一行务必输出标准 JSON 数组包含你的最终答案项，例如：[\"A\", \"C\"]。";
 				break;
 			case "fill":
-				rule = "这是填空题。按题目中各个空格先后顺序给出教材标准答案，每个空对应返回数组里的一个字符串元素。";
+				typeRule = "这是填空题。按题目中各个空格先后顺序给出教材标准答案，每个空对应返回数组里的一个字符串元素。";
+				outputContract = "按空格顺序在最后一行务必输出标准 JSON 字符串数组，例如：[\"答案1\", \"答案2\"]；严禁使用 Markdown 和 LaTeX 公式。";
 				break;
 			case "essay":
-				rule = "这是主观简答题。请直接给出准确、精炼的教材核心答案正文。";
+				if (subType === "definition") {
+					typeRule = "这是主观名词解释题。请严格按照高校权威教材标准定义作答，用 1~2 个连贯自然段概括核心定义、关键特征/机理与典型意义，不要重复抄写词条题干前缀。";
+					outputContract = "严禁使用 Markdown 格式标记（如 **、#、- ）、LaTeX 公式符号（如 $、\\(、\\mathrm）和 JSON 数组，直接输出纯文本标准答案正文（涉及化学式或同位素用普通文本如 13C-NMR 表示）。";
+				} else {
+					typeRule = "这是主观简答/论述题。请给出准确、条理清晰的教材核心答案纯文本正文。";
+					outputContract = "严禁使用 Markdown 格式符（如 **、#）、LaTeX 公式符号（如 $、\\(）和 JSON 数组，直接输出纯文本正文。";
+				}
 				break;
-			default: rule = "请根据题目内容直接给出准确答案。";
+			default:
+				typeRule = "请根据题目内容直接给出准确答案。";
+				outputContract = "请先简要说明依据，最后一行输出最终答案。";
 		}
-		const systemContent = `你是一位高效、专业、思维严密的高校答题助教，精通中国高校权威教材（如马工程教材、国家级规划教材、高等教育出版社教材）的标准定义与学科体系。你的思考推理过程将帮助你得出最精准的结论。${rule}
-审题与作答准则：
-1. 【教材定义溯源】：严格依据中国高校统编教材的标准定义与原话表述作答，切勿用日常口语或直觉臆测替代教材专有名词定义（例如：严格区分“分销渠道（取得所有权或帮助所有权转移）”与“市场营销渠道”、“愿望竞争者/属类竞争者（平行或一般竞争者，如不同交通工具满足同一出行愿望）/产品形式竞争者/品牌竞争者”、“核心产品/形式产品/延伸产品”、“导入期（知晓了解）/成长期（品牌偏爱）/成熟期（提醒维持）”等高校经典考点）。
+		const baseGuidelines = type === "essay" ? `审题与作答准则：
+1. 【教材定义溯源】：严格依据中国高校统编教材的标准表述作答，定义准确严密，逻辑清晰。
+2. 【纯文本规范】：输出内容将直接注入超星富文本编辑器，严禁携带任何 Markdown（如加粗、标题、列表符号）或 LaTeX 语法标记。
+3. 【输出格式】：${outputContract}` : `审题与作答准则：
+1. 【教材定义溯源】：严格依据中国高校统编教材的标准定义与学科体系作答，切勿使用日常口语或直觉臆测替代专业教材表述。
 2. 【限定词与正反核对】：精准锁定题干中的核心限定词（如“基本模式”、“最基本/首要/根本”、“直接/间接”、“属于/不属于”、“正确/错误”）。
-3. 【相近干扰项辨析】：遇到相近选项时，必须先对比二者的教材定义边界并明确排除干扰项，切勿盲目锚定第一个看似沾边的选项。
-4. 【输出格式】：请先用 1~2 句话简要陈述教材依据与选项辨析，最后一行务必输出标准 JSON 数组包含你的最终答案项，例如：["B"] 或 ["A", "C"]。`;
+3. 【相近干扰项辨析】：遇到相近选项时，必须先对比教材定义边界并明确排除干扰项，切勿盲目锚定第一个看似沾边的选项。
+4. 【输出格式】：${outputContract}`;
+		const systemContent = `你是一位高效、专业、思维严密的高校答题助教，精通中国高校权威教材（如马工程教材、国家级规划教材、高等教育出版社教材）的标准定义与学科体系。你的思考推理过程将帮助你得出最精准的结论。${typeRule}
+${baseGuidelines}`;
 		const formattedOptions = options.length ? "\n选项列表：\n" + options.map((opt, i) => `${String.fromCharCode(65 + i)}. ${opt}`).join("\n") : "";
-		const userContent = `${paperContext && paperContext.trim() ? `【试卷上下文】：${paperContext.trim()}\n\n` : ""}题目：${stem.trim()}${formattedOptions}`;
+		const contextPrefix = paperContext && paperContext.trim() ? `【试卷上下文】：${paperContext.trim()}\n\n` : "";
+		let userTail = "";
+		switch (type) {
+			case "single":
+			case "multiple":
+			case "judge":
+				userTail = "\n\n【作答要求】请先简要说明教材依据，并在最后一行严格输出标准 JSON 数组（仅含选项字母），例如：[\"B\"] 或 [\"A\", \"C\"]。";
+				break;
+			case "fill":
+				userTail = "\n\n【作答要求】请在最后一行严格输出标准 JSON 字符串数组，按空位顺序对应填入内容，例如：[\"答案1\", \"答案2\"]；严禁使用 Markdown 和 LaTeX。";
+				break;
+			case "essay":
+				userTail = "\n\n【作答要求】请直接输出纯文本标准答案正文，严禁使用 Markdown 格式符（如 **、#）和 LaTeX 公式（如 $、\\(），不要输出 JSON 数组。";
+				break;
+			default: userTail = "";
+		}
+		const userText = `${contextPrefix}题目：${stem.trim()}${formattedOptions}${userTail}`;
+		const userContent = images && images.length > 0 ? [{
+			type: "text",
+			text: userText
+		}, ...images.map((url) => ({
+			type: "image_url",
+			image_url: { url }
+		}))] : userText;
 		return [{
 			role: "system",
 			content: systemContent
@@ -716,7 +756,7 @@ input:checked + .toggle-slider:before {
 			content: userContent
 		}];
 	};
-	var parseAiResponse = (rawText) => {
+	var parseAiResponse = (rawText, questionType) => {
 		if (!rawText || typeof rawText !== "string" || !rawText.trim()) return [];
 		let cleaned = rawText.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
 		if (!cleaned) cleaned = rawText.replace(/<\/?think>/gi, "").trim();
@@ -727,7 +767,10 @@ input:checked + .toggle-slider:before {
 			const parsed = JSON.parse(cleaned);
 			if (Array.isArray(parsed)) {
 				const items = parsed.map((item) => String(item).trim()).filter(Boolean);
-				if (items.length > 0) return items;
+				if (items.length > 0) {
+					if (questionType === "single" && items.length > 1 && items.every((x) => /^[A-H]$/i.test(x))) return [items[0].toUpperCase()];
+					return items;
+				}
 			}
 			if (typeof parsed === "string") {
 				const trimmed = parsed.trim();
@@ -739,19 +782,46 @@ input:checked + .toggle-slider:before {
 			const parsed = JSON.parse(arrayMatches[i]);
 			if (Array.isArray(parsed)) {
 				const items = parsed.map((item) => String(item).trim()).filter(Boolean);
-				if (items.length > 0) return items;
+				if (items.length > 0) {
+					if (questionType === "single" && items.length > 1 && items.every((x) => /^[A-H]$/i.test(x))) return [items[0].toUpperCase()];
+					return items;
+				}
 			}
 		} catch {}
-		const judgeMatches = Array.from(cleaned.matchAll(/(?:最终答案|正确答案|答案|故选|应选|因此选|所以选|选择|结论|判断)\s*(?:是|为)?\s*[:：]?\s*[【\(\["']?\s*(正确|错误|对|错|true|false|√|×)(?![a-zA-Z])\s*[】\)\]"']?/gi));
+		if (questionType === "essay") return [cleaned];
+		const judgeMatches = Array.from(cleaned.matchAll(/(?:最终答案|正确答案|标准答案|参考答案|答案|故选|应选|因此选|所以选|选择|结论|判断)\s*(?:是|为)?\s*[:：]?\s*[\*\_`【\(\["'“\s]*\s*(正确|错误|对|错|true|false|√|×)(?![a-zA-Z])\s*[\*\_`】\)\]"'”\s]*/gi));
 		if (judgeMatches.length > 0) {
 			const lastJudge = judgeMatches[judgeMatches.length - 1][1];
 			if (lastJudge) return [lastJudge];
 		}
-		const semanticMatches = Array.from(cleaned.matchAll(/(?:最终答案|正确答案|答案|故选|应选|因此选|所以选|本题选|选择|(?<![不勿别误排])选(?!项))\s*(?:是|为)?\s*[:：]?\s*[【\(\[]?\s*([A-H](?:[\s,，、和与/]+[A-H])*)(?![a-zA-Z])/gi));
-		if (semanticMatches.length > 0) {
-			const letters = semanticMatches[semanticMatches.length - 1][1].match(/[A-H]/gi);
-			if (letters && letters.length > 0) return Array.from(new Set(letters.map((l) => l.toUpperCase())));
-		}
+		const STRONG_PREFIX = "(?:最终答案|正确答案|标准答案|参考答案|答案|结论|本题选)";
+		const WEAK_PREFIX = "(?:故选|应选|因此选|所以选|选择|(?<![不勿别误排])选(?!项))";
+		const extractLetters = (prefixPattern) => {
+			const pattern = new RegExp(`${prefixPattern}\\s*(?:是|为)?\\s*[:：]?\\s*([*_\\u0060【\\(\\[“"'\\s]*[A-H](?![a-zA-Z\\-型族环链层级])(?:(?:[\\.。．:：][^\\n,，；\\]】]+)|(?:[*_\\u0060】\\)\\]"'”\\s]*[,，、和与/\\s]+[*_\\u0060【\\(\\[“"'\\s]*[A-H](?![a-zA-Z\\-型族环链层级])(?:[\\.。．:：][^\\n,，；\\]】]+)?)*)[*_\\u0060】\\)\\]"'”\\s]*)`, "gi");
+			const matches = Array.from(cleaned.matchAll(pattern));
+			if (!matches || matches.length === 0) return null;
+			const lastCapture = matches[matches.length - 1][1];
+			if (!lastCapture) return null;
+			if (/[\.。．:：]/.test(lastCapture)) {
+				const dotMatches = Array.from(lastCapture.matchAll(/(?:^|[,，、和与/\s]+)[*_\u0060【\(\[“"'\s]*([A-H])(?![a-zA-Z\-型族环链层级])[\.。．:：]/gi));
+				if (dotMatches.length > 0) {
+					const letters = Array.from(new Set(dotMatches.map((m) => m[1].toUpperCase())));
+					if (questionType === "single" && letters.length > 1) return [letters[0]];
+					return letters;
+				}
+			}
+			const standaloneMatches = Array.from(lastCapture.matchAll(/(?:^|[,，、和与/\s*_\u0060【\(\[“"'])*([A-H])(?![a-zA-Z\-型族环链层级])(?=[*_\u0060】\)\]"'”，,、和与/\s]|$)/gi));
+			const validLetters = Array.from(new Set(standaloneMatches.map((m) => m[1]?.toUpperCase()).filter(Boolean)));
+			if (validLetters.length > 0) {
+				if (questionType === "single" && validLetters.length > 1) return [validLetters[0]];
+				return validLetters;
+			}
+			return null;
+		};
+		const strongResult = extractLetters(STRONG_PREFIX);
+		if (strongResult && strongResult.length > 0) return strongResult;
+		const weakResult = extractLetters(WEAK_PREFIX);
+		if (weakResult && weakResult.length > 0) return weakResult;
 		const lines = cleaned.split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
 		return lines.length ? lines : cleaned ? [cleaned] : [];
 	};
@@ -887,7 +957,7 @@ input:checked + .toggle-slider:before {
 		const id = (modelId || "").toLowerCase().trim();
 		if (!id) return "unsupported";
 		if (id.includes("deepseek-reasoner") || id.includes("deepseek-r1") || /(^|[^a-z0-9])r1($|[^a-z0-9])/.test(id) || id.includes("qwq")) return "built_in";
-		if (/(^|[^a-z0-9])(o1|o3)($|[^a-z0-9])/.test(id) || id.includes("o1-") || id.includes("o3-") || id.includes("o1_") || id.includes("o3_")) return "supported";
+		if (/(^|[^a-z0-9])(o1|o3)($|[^a-z0-9])/.test(id) || id.includes("o1-") || id.includes("o3-") || id.includes("o1_") || id.includes("o3_") || id.includes("deepseek-flash") || id.includes("deepseek-v4-flash") || id.includes("deepseek-v4-pro") || id.includes("v4-flash") || id.includes("v4-pro")) return "supported";
 		return "unsupported";
 	};
 	var queryAiAnswer = async (question, paperContext, signal) => {
@@ -900,13 +970,27 @@ input:checked + .toggle-slider:before {
 		}
 		let endpoint = aiBaseUrl.trim().replace(/\/+$/, "");
 		if (!endpoint.endsWith("/chat/completions")) endpoint += "/chat/completions";
-		const targetModel = aiModel.trim() || "deepseek-chat";
+		const targetModel = aiModel.trim() || "deepseek-flash";
 		const isReasoning = reasoningEffort && reasoningEffort !== "none" || detectModelReasoningCapability(targetModel) !== "unsupported";
-		const messages = buildAiPrompt(question.type, question.title, question.options, paperContext);
-		const buildPayload = (includeReasoningEffort, fallbackEffort) => {
+		const messages = buildAiPrompt(question.type, question.title, question.options, paperContext, question.images, question.subType);
+		const formatMessages = (forcePlainText) => {
+			if (!forcePlainText) return messages;
+			return messages.map((m) => {
+				if (typeof m.content === "string") return m;
+				if (Array.isArray(m.content)) {
+					const textParts = m.content.filter((p) => p && p.type === "text").map((p) => p.text).join("\n");
+					return {
+						role: m.role,
+						content: textParts
+					};
+				}
+				return m;
+			});
+		};
+		const buildPayload = (includeReasoningEffort, fallbackEffort, forcePlainText = false) => {
 			const p = {
 				model: targetModel,
-				messages,
+				messages: formatMessages(forcePlainText),
 				temperature: isReasoning ? .2 : .1,
 				stream: false
 			};
@@ -916,8 +1000,8 @@ input:checked + .toggle-slider:before {
 		};
 		const extractAnswersFromData = (data) => {
 			const msg = data?.choices?.[0]?.message;
-			let answers = parseAiResponse(msg?.content || "");
-			if (answers.length === 0 && msg?.reasoning_content) answers = parseAiResponse(String(msg.reasoning_content));
+			let answers = parseAiResponse(msg?.content || "", question.type);
+			if (answers.length === 0 && msg?.reasoning_content) answers = parseAiResponse(String(msg.reasoning_content), question.type);
 			return answers;
 		};
 		const sendSingleRequest = async (bodyStr) => {
@@ -1083,22 +1167,36 @@ input:checked + .toggle-slider:before {
 				});
 			});
 		};
-		const firstRes = await sendSingleRequest(buildPayload(true));
+		const isMultimodalError = (status, errText) => {
+			if (status === 413) return true;
+			const lower = (errText || "").toLowerCase();
+			if (lower.includes("payload too large") || lower.includes("entity too large") || lower.includes("request too large")) return true;
+			if (status === 400 || status === 422) return lower.includes("image") || lower.includes("vision") || lower.includes("multimodal") || lower.includes("content");
+			return false;
+		};
+		const hasImages = Boolean(question.images && question.images.length > 0);
+		let forcePlainText = false;
+		let firstRes = await sendSingleRequest(buildPayload(true, void 0, forcePlainText));
 		if (signal?.aborted) return [];
 		if (firstRes.ok && firstRes.answers.length > 0) return firstRes.answers;
-		const isParamError = firstRes.status === 400 || firstRes.status === 422;
-		const hasEffort = Boolean(reasoningEffort && reasoningEffort !== "none");
-		const secondRes = await sendSingleRequest(isParamError && hasEffort ? reasoningEffort === "max" ? buildPayload(true, "high") : buildPayload(false) : buildPayload(!isParamError));
+		if (hasImages && !forcePlainText && (firstRes.status === 413 || isMultimodalError(firstRes.status, firstRes.errText) || firstRes.status === 400 || firstRes.status === 422)) {
+			store.addLog("检测到图片过大或当前模型不支持多模态识图，自动降级为纯文本重试", "warning");
+			forcePlainText = true;
+			firstRes = await sendSingleRequest(buildPayload(true, void 0, forcePlainText));
+			if (signal?.aborted) return [];
+			if (firstRes.ok && firstRes.answers.length > 0) return firstRes.answers;
+		}
+		if (hasImages && (firstRes.status === 413 || firstRes.status === 400 || firstRes.status === 422 || isMultimodalError(firstRes.status, firstRes.errText))) forcePlainText = true;
+		const isParamError = firstRes.status === 400 || firstRes.status === 422 || firstRes.status === 413;
+		let secondRes = await sendSingleRequest(isParamError && Boolean(reasoningEffort && reasoningEffort !== "none") ? reasoningEffort === "max" ? buildPayload(true, "high", forcePlainText) : buildPayload(false, void 0, forcePlainText) : buildPayload(!isParamError, void 0, forcePlainText));
 		if (signal?.aborted) return [];
 		if (secondRes.ok && secondRes.answers.length > 0) return secondRes.answers;
-		if ((secondRes.status === 400 || secondRes.status === 422) && hasEffort && reasoningEffort === "max") {
-			const thirdRes = await sendSingleRequest(buildPayload(false));
-			if (signal?.aborted) return [];
-			if (thirdRes.ok && thirdRes.answers.length > 0) return thirdRes.answers;
-		}
+		const thirdRes = await sendSingleRequest(buildPayload(false, void 0, hasImages ? true : forcePlainText));
 		if (signal?.aborted) return [];
-		const finalErr = secondRes.errText || firstRes.errText;
-		const finalStatus = secondRes.status || firstRes.status;
+		if (thirdRes.ok && thirdRes.answers.length > 0) return thirdRes.answers;
+		if (signal?.aborted) return [];
+		const finalErr = thirdRes.errText || secondRes.errText || firstRes.errText;
+		const finalStatus = thirdRes.status || secondRes.status || firstRes.status;
 		if (finalStatus > 0) store.addLog(`AI 接口返回错误 HTTP ${finalStatus}: ${finalErr.slice(0, 100)}`, "error");
 		else if (finalErr) store.addLog(`AI 请求失败: ${finalErr.slice(0, 100)}`, "error");
 		return [];
@@ -1343,7 +1441,7 @@ input:checked + .toggle-slider:before {
               `).join("")}
             </select>
           ` : `
-            <input type="text" class="setting-input" id="cfg-model" placeholder="例如 deepseek-chat" value="${this.escapeHtml(cfg.aiModel)}">
+            <input type="text" class="setting-input" id="cfg-model" placeholder="例如 deepseek-flash" value="${this.escapeHtml(cfg.aiModel)}">
           `}
         </div>
 
@@ -1656,7 +1754,7 @@ input:checked + .toggle-slider:before {
 					if (hostCls.includes("ans-insertvideo-module") || hostCls.includes("ans-work-module") || hostCls.includes("ans-module") || hostCls.includes("ans-attach-ct") || hostSrc.includes("modules/video") || hostSrc.includes("modules/work") || hostSrc.includes("video") || hostSrc.includes("work") || host.parentElement?.classList?.contains("ans-attach-ct") || host.parentElement?.classList?.contains("ans-insertvideo-module") || host.parentElement?.classList?.contains("ans-work-module")) return true;
 					if (host.parentElement) host = host.parentElement;
 					else {
-						const outerWin = host.ownerDocument?.defaultView;
+						const outerWin = host.ownerDocument?.defaultView ?? null;
 						if (outerWin && outerWin.frameElement && outerWin.frameElement !== host) {
 							host = outerWin.frameElement;
 							depth++;
@@ -1909,6 +2007,78 @@ input:checked + .toggle-slider:before {
 		if (!context.isCurrent()) return;
 		scrollDown();
 		store.addLog("文档阅读完成", "success");
+	};
+	var isAiRefusalOrApology = (text) => {
+		if (!text || typeof text !== "string") return false;
+		const t = text.trim();
+		if (!t) return false;
+		return /(?:无法(?:唯一)?确定答案|无法(?:做出)?解答|无法回答|没有(?:给出|提供).*?(?:结构式|图片|图谱|选项|数据)|请提供.*?图片|缺少.*?图片)/i.test(t);
+	};
+	var escapeHtml = (text) => {
+		if (!text) return "";
+		return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+	};
+	var LATEX_SYMBOLS = [
+		[/\\alpha(?![a-zA-Z])/g, "α"],
+		[/\\beta(?![a-zA-Z])/g, "β"],
+		[/\\gamma(?![a-zA-Z])/g, "γ"],
+		[/\\delta(?![a-zA-Z])/g, "δ"],
+		[/\\Delta(?![a-zA-Z])/g, "Δ"],
+		[/\\omega(?![a-zA-Z])/g, "ω"],
+		[/\\Omega(?![a-zA-Z])/g, "Ω"],
+		[/\\lambda(?![a-zA-Z])/g, "λ"],
+		[/\\mu(?![a-zA-Z])/g, "μ"],
+		[/\\pi(?![a-zA-Z])/g, "π"],
+		[/\\sigma(?![a-zA-Z])/g, "σ"],
+		[/\\theta(?![a-zA-Z])/g, "θ"],
+		[/\\pm(?![a-zA-Z])/g, "±"],
+		[/\\times(?![a-zA-Z])/g, "×"],
+		[/\\div(?![a-zA-Z])/g, "÷"],
+		[/\\approx(?![a-zA-Z])/g, "≈"],
+		[/\\neq(?![a-zA-Z])/g, "≠"],
+		[/\\leq(?![a-zA-Z])/g, "≤"],
+		[/\\geq(?![a-zA-Z])/g, "≥"],
+		[/\\(?:rightarrow|to)(?![a-zA-Z])/g, "→"],
+		[/\\(?:degree|\^\\circ|\^\{\\circ\})(?![a-zA-Z])/g, "°"],
+		[/\^\\circ(?![a-zA-Z])/g, "°"],
+		[/\^\{\\circ\}/g, "°"]
+	];
+	var cleanRichTextAnswer = (text) => {
+		if (!text || typeof text !== "string") return "";
+		let res = text;
+		for (const [pattern, replacement] of LATEX_SYMBOLS) res = res.replace(pattern, replacement);
+		for (let round = 0; round < 3; round++) {
+			const prev = res;
+			res = res.replace(/[\^_]\{([^{}]*)\}/g, "$1");
+			res = res.replace(/\\(?:mathrm|mathbf|textbf|textit|text|textrm|textsf)\{([^{}]*)\}/g, "$1");
+			if (res === prev) break;
+		}
+		res = res.replace(/[\^_]([0-9a-zA-Z])/g, "$1");
+		res = res.replace(/\\\([ \t]*/g, "");
+		res = res.replace(/[ \t]*\\\)/g, "");
+		res = res.replace(/\\\[[ \t]*/g, "");
+		res = res.replace(/[ \t]*\\\]/g, "");
+		res = res.replace(/\$\$([^\$]+)\$\$/g, "$1");
+		res = res.replace(/\$(?!\s)([^\$\n\u4e00-\u9fa5]+?)(?<!\s)\$/g, "$1");
+		res = res.replace(/`([^`]+)`/g, "$1");
+		res = res.replace(/\*\*\*([^*]+)\*\*\*/g, "$1");
+		res = res.replace(/\*\*([^*]+)\*\*/g, "$1");
+		res = res.replace(/__([^_]+)__/g, "$1");
+		res = res.replace(/(?<=^|[\s\u4e00-\u9fa5，。；、？！\(\)（）\[\]])\*([^*\n\s](?:[^*\n]*[^*\n\s])?)\*(?=[\s\u4e00-\u9fa5，。；、？！\(\)（）\[\]]|$)/g, "$1");
+		res = res.replace(/(?:^|\s)\*([^*\n\s]+)\*(?=\s|$)/g, (match, p1) => {
+			return `${match.startsWith(" ") ? " " : ""}${p1}`;
+		});
+		return res.split(/\r?\n/).map((line) => {
+			let l = line.trim();
+			l = l.replace(/^#{1,6}\s+/, "");
+			l = l.replace(/^>\s+/, "");
+			return l;
+		}).join("\n").trim();
+	};
+	var formatToUEditorParagraphs = (content) => {
+		if (!content) return "<p></p>";
+		const cleanParagraphs = (Array.isArray(content) ? content.flatMap((item) => item ? String(item).split(/\r?\n/) : []) : String(content).split(/\r?\n/)).map((line) => cleanRichTextAnswer(line).trim()).filter((line) => line.length > 0).map((line) => `<p>${escapeHtml(line)}</p>`);
+		return cleanParagraphs.length > 0 ? cleanParagraphs.join("") : "<p></p>";
 	};
 	var Typr = {
 		parse: function(r) {
@@ -24471,7 +24641,7 @@ input:checked + .toggle-slider:before {
 		currentMatchMap = {};
 	}
 	function base64ToUint8Array(base64) {
-		const binaryString = typeof atob !== "undefined" ? atob(base64) : Buffer.from(base64, "base64").toString("binary");
+		const binaryString = typeof atob !== "undefined" ? atob(base64) : typeof globalThis.Buffer !== "undefined" ? globalThis.Buffer.from(base64, "base64").toString("binary") : "";
 		const len = binaryString.length;
 		const bytes = new Uint8Array(len);
 		for (let i = 0; i < len; i++) bytes[i] = binaryString.charCodeAt(i);
@@ -24537,6 +24707,136 @@ input:checked + .toggle-slider:before {
 			console.warn("[FontDecoder] decryptDomElement error", e);
 		}
 	}
+	var detectQuestionSubType = (rawTitleText) => {
+		if (!rawTitleText || typeof rawTitleText !== "string") return void 0;
+		const decrypted = decryptString(rawTitleText);
+		if (decrypted.includes("名词解释")) return "definition";
+		if (decrypted.includes("简答题") || decrypted.includes("【简答】") || decrypted.includes("(简答)") || decrypted.includes("（简答）")) return "short_answer";
+		if (decrypted.includes("论述题") || decrypted.includes("【论述】") || decrypted.includes("(论述)") || decrypted.includes("（论述）")) return "discussion";
+	};
+	var blobToDataUrl = (blob) => {
+		return new Promise((resolve, reject) => {
+			if (typeof FileReader !== "undefined") {
+				const reader = new FileReader();
+				reader.onloadend = () => {
+					if (typeof reader.result === "string") resolve(reader.result);
+					else reject(new Error("转换图片 Base64 失败"));
+				};
+				reader.onerror = reject;
+				reader.readAsDataURL(blob);
+			} else resolve("");
+		});
+	};
+	var extractQuestionImages = async (timuEl, signal) => {
+		if (!timuEl || typeof timuEl.querySelectorAll !== "function") return [];
+		const imgElements = Array.from(timuEl.querySelectorAll("img"));
+		const candidateUrls = [];
+		const seenUrls = new Set();
+		for (const img of imgElements) {
+			if (signal?.aborted) break;
+			const src = (img.currentSrc || img.src || img.getAttribute("src") || "").trim();
+			if (!src || src.startsWith("javascript:")) continue;
+			const lowerSrc = src.toLowerCase();
+			const className = (img.className || "").toLowerCase();
+			if (lowerSrc.includes("icon") || lowerSrc.includes("emoji") || lowerSrc.includes("loading") || lowerSrc.includes("avatar") || lowerSrc.includes("arrow") || lowerSrc.includes("btn") || lowerSrc.includes("star") || className.includes("icon") || className.includes("emoji") || className.includes("loading") || className.includes("avatar") || className.includes("arrow") || className.includes("btn") || className.includes("star")) continue;
+			if ((lowerSrc.includes("data:image/svg+xml") || lowerSrc.includes("data:image/gif")) && lowerSrc.length < 200) continue;
+			const attrWidth = parseInt(img.getAttribute("width") || img.style.width || String(img.width || 0), 10);
+			const attrHeight = parseInt(img.getAttribute("height") || img.style.height || String(img.height || 0), 10);
+			if (attrWidth > 0 && attrWidth <= 20 || attrHeight > 0 && attrHeight <= 20) continue;
+			if (img.complete && img.naturalWidth > 0 && img.naturalHeight > 0) {
+				if (img.naturalWidth <= 20 && img.naturalHeight <= 20) continue;
+			}
+			if (!seenUrls.has(src)) {
+				seenUrls.add(src);
+				candidateUrls.push(src);
+				if (candidateUrls.length >= 3) break;
+			}
+		}
+		if (candidateUrls.length === 0) return [];
+		const base64Images = [];
+		const xhr = typeof GM_xmlhttpRequest !== "undefined" ? GM_xmlhttpRequest : null;
+		for (const url of candidateUrls) {
+			if (signal?.aborted) break;
+			if (url.startsWith("data:image/")) {
+				if (url.length > 200) {
+					base64Images.push(url);
+					if (base64Images.length >= 3) break;
+				}
+				continue;
+			}
+			try {
+				if (xhr) {
+					const base64 = await new Promise((resolve) => {
+						let req = null;
+						const onAbort = () => {
+							try {
+								if (req && typeof req.abort === "function") req.abort();
+							} catch {}
+							resolve(null);
+						};
+						signal?.addEventListener("abort", onAbort, { once: true });
+						req = xhr({
+							url,
+							method: "GET",
+							responseType: "blob",
+							timeout: 5e3,
+							onload: async (res) => {
+								signal?.removeEventListener("abort", onAbort);
+								if (res.status >= 200 && res.status < 300 && res.response) {
+									const blob = res.response;
+									if (blob && typeof blob.size === "number" && blob.size > 2097152) {
+										resolve(null);
+										return;
+									}
+									try {
+										resolve(await blobToDataUrl(blob));
+									} catch {
+										resolve(null);
+									}
+								} else resolve(null);
+							},
+							onerror: () => {
+								signal?.removeEventListener("abort", onAbort);
+								resolve(null);
+							},
+							ontimeout: () => {
+								signal?.removeEventListener("abort", onAbort);
+								resolve(null);
+							}
+						});
+					});
+					if (base64) {
+						base64Images.push(base64);
+						if (base64Images.length >= 3) break;
+					}
+				} else if (typeof window !== "undefined" && typeof window.fetch === "function") {
+					const controller = new AbortController();
+					const timer = setTimeout(() => controller.abort(), 5e3);
+					const onAbort = () => controller.abort();
+					signal?.addEventListener("abort", onAbort, { once: true });
+					try {
+						const res = await window.fetch(url, { signal: controller.signal });
+						clearTimeout(timer);
+						signal?.removeEventListener("abort", onAbort);
+						if (res.ok) {
+							const blob = await res.blob();
+							if (blob && typeof blob.size === "number" && blob.size > 2097152) {} else {
+								const b64 = await blobToDataUrl(blob);
+								if (b64) {
+									base64Images.push(b64);
+									if (base64Images.length >= 3) break;
+								}
+							}
+						}
+					} catch {
+						clearTimeout(timer);
+						signal?.removeEventListener("abort", onAbort);
+					}
+				}
+			} catch {}
+		}
+		return base64Images;
+	};
 	var cleanQuestionTitle = (raw) => {
 		return decryptString(raw).replace(/^\s*\d{1,3}(?:[\.、．]\s*|\s+)/, "").replace(/【(单选题|多选题|判断题|填空题|简答题|论述题|名词解释|单选|多选|判断|填空)】/g, "").replace(/[\(（](单选题|多选题|判断题|填空题|简答题|论述题|名词解释|单选|多选|判断|填空)[\)）]/g, "").replace(/^\s*\d{1,3}(?:[\.、．]\s*|\s+)/, "").replace(/[\(（\[][0-9\.]+\s*分[\)）\]]/g, "").replace(/\s+/g, " ").trim();
 	};
@@ -24652,7 +24952,7 @@ input:checked + .toggle-slider:before {
 		if ((qType === "single" || qType === "judge") && matchedOptions.length > 1) return [matchedOptions[0]];
 		return matchedOptions;
 	};
-	var locateQuizDocument = async (rootIframe, rootDoc, signal) => {
+	var locateQuizDocument = async (_rootIframe, rootDoc, signal) => {
 		const isTargetDoc = (doc) => !!doc.querySelector(".questionLi, .TiMu.newTiMu, .TiMu, div[data-id], .singleQues, div[id^=\"question\"], .Zy_TItle");
 		if (isTargetDoc(rootDoc)) return rootDoc;
 		const maxAttempts = 24;
@@ -24779,6 +25079,7 @@ input:checked + .toggle-slider:before {
 		const sampleStems = timuNodes.slice(0, 6).map((node, i) => `${i + 1}. ${cleanQuestionTitle(extractRawTitleFromTimu(node)).slice(0, 35)}`).filter((s) => s.length > 4);
 		const paperContext = [pageHeaderTitle ? `测验名称：${pageHeaderTitle}` : "", sampleStems.length > 1 ? `同卷关联题目摘录：${sampleStems.join("；")}` : ""].filter(Boolean).join(" | ");
 		const questionList = [];
+		let cancelAutoSubmit = false;
 		for (let idx = 0; idx < timuNodes.length; idx++) {
 			if (!isCurrent() || signal.aborted) return;
 			const timuEl = timuNodes[idx];
@@ -24870,23 +25171,29 @@ input:checked + .toggle-slider:before {
 				});
 				optionsTextList.push(optText);
 			}
+			const subType = detectQuestionSubType(rawTitleText);
+			const images = await extractQuestionImages(timuEl, signal);
 			const questionObj = {
 				id: timuEl.getAttribute("data-id") || `timu-${idx + 1}`,
 				index: idx + 1,
 				type: qType,
+				subType,
 				title: cleanTitle,
 				options: optionsTextList,
+				images,
 				status: "searching"
 			};
 			questionList.push(questionObj);
 			store.setQuestions([...questionList]);
-			store.addLog(`第 ${idx + 1}/${timuNodes.length} 题 [${qType}]: "${cleanTitle.slice(0, 24)}..." 正在查询答案`, "info");
+			const imgTag = images.length > 0 ? `（含 ${images.length} 张图片）` : "";
+			store.addLog(`第 ${idx + 1}/${timuNodes.length} 题 [${qType}]: "${cleanTitle.slice(0, 24)}..." ${imgTag}正在查询答案`, "info");
 			let answers = await queryAiAnswer(questionObj, paperContext, signal);
 			if (!isCurrent() || signal.aborted) return;
 			if (!answers || answers.length === 0) {
 				answers = matchFallbackAnswer(cleanTitle, optionsTextList, idx + 1);
 				if (answers.length > 0) store.addLog(`第 ${idx + 1} 题启用保底题库匹配: [${answers.join(", ")}]`, "success");
 			}
+			if (questionObj.images && questionObj.images.length > 0 && answers.some((ans) => /无法(?:唯一)?确定答案|没有(?:给出|提供).*?(?:结构式|图片)/.test(ans))) store.addLog(`第 ${idx + 1} 题模型提示无法完整识别图片内容，请在交卷前重点人工核对该题！`, "warning");
 			questionObj.answer = answers;
 			questionObj.status = answers.length > 0 ? "success" : "failed";
 			store.setQuestions([...questionList]);
@@ -24939,6 +25246,14 @@ input:checked + .toggle-slider:before {
 					}
 				}
 				store.addLog(`第 ${idx + 1}/${timuNodes.length} 题作答完成：已选 [${selectedLetters.join(", ")}]`, "success");
+			} else if (answers.some((ans) => isAiRefusalOrApology(ans))) {
+				questionObj.status = "failed";
+				store.setQuestions([...questionList]);
+				store.addLog(`第 ${idx + 1} 题 AI 反映缺少关键图片或数据，已放弃自动填入并保留空白，请人工核对！`, "warning");
+				if (store.config.autoSubmitWork) {
+					cancelAutoSubmit = true;
+					store.addLog(`检测到第 ${idx + 1} 题未成功获得有效作答，为防学业事故，已自动取消自动提交，请人工复核后手动提交！`, "warning");
+				}
 			} else {
 				const textInputs = Array.from(timuEl.querySelectorAll("textarea.answerText, textarea, input.answerInput, input.newAnswerInput, input[type=\"text\"]")).filter((input) => {
 					if (input.type === "hidden") return false;
@@ -24950,25 +25265,51 @@ input:checked + .toggle-slider:before {
 				const quizWin = quizDoc.defaultView;
 				if ((textInputs.length > 0 || ueditorFrames.length > 0) && answers.length > 0) {
 					const slotCount = Math.max(textInputs.length, ueditorFrames.length);
-					for (let i = 0; i < slotCount; i++) {
-						const val = answers[i] || answers[0] || "";
-						const inputEl = textInputs[i];
+					if (slotCount === 1) {
+						const cleanFullText = answers.map((a) => cleanRichTextAnswer(a)).filter(Boolean).join("\n");
+						const paragraphsHtml = formatToUEditorParagraphs(answers);
+						const inputEl = textInputs[0];
 						if (inputEl) {
-							inputEl.value = val;
+							inputEl.value = cleanFullText;
 							inputEl.dispatchEvent(new Event("input", { bubbles: true }));
 							inputEl.dispatchEvent(new Event("change", { bubbles: true }));
 							inputEl.dispatchEvent(new Event("blur", { bubbles: true }));
 							const editorId = inputEl.id || inputEl.name;
 							if (editorId && typeof quizWin?.UE?.getEditor === "function") try {
 								const ueInstance = quizWin.UE.getEditor(editorId);
-								if (ueInstance && typeof ueInstance.setContent === "function") ueInstance.setContent(`<p>${val}</p>`);
+								if (ueInstance && typeof ueInstance.setContent === "function") ueInstance.setContent(paragraphsHtml);
+							} catch {}
+						}
+						const uFrame = ueditorFrames[0];
+						if (uFrame) try {
+							const uDoc = uFrame.contentDocument;
+							if (uDoc?.body) {
+								uDoc.body.innerHTML = paragraphsHtml;
+								uDoc.body.dispatchEvent(new Event("input", { bubbles: true }));
+								uDoc.body.dispatchEvent(new Event("keyup", { bubbles: true }));
+								uDoc.body.dispatchEvent(new Event("blur", { bubbles: true }));
+							}
+						} catch {}
+					} else for (let i = 0; i < slotCount; i++) {
+						const cleanVal = cleanRichTextAnswer(answers[i] ?? answers[0] ?? "");
+						const paragraphHtml = formatToUEditorParagraphs(cleanVal);
+						const inputEl = textInputs[i];
+						if (inputEl) {
+							inputEl.value = cleanVal;
+							inputEl.dispatchEvent(new Event("input", { bubbles: true }));
+							inputEl.dispatchEvent(new Event("change", { bubbles: true }));
+							inputEl.dispatchEvent(new Event("blur", { bubbles: true }));
+							const editorId = inputEl.id || inputEl.name;
+							if (editorId && typeof quizWin?.UE?.getEditor === "function") try {
+								const ueInstance = quizWin.UE.getEditor(editorId);
+								if (ueInstance && typeof ueInstance.setContent === "function") ueInstance.setContent(paragraphHtml);
 							} catch {}
 						}
 						const uFrame = ueditorFrames[i];
 						if (uFrame) try {
 							const uDoc = uFrame.contentDocument;
 							if (uDoc?.body) {
-								uDoc.body.innerHTML = `<p>${val}</p>`;
+								uDoc.body.innerHTML = paragraphHtml;
 								uDoc.body.dispatchEvent(new Event("input", { bubbles: true }));
 								uDoc.body.dispatchEvent(new Event("keyup", { bubbles: true }));
 								uDoc.body.dispatchEvent(new Event("blur", { bubbles: true }));
@@ -24997,7 +25338,7 @@ input:checked + .toggle-slider:before {
 				unsafeWindow.alert = () => true;
 			}
 		} catch {}
-		if (autoSubmitWork) {
+		if (autoSubmitWork && !cancelAutoSubmit) {
 			store.addLog("已开启自动提交模式，正在定位提交按钮", "info");
 			if (typeof targetWin?.btnBlueSubmit === "function") try {
 				targetWin.btnBlueSubmit();
@@ -25019,7 +25360,8 @@ input:checked + .toggle-slider:before {
 				store.addLog("作业已成功自动提交！", "success");
 			} else store.addLog("未找到明确的提交按钮，作业已保持作答状态", "warning");
 		} else {
-			store.addLog("当前为自动暂存模式，正在定位暂存按钮", "info");
+			if (autoSubmitWork && cancelAutoSubmit) store.addLog("因存在未成功有效作答的题目，为防学业事故已自动取消自动提交，转为暂存模式，请人工复核后手动提交！", "warning");
+			else store.addLog("当前为自动暂存模式，正在定位暂存按钮", "info");
 			if (typeof targetWin?.noSubmit === "function") try {
 				targetWin.noSubmit();
 				store.addLog("已触发超星原生 noSubmit 暂存方法", "success");

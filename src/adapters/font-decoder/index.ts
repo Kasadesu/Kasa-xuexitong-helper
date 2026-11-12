@@ -11,7 +11,12 @@ export function clearChaoxingFontMap(): void {
 }
 
 export function base64ToUint8Array(base64: string): Uint8Array {
-  const binaryString = typeof atob !== 'undefined' ? atob(base64) : Buffer.from(base64, 'base64').toString('binary');
+  const binaryString =
+    typeof atob !== 'undefined'
+      ? atob(base64)
+      : typeof (globalThis as any).Buffer !== 'undefined'
+      ? (globalThis as any).Buffer.from(base64, 'base64').toString('binary')
+      : '';
   const len = binaryString.length;
   const bytes = new Uint8Array(len);
   for (let i = 0; i < len; i++) {
