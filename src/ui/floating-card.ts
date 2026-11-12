@@ -68,7 +68,7 @@ export class FloatingCard extends HTMLElement {
         <div class="kasa-card">
           <div class="kasa-header" id="drag-handle">
             <div class="kasa-title-group">
-              <span class="kasa-badge">v1.0</span>
+              <span class="kasa-badge">v1.1</span>
               <span class="kasa-title">Kasa 学习通助手</span>
             </div>
             <div class="kasa-actions">
