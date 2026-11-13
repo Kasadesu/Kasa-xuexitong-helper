@@ -1232,7 +1232,7 @@ export async function doQuizTask(
     ) {
       store.addLog(
         `第 ${idx + 1} 题模型提示无法完整识别图片内容，请在交卷前重点人工核对该题！`,
-        'warning'
+        'error'
       );
     }
 
@@ -1351,13 +1351,13 @@ export async function doQuizTask(
         store.setQuestions([...questionList]);
         store.addLog(
           `第 ${idx + 1} 题 AI 反映缺少关键图片或数据，已放弃自动填入并保留空白，请人工核对！`,
-          'warning'
+          'error'
         );
         if (store.config.autoSubmitWork) {
           cancelAutoSubmit = true;
           store.addLog(
             `检测到第 ${idx + 1} 题未成功获得有效作答，为防学业事故，已自动取消自动提交，请人工复核后手动提交！`,
-            'warning'
+            'error'
           );
         }
       } else {
@@ -1450,6 +1450,17 @@ export async function doQuizTask(
             }
           }
           store.addLog(`第 ${idx + 1}/${timuNodes.length} 题作答完成：已填入文本`, 'success');
+        } else {
+          questionObj.status = 'failed';
+          store.setQuestions([...questionList]);
+          if (store.config.autoSubmitWork) {
+            cancelAutoSubmit = true;
+          }
+          if (answers.length === 0) {
+            store.addLog(`第 ${idx + 1} 题未获取到有效答案，已保留空白，请人工核对！`, 'error');
+          } else {
+            store.addLog(`第 ${idx + 1} 题未检测到可填入的输入框，请人工检查填入！`, 'error');
+          }
         }
       }
     }
@@ -1524,7 +1535,7 @@ export async function doQuizTask(
     }
   } else {
     if (autoSubmitWork && cancelAutoSubmit) {
-      store.addLog('因存在未成功有效作答的题目，为防学业事故已自动取消自动提交，转为暂存模式，请人工复核后手动提交！', 'warning');
+      store.addLog('因存在未成功有效作答的题目，为防学业事故已自动取消自动提交，转为暂存模式，请人工复核后手动提交！', 'error');
     } else {
       store.addLog('当前为自动暂存模式，正在定位暂存按钮', 'info');
     }

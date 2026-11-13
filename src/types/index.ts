@@ -41,6 +41,7 @@ export interface LogItem {
   time: string;
   message: string;
   level: LogLevel;
+  count?: number;
 }
 
 export type QuestionType = 'single' | 'multiple' | 'judge' | 'fill' | 'essay' | 'unknown';

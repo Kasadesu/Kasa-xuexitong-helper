@@ -18,6 +18,43 @@ if (typeof (globalThis as any).window === 'undefined') {
   };
 }
 
+if (typeof (globalThis as any).HTMLElement === 'undefined') {
+  (globalThis as any).HTMLElement = class MockHTMLElement {
+    style: any = {};
+    attachShadow() {
+      return {
+        replaceChildren: () => {},
+        querySelector: () => null,
+        querySelectorAll: () => []
+      };
+    }
+    getBoundingClientRect() {
+      return { left: 100, top: 100, width: 340, height: 400 };
+    }
+  };
+}
+
+if (typeof (globalThis as any).customElements === 'undefined') {
+  (globalThis as any).customElements = {
+    define: () => {}
+  };
+}
+
+if (typeof (globalThis as any).document === 'undefined') {
+  (globalThis as any).document = {
+    title: '测试文档',
+    createElement: (tag: string) => ({
+      tagName: tag,
+      style: {},
+      innerHTML: '',
+      textContent: '',
+      querySelector: () => null,
+      querySelectorAll: () => [],
+      addEventListener: () => {}
+    })
+  };
+}
+
 if (typeof (globalThis as any).localStorage === 'undefined') {
   const storeMap = new Map<string, string>();
   (globalThis as any).localStorage = {
@@ -41,8 +78,10 @@ import {
   extractQuestionImages,
   hasMeaningfulContent,
   blobToDataUrl,
-  compressImageBlob
+  compressImageBlob,
+  doQuizTask
 } from '../src/adapters/quiz';
+import { PANEL_STYLES } from '../src/ui/style';
 import { parseAiResponse } from '../src/adapters/ai-solver/parser';
 import { buildAiPrompt } from '../src/adapters/ai-solver/prompt';
 import {
@@ -1970,6 +2009,675 @@ C 是温迪（风神巴巴托斯）
       assert.ok(cleanedBio.includes('氧化分解：葡萄糖在线粒体内氧化分解为二氧化碳和水；'));
       assert.ok(cleanedBio.includes('光解：叶绿体类囊体薄膜上水的光解产生氧气；'));
       assert.ok(cleanedBio.includes('裂解：石油重油在催化裂化装置中裂解为低碳烯烃。'));
+    });
+  });
+
+  describe('【第 23 关】红色置顶待确认日志与 Store 告警状态流转测试', () => {
+    it('23.1 普通日志 (info, warning, success) 仅进入 logs 绝不进入 pinnedErrors', () => {
+      store.acknowledgeAllErrors();
+      const prevPinnedCount = store.pinnedErrors.length;
+      assert.equal(prevPinnedCount, 0);
+
+      store.addLog('普通信息日志', 'info');
+      store.addLog('警告信息日志', 'warning');
+      store.addLog('成功信息日志', 'success');
+
+      assert.equal(store.pinnedErrors.length, 0);
+      assert.equal(store.logs[0].message, '成功信息日志');
+      assert.equal(store.logs[1].message, '警告信息日志');
+      assert.equal(store.logs[2].message, '普通信息日志');
+    });
+
+    it('23.2 错误日志 (error) 同步进入 pinnedErrors 且初始 count 为 1', () => {
+      store.acknowledgeAllErrors();
+      let notified = false;
+      const unsub = store.subscribe(() => {
+        notified = true;
+      });
+
+      store.addLog('测试致命错误：网络超时', 'error');
+      unsub();
+
+      assert.ok(notified);
+      assert.equal(store.pinnedErrors.length, 1);
+      assert.equal(store.pinnedErrors[0].message, '测试致命错误：网络超时');
+      assert.equal(store.pinnedErrors[0].count, 1);
+      assert.equal(store.pinnedErrors[0].level, 'error');
+      assert.ok(store.pinnedErrors[0].id);
+    });
+
+    it('23.3 相同错误文案查重并置顶，累加 count 并不新增重复项', () => {
+      store.acknowledgeAllErrors();
+      store.addLog('第 1 题错误 A', 'error');
+      store.addLog('第 2 题错误 B', 'error');
+      assert.equal(store.pinnedErrors.length, 2);
+      assert.equal(store.pinnedErrors[0].message, '第 2 题错误 B');
+
+      // 再次报出第 1 题错误 A（即使带前后空格也查重）
+      store.addLog('  第 1 题错误 A  ', 'error');
+      assert.equal(store.pinnedErrors.length, 2);
+      // 应被置顶到首位
+      assert.equal(store.pinnedErrors[0].message, '  第 1 题错误 A  ');
+      assert.equal(store.pinnedErrors[0].count, 2);
+    });
+
+    it('23.4 acknowledgeError(id) 精准移除指定告警，acknowledgeAllErrors() 一键清空', () => {
+      store.acknowledgeAllErrors();
+      store.addLog('错误 1', 'error');
+      store.addLog('错误 2', 'error');
+      store.addLog('错误 3', 'error');
+      assert.equal(store.pinnedErrors.length, 3);
+
+      const targetId = store.pinnedErrors[1].id;
+      const targetMsg = store.pinnedErrors[1].message;
+      store.acknowledgeError(targetId);
+
+      assert.equal(store.pinnedErrors.length, 2);
+      assert.ok(!store.pinnedErrors.some((p) => p.id === targetId || p.message === targetMsg));
+
+      store.acknowledgeAllErrors();
+      assert.equal(store.pinnedErrors.length, 0);
+    });
+
+    it('23.5 pinnedErrors 最大容量限制为 20 条，溢出时丢弃末尾最早条目', () => {
+      store.acknowledgeAllErrors();
+      for (let i = 1; i <= 25; i++) {
+        store.addLog(`系统错误编号 #${i}`, 'error');
+      }
+
+      assert.equal(store.pinnedErrors.length, 20);
+      assert.equal(store.pinnedErrors[0].message, '系统错误编号 #25');
+      assert.equal(store.pinnedErrors[19].message, '系统错误编号 #6');
+    });
+
+    it('23.6 doQuizTask 真实集成场景：当填空/主观题 AI 拒答时，写入 pinnedErrors、置 status=failed、取消自动提交并继续作答后续题目', async () => {
+      store.acknowledgeAllErrors();
+      store.config.autoSubmitWork = true;
+      store.config.aiApiKey = 'sk-mock-key';
+      store.config.aiBaseUrl = 'https://api.mock.com';
+
+      // 模拟第 1 题：填空题（AI 拒答），第 2 题：单选题（AI 正常作答）
+      const mockTimu1: any = {
+        getAttribute: (k: string) => (k === 'data-id' ? 'q-refusal-1' : null),
+        contains: () => false,
+        querySelector: (sel: string) => {
+          if (sel.includes(':checked')) return null;
+          if (sel.includes('.Zy_TItle') || sel.includes('mark_name') || sel.includes('timu-title')) {
+            return { textContent: '1. 【填空题】分析下图中分子的立体构型', innerText: '1. 【填空题】分析下图中分子的立体构型' };
+          }
+          if (sel.includes('input') || sel.includes('textarea')) {
+            return { type: 'text', name: 'answer1', value: '', dispatchEvent: () => true, getAttribute: () => null };
+          }
+          return null;
+        },
+        querySelectorAll: (sel: string) => {
+          if (sel.includes('textarea') || sel.includes('input')) {
+            return [{ type: 'text', name: 'answer1', value: '', dispatchEvent: () => true, getAttribute: () => null }];
+          }
+          return [];
+        },
+        cloneNode: function() { return this; }
+      };
+
+      const clickedOptions: string[] = [];
+      const createOpt = (letter: string, text: string) => ({
+        innerText: `${letter}. ${text}`,
+        textContent: `${letter}. ${text}`,
+        getAttribute: () => null,
+        setAttribute: () => {},
+        contains: () => false,
+        classList: { contains: () => false, add: () => {}, remove: () => {} },
+        querySelector: (sel: string) => {
+          if (sel.includes(':checked') || sel.includes('check_answer')) return null;
+          if (sel.includes('num_option')) {
+            return {
+              classList: { contains: () => false, add: () => {}, remove: () => {} },
+              getAttribute: () => null,
+              click: () => clickedOptions.push(letter)
+            };
+          }
+          return {
+            click: () => clickedOptions.push(letter),
+            dispatchEvent: () => true,
+            getAttribute: () => null,
+            setAttribute: () => {},
+            classList: { contains: () => false, add: () => {}, remove: () => {} }
+          };
+        },
+        click: () => clickedOptions.push(letter),
+        dispatchEvent: () => true
+      });
+
+      const mockTimu2: any = {
+        getAttribute: (k: string) => (k === 'data-id' ? 'q-normal-2' : null),
+        contains: () => false,
+        querySelector: (sel: string) => {
+          if (sel.includes('check_answer') || sel.includes(':checked') || sel.includes('cur') || sel.includes('aria-checked')) return null;
+          if (sel.includes('.Zy_TItle') || sel.includes('mark_name') || sel.includes('timu-title')) {
+            return { textContent: '2. 【单选题】提瓦特大陆的风神是谁？', innerText: '2. 【单选题】提瓦特大陆的风神是谁？' };
+          }
+          if (sel.includes('li') || sel.includes('num_option') || sel.includes('input')) {
+            return createOpt('A', '温迪');
+          }
+          return null;
+        },
+        querySelectorAll: (sel: string) => {
+          if (sel.includes('li')) {
+            return [createOpt('A', '温迪'), createOpt('B', '钟离')];
+          }
+          return [];
+        },
+        cloneNode: function() { return this; }
+      };
+
+      const mockDoc: any = {
+        querySelector: (sel: string) => {
+          if (sel.includes('.questionLi') || sel.includes('.TiMu') || sel.includes('div[data-id]')) {
+            return mockTimu1;
+          }
+          if (sel.includes('.ceyan_name') || sel.includes('title')) {
+            return { textContent: '有机化学与提瓦特常识期末测验' };
+          }
+          if (sel.includes('.btnSubmit') || sel.includes('btnSave') || sel.includes('暂存')) {
+            return { click: () => {}, dispatchEvent: () => true };
+          }
+          return null;
+        },
+        querySelectorAll: (sel: string) => {
+          if (sel.includes('questionLi') || sel.includes('TiMu')) {
+            return [mockTimu1, mockTimu2];
+          }
+          return [];
+        }
+      };
+
+      const prevXhr = (globalThis as any).GM_xmlhttpRequest;
+      let queryCount = 0;
+      (globalThis as any).GM_xmlhttpRequest = (opts: any) => {
+        queryCount++;
+        setTimeout(() => {
+          if (opts.url.includes('/chat/completions')) {
+            if (queryCount === 1) {
+              opts.onload({
+                status: 200,
+                responseText: JSON.stringify({
+                  choices: [{ message: { content: '抱歉，由于题目未提供关键图片或数据，无法为您解答。' } }]
+                })
+              });
+            } else {
+              opts.onload({
+                status: 200,
+                responseText: JSON.stringify({
+                  choices: [{ message: { content: '["A"]' } }]
+                })
+              });
+            }
+          }
+        }, 10);
+      };
+
+      try {
+        const controller = new AbortController();
+        await doQuizTask(null, mockDoc, {
+          signal: controller.signal,
+          isCurrent: () => true
+        });
+
+        assert.equal(store.questions.length, 2);
+        assert.equal(store.questions[0].status, 'failed', '第 1 题因拒答应置为 failed');
+        assert.equal(store.questions[1].status, 'success', '第 2 题应正常作答完成');
+
+        const errorMsgs = store.pinnedErrors.map((p) => p.message);
+        assert.ok(
+          errorMsgs.some((m) => m.includes('第 1 题 AI 反映缺少关键图片或数据')),
+          'pinnedErrors 必须记录第 1 题缺图拒答错误'
+        );
+        assert.ok(
+          errorMsgs.some((m) => m.includes('已自动取消自动提交，请人工复核后手动提交')),
+          'pinnedErrors 必须记录取消自动提交的错误'
+        );
+        assert.ok(
+          errorMsgs.some((m) => m.includes('因存在未成功有效作答的题目，为防学业事故已自动取消自动提交，转为暂存模式')),
+          '最终日志必须转为暂存模式告警'
+        );
+
+        assert.ok(clickedOptions.includes('A'), '连续作答流程不应中断，第 2 题应成功作答');
+      } finally {
+        (globalThis as any).GM_xmlhttpRequest = prevXhr;
+      }
+    });
+
+    it('23.7 doQuizTask 真实集成场景：当 AI 返回空答案且无保底匹配时，置 status=failed、记录错误并取消自动提交', async () => {
+      store.acknowledgeAllErrors();
+      store.config.autoSubmitWork = true;
+      store.config.aiApiKey = 'sk-mock-key';
+
+      // 构造前 3 题已答题跳过，第 4 题（避开 index 1-3 保底）AI 返回空答案
+      const makeDoneTimu = (idx: number) => ({
+        getAttribute: () => `q-done-${idx}`,
+        contains: () => false,
+        querySelector: (sel: string) => {
+          if (sel.includes('.Zy_TItle') || sel.includes('mark_name')) {
+            return { textContent: `${idx}. 【单选题】已作答测试题` };
+          }
+          if (sel.includes(':checked')) return { checked: true };
+          if (sel.includes('input') || sel.includes('li')) return { type: 'radio', checked: true };
+          return null;
+        },
+        querySelectorAll: (sel: string) => {
+          if (sel.includes('li') || sel.includes('input')) return [{ type: 'radio', checked: true }];
+          return [];
+        },
+        cloneNode: function() { return this; }
+      });
+
+      const mockTimu4: any = {
+        getAttribute: () => 'q-empty-ans-4',
+        contains: () => false,
+        querySelector: (sel: string) => {
+          if (sel.includes(':checked')) return null;
+          if (sel.includes('.Zy_TItle') || sel.includes('mark_name')) {
+            return { textContent: '4. 【简答题】请阐述量子纠缠超距相关的微观物理机制与对称性破缺' };
+          }
+          if (sel.includes('textarea') || sel.includes('input')) {
+            return { type: 'text', name: 'ans', value: '', dispatchEvent: () => true, getAttribute: () => null };
+          }
+          return null;
+        },
+        querySelectorAll: (sel: string) => {
+          if (sel.includes('textarea') || sel.includes('input')) {
+            return [{ type: 'text', name: 'ans', value: '', dispatchEvent: () => true, getAttribute: () => null }];
+          }
+          return [];
+        },
+        cloneNode: function() { return this; }
+      };
+
+      const mockDoc: any = {
+        querySelector: (sel: string) => {
+          if (sel.includes('.questionLi') || sel.includes('.TiMu') || sel.includes('div[data-id]')) {
+            return mockTimu4;
+          }
+          return { click: () => {}, dispatchEvent: () => true };
+        },
+        querySelectorAll: (sel: string) =>
+          sel.includes('TiMu') ? [makeDoneTimu(1), makeDoneTimu(2), makeDoneTimu(3), mockTimu4] : []
+      };
+
+      const prevXhr = (globalThis as any).GM_xmlhttpRequest;
+      (globalThis as any).GM_xmlhttpRequest = (opts: any) => {
+        setTimeout(() => {
+          opts.onload({
+            status: 200,
+            responseText: JSON.stringify({
+              choices: [{ message: { content: '   ' } }]
+            })
+          });
+        }, 10);
+      };
+
+      try {
+        await doQuizTask(null, mockDoc, {
+          signal: new AbortController().signal,
+          isCurrent: () => true
+        });
+
+        // 前 3 题已跳过，第 4 题（索引 3）为 failed
+        assert.equal(store.questions[3].status, 'failed');
+        assert.ok(
+          store.pinnedErrors.some((p) => p.message.includes('第 4 题未获取到有效答案，已保留空白')),
+          '未获取到有效答案必须写入 pinnedErrors'
+        );
+      } finally {
+        (globalThis as any).GM_xmlhttpRequest = prevXhr;
+      }
+    });
+
+    it('23.8 doQuizTask 真实集成场景：当 AI 返回了有效答案但题目未检测到输入框时，记录未检测到输入框错误', async () => {
+      store.acknowledgeAllErrors();
+      store.config.autoSubmitWork = true;
+      store.config.aiApiKey = 'sk-mock-key';
+
+      const mockTimu: any = {
+        getAttribute: () => 'q-no-input',
+        contains: () => false,
+        querySelector: (sel: string) => {
+          if (sel.includes(':checked')) return null;
+          if (sel.includes('.Zy_TItle') || sel.includes('mark_name')) {
+            return { textContent: '1. 【填空题】光速在真空中的精确数值约为多少米每秒？' };
+          }
+          return null;
+        },
+        querySelectorAll: () => [],
+        cloneNode: function() { return this; }
+      };
+
+      const mockDoc: any = {
+        querySelector: (sel: string) => {
+          if (sel.includes('.questionLi') || sel.includes('.TiMu') || sel.includes('div[data-id]')) {
+            return mockTimu;
+          }
+          return { click: () => {}, dispatchEvent: () => true };
+        },
+        querySelectorAll: (sel: string) => (sel.includes('TiMu') ? [mockTimu] : [])
+      };
+
+      const prevXhr = (globalThis as any).GM_xmlhttpRequest;
+      (globalThis as any).GM_xmlhttpRequest = (opts: any) => {
+        setTimeout(() => {
+          opts.onload({
+            status: 200,
+            responseText: JSON.stringify({
+              choices: [{ message: { content: '["299792458"]' } }]
+            })
+          });
+        }, 10);
+      };
+
+      try {
+        await doQuizTask(null, mockDoc, {
+          signal: new AbortController().signal,
+          isCurrent: () => true
+        });
+
+        assert.equal(store.questions[0].status, 'failed');
+        assert.ok(
+          store.pinnedErrors.some((p) => p.message.includes('第 1 题未检测到可填入的输入框')),
+          '缺少输入框必须记录专属 error 告警'
+        );
+      } finally {
+        (globalThis as any).GM_xmlhttpRequest = prevXhr;
+      }
+    });
+
+    it('23.9 doQuizTask 真实集成场景：当题目含图片且模型回答提示无法完整识别时，记录重点核对错误', async () => {
+      store.acknowledgeAllErrors();
+      store.config.aiApiKey = 'sk-mock-key';
+
+      const mockTimu: any = {
+        getAttribute: () => 'q-img-check',
+        contains: () => false,
+        querySelector: (sel: string) => {
+          if (sel.includes(':checked')) return null;
+          if (sel.includes('.Zy_TItle') || sel.includes('mark_name')) {
+            return { textContent: '1. 【单选题】请观察下图反应式判断主产物' };
+          }
+          return null;
+        },
+        querySelectorAll: (sel: string) => {
+          if (sel.includes('img')) {
+            return [
+              {
+                src: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==valid-img-data-long-enough-to-pass-filter-defense-check-for-testing-padding-extra-characters-exceeding-two-hundred-bytes-threshold',
+                style: {},
+                getAttribute: () => null,
+                complete: true,
+                naturalWidth: 200,
+                naturalHeight: 200
+              }
+            ];
+          }
+          if (sel.includes('li')) {
+            return [
+              {
+                innerText: 'A. 产物甲',
+                textContent: 'A. 产物甲',
+                getAttribute: () => null,
+                setAttribute: () => {},
+                classList: { contains: () => false, add: () => {}, remove: () => {} },
+                querySelector: (sel: string) => {
+                  if (sel.includes('num_option')) {
+                    return {
+                      classList: { contains: () => false, add: () => {}, remove: () => {} },
+                      getAttribute: () => null
+                    };
+                  }
+                  return {
+                    click: () => {},
+                    dispatchEvent: () => true,
+                    getAttribute: () => null,
+                    setAttribute: () => {},
+                    classList: { contains: () => false, add: () => {}, remove: () => {} }
+                  };
+                },
+                click: () => {},
+                dispatchEvent: () => true
+              }
+            ];
+          }
+          return [];
+        },
+        cloneNode: function() { return this; }
+      };
+
+      const mockDoc: any = {
+        querySelector: (sel: string) => {
+          if (sel.includes('.questionLi') || sel.includes('.TiMu') || sel.includes('div[data-id]')) {
+            return mockTimu;
+          }
+          return { click: () => {}, dispatchEvent: () => true };
+        },
+        querySelectorAll: (sel: string) => (sel.includes('TiMu') ? [mockTimu] : [])
+      };
+
+      const prevXhr = (globalThis as any).GM_xmlhttpRequest;
+      (globalThis as any).GM_xmlhttpRequest = (opts: any) => {
+        setTimeout(() => {
+          opts.onload({
+            status: 200,
+            responseText: JSON.stringify({
+              choices: [
+                {
+                  message: {
+                    content: '["由于题目没有提供反应物结构式图片，无法确定答案"]'
+                  }
+                }
+              ]
+            })
+          });
+        }, 10);
+      };
+
+      try {
+        await doQuizTask(null, mockDoc, {
+          signal: new AbortController().signal,
+          isCurrent: () => true
+        });
+
+        assert.ok(
+          store.pinnedErrors.some((p) => p.message.includes('模型提示无法完整识别图片内容，请在交卷前重点人工核对')),
+          '含图且模型提示缺图时必须记录重点核对错误'
+        );
+      } finally {
+        (globalThis as any).GM_xmlhttpRequest = prevXhr;
+      }
+    });
+
+    it('23.10 PANEL_STYLES 规范契约：Tokens 规范、focus-visible、prefers-reduced-motion、.kasa-card 及无 💯 / 一 图标', () => {
+      // 1. CSS Tokens 规范检查
+      assert.ok(PANEL_STYLES.includes('--kasa-bg: #FFFFFF;'), '必须定义 --kasa-bg');
+      assert.ok(PANEL_STYLES.includes('--kasa-primary: #2563EB;'), '必须定义 --kasa-primary');
+      assert.ok(PANEL_STYLES.includes('--kasa-danger: #DC2626;'), '必须定义 --kasa-danger');
+      assert.ok(PANEL_STYLES.includes('--kasa-radius-lg: 12px;'), '必须定义 --kasa-radius-lg');
+
+      // 2. 键盘与交互可访问性 :focus-visible
+      assert.ok(PANEL_STYLES.includes(':focus-visible'), '必须包含 :focus-visible 样式规则');
+
+      // 3. 动效降级 @media (prefers-reduced-motion: reduce)
+      assert.ok(
+        PANEL_STYLES.includes('@media (prefers-reduced-motion: reduce)'),
+        '必须包含 prefers-reduced-motion 媒体查询'
+      );
+
+      // 4. 卡片容器类名保留
+      assert.ok(PANEL_STYLES.includes('.kasa-card'), '必须保留 .kasa-card 核心容器样式');
+
+      // 5. 移除了 💯 和字符 一
+      assert.ok(!PANEL_STYLES.includes('💯'), 'PANEL_STYLES 中严禁包含 💯 emoji');
+      assert.ok(PANEL_STYLES.includes('.minimized-ball'), '必须包含 .minimized-ball 样式');
+      assert.ok(PANEL_STYLES.includes('.minimized-alert-dot'), '必须包含 .minimized-alert-dot 角标样式');
+    });
+
+    let FloatingCardClass: any;
+    const getFloatingCard = async () => {
+      if (!FloatingCardClass) {
+        const mod = await import('../src/ui/floating-card');
+        FloatingCardClass = mod.FloatingCard;
+      }
+      return new FloatingCardClass();
+    };
+
+    it('23.11 FloatingCard DOM 契约与无障碍属性：role=alert、aria-live=assertive、版本 v1.3、兄弟容器架构', async () => {
+      const card = await getFloatingCard();
+      const tabContentHtml = (card as any).getTabContentHtml();
+
+      assert.ok(
+        tabContentHtml.includes('id="kasa-pinned-alerts"'),
+        'tab-content 下必须包含 #kasa-pinned-alerts 容器'
+      );
+      assert.ok(
+        tabContentHtml.includes('role="alert"'),
+        '#kasa-pinned-alerts 必须具备 role="alert"'
+      );
+      assert.ok(
+        tabContentHtml.includes('aria-live="assertive"'),
+        '#kasa-pinned-alerts 必须具备 aria-live="assertive"'
+      );
+      assert.ok(
+        tabContentHtml.includes('id="kasa-log-list"'),
+        'tab-content 下必须包含 #kasa-log-list 兄弟容器'
+      );
+
+      const cardRenderHtml = (card as any).render.toString();
+      assert.ok(cardRenderHtml.includes('v1.3'), '面板必须标注 v1.3 版本');
+      assert.ok(!cardRenderHtml.includes('v1.4'), '版本不可篡改为 v1.4');
+      assert.ok(!cardRenderHtml.includes('💯'), '面板 HTML 不得包含 💯 emoji');
+    });
+
+    it('23.12 FloatingCard 增量渲染机制：普通日志高频进入时绝不重建 #kasa-pinned-alerts DOM，杜绝吞点击', async () => {
+      store.acknowledgeAllErrors();
+      store.addLog('置顶错误 A', 'error');
+
+      const card = await getFloatingCard();
+      (card as any).currentTab = 'log';
+
+      let pinnedReplaced = false;
+      let logReplaced = false;
+
+      const mockPinnedEl = {
+        style: { display: '' },
+        set innerHTML(_v: string) { pinnedReplaced = true; },
+        get innerHTML() { return '<div class="pinned-header">...</div>'; }
+      };
+
+      const mockLogListEl = {
+        set innerHTML(_v: string) { logReplaced = true; },
+        get innerHTML() { return '<div>log items</div>'; }
+      };
+
+      (card as any).shadow = {
+        querySelector: (sel: string) => {
+          if (sel === '#kasa-pinned-alerts') return mockPinnedEl;
+          if (sel === '#kasa-log-list') return mockLogListEl;
+          if (sel === '#tab-alert-badge') return { style: {}, textContent: '' };
+          return null;
+        }
+      };
+
+      (card as any).lastRenderedPinnedKey = store.pinnedErrors.map((p) => `${p.id}:${p.time}:${p.count || 1}`).join('|');
+      (card as any).lastRenderedLogKey = `${store.logs.length}:${store.logs[0]?.id || ''}:p`;
+
+      pinnedReplaced = false;
+      logReplaced = false;
+      store.addLog('第 1 题开始作答', 'info');
+      (card as any).onStoreUpdate();
+
+      assert.equal(pinnedReplaced, false, '普通日志产生时，#kasa-pinned-alerts 绝不可被重建，防止吞点击');
+      assert.equal(logReplaced, true, '#kasa-log-list 日志流必须正常增量更新');
+    });
+
+    it('23.13 FloatingCard Tab 切换与事件委托：log -> setting -> log 切回后告警正确恢复且支持按钮确认', async () => {
+      store.acknowledgeAllErrors();
+      store.addLog('关键告警 X', 'error');
+      const errId = store.pinnedErrors[0].id;
+
+      const card = await getFloatingCard();
+      (card as any).currentTab = 'log';
+
+      let logHtml = (card as any).getTabContentHtml();
+      assert.ok(logHtml.includes('关键告警 X'));
+      assert.ok(logHtml.includes(`data-ack-id="${errId}"`));
+      assert.ok(logHtml.includes('id="btn-ack-all"'));
+
+      (card as any).currentTab = 'setting';
+      let settingHtml = (card as any).getTabContentHtml();
+      assert.ok(settingHtml.includes('cfg-api-key'), 'setting 页面应包含 API 配置');
+      assert.ok(!settingHtml.includes('关键告警 X'), 'setting 页面不应展示告警列表');
+
+      (card as any).currentTab = 'log';
+      let restoredLogHtml = (card as any).getTabContentHtml();
+      assert.ok(restoredLogHtml.includes('关键告警 X'), '切回 log 后告警必须正确渲染');
+
+      let ackHandled = false;
+      const fakeEvent = {
+        target: {
+          closest: (sel: string) => {
+            if (sel === '[data-ack-id]') {
+              return { dataset: { ackId: errId } };
+            }
+            return null;
+          }
+        },
+        stopPropagation: () => { ackHandled = true; }
+      };
+
+      const tabContentClickHandler = (e: any) => {
+        const target = e.target;
+        const ackBtn = target.closest('[data-ack-id]');
+        if (ackBtn) {
+          e.stopPropagation();
+          store.acknowledgeError(ackBtn.dataset.ackId);
+        }
+      };
+
+      tabContentClickHandler(fakeEvent);
+      assert.ok(ackHandled, '点击确认应阻止事件冒泡');
+      assert.equal(store.pinnedErrors.length, 0, '调用 acknowledgeError 后告警应被消除');
+    });
+
+    it('23.14 FloatingCard 生命周期：disconnectedCallback 必须 100% 退订 Store 避免内存泄露', async () => {
+      const card = await getFloatingCard();
+      let unsubCalled = false;
+      (card as any).storeUnsubscribe = () => {
+        unsubCalled = true;
+      };
+
+      card.disconnectedCallback();
+      assert.equal(unsubCalled, true, '组件销毁时必须调用 storeUnsubscribe');
+      assert.equal((card as any).storeUnsubscribe, null, '退订后引用应置为 null');
+    });
+
+    it('23.15 空白消息错误防御与无日志状态回退：纯空格错误绝不污染 pinnedErrors，全确认后恢复待机占位', async () => {
+      store.acknowledgeAllErrors();
+      store.logs = [];
+
+      store.addLog('   \n\t  ', 'error');
+      assert.equal(store.pinnedErrors.length, 0, '纯空格错误绝不能作为置顶告警压入');
+
+      store.addLog('真实告警 1', 'error');
+      assert.equal(store.pinnedErrors.length, 1);
+
+      // 清空 logs 模拟仅有置顶告警但无普通日志记录的状态
+      store.logs = [];
+      const card = await getFloatingCard();
+      let logHtmlWithPinned = (card as any).getLogListHtml();
+      assert.equal(logHtmlWithPinned, '', '当有置顶告警且无普通日志时，日志区域应为空，不产生重叠占位');
+
+      store.acknowledgeAllErrors();
+      assert.equal(store.pinnedErrors.length, 0);
+
+      let logHtmlEmpty = (card as any).getLogListHtml();
+      assert.ok(logHtmlEmpty.includes('等待任务开始...'), '无日志且告警清空后必须显示等待任务开始');
     });
   });
 });

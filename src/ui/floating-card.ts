@@ -15,6 +15,8 @@ export class FloatingCard extends HTMLElement {
   private isManualModelInput = false;
   private isFetchingModels = false;
   private lastRenderedLogKey = '';
+  private lastRenderedPinnedKey = '';
+  private storeUnsubscribe: (() => void) | null = null;
 
   constructor() {
     super();
@@ -24,7 +26,17 @@ export class FloatingCard extends HTMLElement {
   connectedCallback() {
     this.applyHostStyles();
     this.render();
-    store.subscribe(() => this.onStoreUpdate());
+    if (this.storeUnsubscribe) {
+      this.storeUnsubscribe();
+    }
+    this.storeUnsubscribe = store.subscribe(() => this.onStoreUpdate());
+  }
+
+  disconnectedCallback() {
+    if (this.storeUnsubscribe) {
+      this.storeUnsubscribe();
+      this.storeUnsubscribe = null;
+    }
   }
 
   private applyHostStyles() {
@@ -50,10 +62,17 @@ export class FloatingCard extends HTMLElement {
     const container = document.createElement('div');
     container.id = 'root-container';
 
+    const pinnedCount = store.pinnedErrors.length;
+    const badgeText = pinnedCount > 99 ? '99+' : String(pinnedCount);
+
     if (isMinimized) {
       container.innerHTML = `
-        <div class="minimized-ball" id="drag-handle" title="点击展开 Kasa 学习通助手">
-          💯
+        <div class="minimized-ball" id="drag-handle" title="点击展开 Kasa 学习通助手" role="button" aria-label="展开 Kasa 学习通助手">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M22 10v6M2 10l10-5 10 5-10 5z"></path>
+            <path d="M6 12v5c3 3 9 3 12 0v-5"></path>
+          </svg>
+          <span class="minimized-alert-dot" style="${pinnedCount === 0 ? 'display:none;' : ''}">${badgeText}</span>
         </div>
       `;
       this.shadow.replaceChildren(styleEl, container);
@@ -73,7 +92,11 @@ export class FloatingCard extends HTMLElement {
             </div>
             <div class="kasa-actions">
               <button class="kasa-btn-quiz ${btnStateClass}" id="btn-start-quiz" title="${btnText}">${btnText}</button>
-              <button class="kasa-btn-icon" id="btn-minimize" title="最小化">一</button>
+              <button class="kasa-btn-icon" id="btn-minimize" title="最小化" aria-label="最小化面板">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <line x1="5" y1="12" x2="19" y2="12"></line>
+                </svg>
+              </button>
             </div>
           </div>
 
@@ -87,12 +110,15 @@ export class FloatingCard extends HTMLElement {
             </div>
             <div class="kasa-progress-footer">
               <span id="kasa-prog-time">${this.formatProgressTime(store.progress.currentTime, store.progress.duration)}</span>
-              <span id="kasa-prog-percent" style="font-weight:600;color:#2563eb;">${store.progress.percent}%</span>
+              <span id="kasa-prog-percent" style="font-weight:600;color:var(--kasa-primary);">${store.progress.percent}%</span>
             </div>
           </div>
 
           <div class="kasa-tabs">
-            <div class="kasa-tab ${this.currentTab === 'log' ? 'active' : ''}" data-tab="log">运行日志</div>
+            <div class="kasa-tab ${this.currentTab === 'log' ? 'active' : ''}" data-tab="log">
+              <span>运行日志</span>
+              <span class="tab-badge" id="tab-alert-badge" style="${pinnedCount === 0 ? 'display:none;' : ''}">${badgeText}</span>
+            </div>
             <div class="kasa-tab ${this.currentTab === 'setting' ? 'active' : ''}" data-tab="setting">AI 设置</div>
             <div class="kasa-tab ${this.currentTab === 'about' ? 'active' : ''}" data-tab="about">说明</div>
           </div>
@@ -103,7 +129,8 @@ export class FloatingCard extends HTMLElement {
         </div>
       `;
       if (this.currentTab === 'log') {
-        this.lastRenderedLogKey = `${store.logs.length}:${store.logs[0]?.id || ''}`;
+        this.lastRenderedLogKey = `${store.logs.length}:${store.logs[0]?.id || ''}:${pinnedCount > 0 ? 'p' : 'e'}`;
+        this.lastRenderedPinnedKey = store.pinnedErrors.map((p) => `${p.id}:${p.time}:${p.count || 1}`).join('|');
       }
       this.shadow.replaceChildren(styleEl, container);
       this.bindCardEvents(container);
@@ -117,7 +144,21 @@ export class FloatingCard extends HTMLElement {
       return;
     }
 
-    if (this.renderedMinimized) return;
+    const pinnedCount = store.pinnedErrors.length;
+    const badgeText = pinnedCount > 99 ? '99+' : String(pinnedCount);
+
+    if (this.renderedMinimized) {
+      const alertDot = this.shadow.querySelector('.minimized-alert-dot') as HTMLElement | null;
+      if (alertDot) {
+        if (pinnedCount > 0) {
+          alertDot.style.display = 'flex';
+          alertDot.textContent = badgeText;
+        } else {
+          alertDot.style.display = 'none';
+        }
+      }
+      return;
+    }
 
     // Update progress widget
     const progTitle = this.shadow.querySelector('#kasa-prog-title');
@@ -147,15 +188,50 @@ export class FloatingCard extends HTMLElement {
       startQuizBtn.className = `kasa-btn-quiz ${btnStateClass}`;
     }
 
-    // Only update log view if current tab is log AND logs actually changed
+    // Update Tab alert badge
+    const tabBadge = this.shadow.querySelector('#tab-alert-badge') as HTMLElement | null;
+    if (tabBadge) {
+      if (pinnedCount > 0) {
+        tabBadge.style.display = 'inline-flex';
+        tabBadge.textContent = badgeText;
+      } else {
+        tabBadge.style.display = 'none';
+      }
+    }
+
+    // Independent granular incremental refresh for log tab
     if (this.currentTab === 'log') {
-      const currentLogKey = `${store.logs.length}:${store.logs[0]?.id || ''}`;
-      if (currentLogKey !== this.lastRenderedLogKey) {
-        this.lastRenderedLogKey = currentLogKey;
+      const pinnedContainer = this.shadow.querySelector('#kasa-pinned-alerts') as HTMLElement | null;
+      const logListContainer = this.shadow.querySelector('#kasa-log-list') as HTMLElement | null;
+
+      if (!pinnedContainer || !logListContainer) {
         const tabContent = this.shadow.querySelector('#tab-content');
         if (tabContent) {
           tabContent.innerHTML = this.getTabContentHtml();
+          this.lastRenderedLogKey = `${store.logs.length}:${store.logs[0]?.id || ''}:${pinnedCount > 0 ? 'p' : 'e'}`;
+          this.lastRenderedPinnedKey = store.pinnedErrors.map((p) => `${p.id}:${p.time}:${p.count || 1}`).join('|');
         }
+        return;
+      }
+
+      // 1. Only re-render pinned container when pinnedErrors change
+      const currentPinnedKey = store.pinnedErrors.map((p) => `${p.id}:${p.time}:${p.count || 1}`).join('|');
+      if (currentPinnedKey !== this.lastRenderedPinnedKey) {
+        this.lastRenderedPinnedKey = currentPinnedKey;
+        if (pinnedCount > 0) {
+          pinnedContainer.style.display = '';
+          pinnedContainer.innerHTML = this.getPinnedAlertsHtml();
+        } else {
+          pinnedContainer.style.display = 'none';
+          pinnedContainer.innerHTML = '';
+        }
+      }
+
+      // 2. Only re-render log stream when logs change (never swallow click on pinned alerts)
+      const currentLogKey = `${store.logs.length}:${store.logs[0]?.id || ''}:${pinnedCount > 0 ? 'p' : 'e'}`;
+      if (currentLogKey !== this.lastRenderedLogKey) {
+        this.lastRenderedLogKey = currentLogKey;
+        logListContainer.innerHTML = this.getLogListHtml();
       }
     }
   }
@@ -187,23 +263,68 @@ export class FloatingCard extends HTMLElement {
     }
   }
 
+  private getPinnedAlertsHtml(): string {
+    const list = store.pinnedErrors;
+    if (!list.length) return '';
+    return `
+      <div class="pinned-header">
+        <div class="pinned-title">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;" aria-hidden="true">
+            <circle cx="12" cy="12" r="10"></circle>
+            <line x1="12" y1="8" x2="12" y2="12"></line>
+            <line x1="12" y1="16" x2="12.01" y2="16"></line>
+          </svg>
+          <span>待复核关键告警 (${list.length})</span>
+        </div>
+        <button type="button" class="pinned-btn-ack-all" id="btn-ack-all" title="忽略并确认所有告警">全部确认</button>
+      </div>
+      <ul class="pinned-list">
+        ${list.map((p) => `
+          <li class="pinned-item">
+            <div class="pinned-item-content">
+              <span class="pinned-item-time">[${p.time}]</span>
+              <span>${this.escapeHtml(p.message)}</span>
+              ${(p.count && p.count > 1) ? `<span class="pinned-item-badge">×${p.count}</span>` : ''}
+            </div>
+            <button type="button" class="kasa-ack-btn" data-ack-id="${p.id}" title="确认并移除该项告警" aria-label="确认告警">确认</button>
+          </li>
+        `).join('')}
+      </ul>
+    `;
+  }
+
+  private getLogListHtml(): string {
+    if (!store.logs.length) {
+      if (store.pinnedErrors.length > 0) {
+        return '';
+      }
+      return `<div style="text-align:center;color:var(--kasa-text-muted);padding:24px 0;font-size:12px;">等待任务开始...</div>`;
+    }
+    return `
+      <div class="log-container">
+        ${store.logs
+          .map(
+            (log) => `
+          <div class="log-item">
+            <span class="log-time">[${log.time}]</span>
+            <span class="log-msg ${log.level}">${this.escapeHtml(log.message)}</span>
+          </div>
+        `
+          )
+          .join('')}
+      </div>
+    `;
+  }
+
   private getTabContentHtml(): string {
     if (this.currentTab === 'log') {
-      if (!store.logs.length) {
-        return `<div style="text-align:center;color:#9ca3af;padding:24px 0;">等待任务开始...</div>`;
-      }
+      const hasPinned = store.pinnedErrors.length > 0;
       return `
-        <div class="log-container">
-          ${store.logs
-            .map(
-              (log) => `
-            <div class="log-item">
-              <span class="log-time">[${log.time}]</span>
-              <span class="log-msg ${log.level}">${this.escapeHtml(log.message)}</span>
-            </div>
-          `
-            )
-            .join('')}
+        <div id="kasa-pinned-alerts" class="kasa-pinned-alerts" role="alert" aria-live="assertive" style="${hasPinned ? '' : 'display:none;'}">
+          ${this.getPinnedAlertsHtml()}
+        </div>
+        <div id="kasa-log-list">
+          ${this.getLogListHtml()}
         </div>
       `;
     }
@@ -302,7 +423,7 @@ export class FloatingCard extends HTMLElement {
           <div class="setting-label">
             <span>作答题型范围</span>
           </div>
-          <div style="display:flex;flex-wrap:wrap;gap:8px 12px;padding:4px 0;font-size:12px;color:#374151;">
+          <div style="display:flex;flex-wrap:wrap;gap:8px 12px;padding:4px 0;font-size:12px;color:var(--kasa-text-secondary);">
             <label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" id="cfg-type-single" ${cfg.enabledQuestionTypes?.single !== false ? 'checked' : ''}> 单选</label>
             <label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" id="cfg-type-multiple" ${cfg.enabledQuestionTypes?.multiple !== false ? 'checked' : ''}> 多选</label>
             <label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" id="cfg-type-judge" ${cfg.enabledQuestionTypes?.judge !== false ? 'checked' : ''}> 判断</label>
@@ -318,12 +439,12 @@ export class FloatingCard extends HTMLElement {
     }
 
     return `
-      <div style="font-size:12px;color:#4b5563;line-height:1.7;">
-        <div style="font-weight:600;margin-bottom:6px;color:#1f2937;">使用说明</div>
+      <div style="font-size:12px;color:var(--kasa-text-secondary);line-height:1.7;">
+        <div style="font-weight:600;margin-bottom:6px;color:var(--kasa-text);">使用说明</div>
         <p style="margin:4px 0;">• <strong>课程学习</strong>：进入章节后自动原速播放音视频、浏览课件，完成后自动跳转下一节。</p>
         <p style="margin:4px 0;">• <strong>作业与测验</strong>：在「AI 设置」中填好 API Key 与模型，点击右上角「开始答题」即可自动作答。</p>
         <p style="margin:4px 0;">• <strong>数据安全</strong>：配置与 Key 仅保存在当前浏览器本地，直接请求服务商接口。</p>
-        <div style="margin-top:12px;padding-top:8px;border-top:1px solid #f3f4f6;color:#9ca3af;font-size:11px;">
+        <div style="margin-top:12px;padding-top:8px;border-top:1px solid var(--kasa-border);color:var(--kasa-text-muted);font-size:11px;">
           提示：遇到遮挡可点击右上角最小化面板 · v1.3.0
         </div>
       </div>
@@ -388,7 +509,9 @@ export class FloatingCard extends HTMLElement {
           if (tabContent) {
             tabContent.innerHTML = this.getTabContentHtml();
             if (tab === 'log') {
-              this.lastRenderedLogKey = `${store.logs.length}:${store.logs[0]?.id || ''}`;
+              const pCount = store.pinnedErrors.length;
+              this.lastRenderedLogKey = `${store.logs.length}:${store.logs[0]?.id || ''}:${pCount > 0 ? 'p' : 'e'}`;
+              this.lastRenderedPinnedKey = store.pinnedErrors.map((p) => `${p.id}:${p.time}:${p.count || 1}`).join('|');
             } else if (tab === 'setting') {
               this.bindSettingEvents(tabContent);
             }
@@ -398,8 +521,31 @@ export class FloatingCard extends HTMLElement {
     });
 
     const tabContent = container.querySelector('#tab-content');
-    if (tabContent && this.currentTab === 'setting') {
-      this.bindSettingEvents(tabContent);
+    if (tabContent) {
+      // Event delegation for pinned alert acknowledgement
+      tabContent.addEventListener('click', (e) => {
+        const target = e.target as HTMLElement;
+        const ackBtn = target.closest<HTMLElement>('[data-ack-id]');
+        if (ackBtn) {
+          e.stopPropagation();
+          const ackId = ackBtn.dataset.ackId;
+          if (ackId) {
+            store.acknowledgeError(ackId);
+          }
+          return;
+        }
+
+        const ackAllBtn = target.closest<HTMLElement>('#btn-ack-all');
+        if (ackAllBtn) {
+          e.stopPropagation();
+          store.acknowledgeAllErrors();
+          return;
+        }
+      });
+
+      if (this.currentTab === 'setting') {
+        this.bindSettingEvents(tabContent);
+      }
     }
   }
 

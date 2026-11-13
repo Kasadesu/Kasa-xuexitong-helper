@@ -50,6 +50,7 @@ type Listener = () => void;
 class Store {
   public config: AppConfig;
   public logs: LogItem[] = [];
+  public pinnedErrors: LogItem[] = [];
   public questions: Question[] = [];
   public isQuizRunning: boolean = false;
   public progress: TaskProgress = {
@@ -195,6 +196,42 @@ class Store {
     if (this.logs.length > 100) {
       this.logs.pop();
     }
+
+    if (level === 'error') {
+      const trimmedMsg = message.trim();
+      if (trimmedMsg) {
+        const existingIndex = this.pinnedErrors.findIndex((p) => p.message.trim() === trimmedMsg);
+        if (existingIndex !== -1) {
+          const existing = this.pinnedErrors.splice(existingIndex, 1)[0];
+          existing.time = time;
+          existing.message = message;
+          existing.count = (existing.count || 1) + 1;
+          this.pinnedErrors.unshift(existing);
+        } else {
+          this.pinnedErrors.unshift({
+            id: item.id,
+            time,
+            message,
+            level: 'error',
+            count: 1
+          });
+          if (this.pinnedErrors.length > 20) {
+            this.pinnedErrors.pop();
+          }
+        }
+      }
+    }
+
+    this.notify();
+  }
+
+  public acknowledgeError(id: string) {
+    this.pinnedErrors = this.pinnedErrors.filter((item) => item.id !== id);
+    this.notify();
+  }
+
+  public acknowledgeAllErrors() {
+    this.pinnedErrors = [];
     this.notify();
   }
 

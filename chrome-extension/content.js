@@ -65,6 +65,7 @@
 	var Store = class {
 		config;
 		logs = [];
+		pinnedErrors = [];
 		questions = [];
 		isQuizRunning = false;
 		progress = {
@@ -178,6 +179,36 @@
 			};
 			this.logs.unshift(item);
 			if (this.logs.length > 100) this.logs.pop();
+			if (level === "error") {
+				const trimmedMsg = message.trim();
+				if (trimmedMsg) {
+					const existingIndex = this.pinnedErrors.findIndex((p) => p.message.trim() === trimmedMsg);
+					if (existingIndex !== -1) {
+						const existing = this.pinnedErrors.splice(existingIndex, 1)[0];
+						existing.time = time;
+						existing.message = message;
+						existing.count = (existing.count || 1) + 1;
+						this.pinnedErrors.unshift(existing);
+					} else {
+						this.pinnedErrors.unshift({
+							id: item.id,
+							time,
+							message,
+							level: "error",
+							count: 1
+						});
+						if (this.pinnedErrors.length > 20) this.pinnedErrors.pop();
+					}
+				}
+			}
+			this.notify();
+		}
+		acknowledgeError(id) {
+			this.pinnedErrors = this.pinnedErrors.filter((item) => item.id !== id);
+			this.notify();
+		}
+		acknowledgeAllErrors() {
+			this.pinnedErrors = [];
 			this.notify();
 		}
 		updateProgress(partial) {
@@ -207,10 +238,36 @@
 	var store = new Store();
 	var PANEL_STYLES = `
 :host {
+  --kasa-bg: #FFFFFF;
+  --kasa-surface: #FFFFFF;
+  --kasa-surface-muted: #F1F5F9;
+  --kasa-surface-subtle: #F8FAFC;
+  --kasa-border: #E2E8F0;
+  --kasa-border-strong: #CBD5E1;
+  --kasa-text: #0F172A;
+  --kasa-text-secondary: #475569;
+  --kasa-text-muted: #64748B;
+  --kasa-primary: #2563EB;
+  --kasa-primary-hover: #1D4ED8;
+  --kasa-primary-subtle: #EFF6FF;
+  --kasa-success: #059669;
+  --kasa-warning: #D97706;
+  --kasa-danger: #DC2626;
+  --kasa-danger-hover: #B91C1C;
+  --kasa-danger-text: #991B1B;
+  --kasa-danger-bg: #FFF1F2;
+  --kasa-danger-border: #FECACA;
+  --kasa-radius-sm: 4px;
+  --kasa-radius-md: 8px;
+  --kasa-radius-lg: 12px;
+  --kasa-shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+  --kasa-shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.07), 0 2px 4px -2px rgba(0, 0, 0, 0.05);
+  --kasa-shadow-lg: 0 10px 25px -3px rgba(15, 23, 42, 0.1), 0 4px 10px -4px rgba(15, 23, 42, 0.05);
+
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   font-size: 13px;
   line-height: 1.5;
-  color: #1f2937;
+  color: var(--kasa-text);
   user-select: none;
   z-index: 2147483647 !important;
   position: fixed !important;
@@ -222,26 +279,33 @@
   box-sizing: border-box;
 }
 
+button:focus-visible,
+input:focus-visible,
+select:focus-visible {
+  outline: 2px solid var(--kasa-primary);
+  outline-offset: 1px;
+}
+
 .kasa-card {
-  width: 330px;
-  background: rgba(255, 255, 255, 0.96);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  border: 1px solid rgba(229, 231, 235, 0.9);
-  border-radius: 12px;
-  box-shadow: 0 12px 30px -5px rgba(0, 0, 0, 0.12), 0 8px 10px -6px rgba(0, 0, 0, 0.05);
+  width: 340px;
+  background: var(--kasa-bg);
+  border: 1px solid var(--kasa-border);
+  border-radius: var(--kasa-radius-lg);
+  box-shadow: var(--kasa-shadow-lg);
   overflow: hidden;
   transition: box-shadow 0.2s ease;
 }
 
 .kasa-card:hover {
-  box-shadow: 0 20px 30px -5px rgba(0, 0, 0, 0.18), 0 8px 12px -6px rgba(0, 0, 0, 0.08);
+  box-shadow: 0 16px 30px -5px rgba(15, 23, 42, 0.14), 0 6px 12px -4px rgba(15, 23, 42, 0.06);
 }
 
+/* Header */
 .kasa-header {
   padding: 10px 14px;
-  background: linear-gradient(135deg, #2563eb, #1d4ed8);
-  color: #ffffff;
+  background: #FFFFFF;
+  border-bottom: 1px solid var(--kasa-border);
+  color: var(--kasa-text);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -253,11 +317,97 @@
   cursor: grabbing;
 }
 
+.kasa-title-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.kasa-badge {
+  font-size: 11px;
+  padding: 1px 6px;
+  background: var(--kasa-surface-muted);
+  color: var(--kasa-text-secondary);
+  border: 1px solid var(--kasa-border);
+  border-radius: var(--kasa-radius-sm);
+  font-weight: 600;
+  letter-spacing: 0.3px;
+}
+
+.kasa-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--kasa-text);
+}
+
+.kasa-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Start/Pause Quiz Action Button */
+.kasa-btn-quiz {
+  font-size: 12px;
+  padding: 4px 10px;
+  color: #FFFFFF;
+  border: 1px solid transparent;
+  border-radius: var(--kasa-radius-sm);
+  cursor: pointer;
+  font-weight: 600;
+  margin-right: 2px;
+  transition: background-color 0.15s ease, opacity 0.15s ease;
+}
+
+.kasa-btn-quiz.start {
+  background: var(--kasa-primary);
+}
+
+.kasa-btn-quiz.start:hover {
+  background: var(--kasa-primary-hover);
+}
+
+.kasa-btn-quiz.pause {
+  background: var(--kasa-warning);
+}
+
+.kasa-btn-quiz.pause:hover {
+  background: #B45309;
+}
+
+.kasa-btn-quiz.resume {
+  background: #0284C7;
+}
+
+.kasa-btn-quiz.resume:hover {
+  background: #0369A1;
+}
+
+.kasa-btn-icon {
+  background: transparent;
+  border: none;
+  color: var(--kasa-text-muted);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: var(--kasa-radius-sm);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  transition: all 0.15s ease;
+}
+
+.kasa-btn-icon:hover {
+  background: var(--kasa-surface-muted);
+  color: var(--kasa-text);
+}
+
 /* Progress Section */
 .kasa-progress-box {
   padding: 10px 14px 8px;
-  background: #f8fafc;
-  border-bottom: 1px solid #f1f5f9;
+  background: var(--kasa-surface-subtle);
+  border-bottom: 1px solid var(--kasa-border);
 }
 
 .kasa-progress-header {
@@ -270,7 +420,7 @@
 
 .kasa-progress-title {
   font-weight: 500;
-  color: #334155;
+  color: var(--kasa-text-secondary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -283,7 +433,7 @@
   gap: 4px;
   font-size: 11px;
   font-weight: 600;
-  color: #2563eb;
+  color: var(--kasa-primary);
 }
 
 .kasa-progress-status.playing::before {
@@ -292,8 +442,8 @@
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #16a34a;
-  box-shadow: 0 0 6px #16a34a;
+  background: var(--kasa-success);
+  box-shadow: 0 0 6px var(--kasa-success);
   animation: kasa-pulse 1.5s infinite;
 }
 
@@ -303,7 +453,7 @@
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #d97706;
+  background: var(--kasa-warning);
 }
 
 .kasa-progress-status.finished::before {
@@ -312,7 +462,7 @@
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #2563eb;
+  background: var(--kasa-primary);
 }
 
 .kasa-progress-status.idle::before {
@@ -321,7 +471,7 @@
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #94a3b8;
+  background: var(--kasa-border-strong);
 }
 
 @keyframes kasa-pulse {
@@ -331,8 +481,8 @@
 
 .kasa-progress-track {
   width: 100%;
-  height: 6px;
-  background: #e2e8f0;
+  height: 5px;
+  background: var(--kasa-border);
   border-radius: 9999px;
   overflow: hidden;
   margin-bottom: 4px;
@@ -340,7 +490,7 @@
 
 .kasa-progress-bar {
   height: 100%;
-  background: linear-gradient(90deg, #3b82f6, #2563eb);
+  background: var(--kasa-primary);
   border-radius: 9999px;
   width: 0%;
   transition: width 0.25s ease;
@@ -351,141 +501,206 @@
   justify-content: space-between;
   align-items: center;
   font-size: 10px;
-  color: #64748b;
+  color: var(--kasa-text-muted);
   font-family: ui-monospace, monospace;
 }
 
-.kasa-title-group {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.kasa-badge {
-  font-size: 10px;
-  padding: 2px 6px;
-  background: rgba(255, 255, 255, 0.2);
-  border-radius: 9999px;
-  font-weight: 600;
-  letter-spacing: 0.5px;
-}
-
-.kasa-title {
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.kasa-actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.kasa-btn-quiz {
-  font-size: 12px;
-  padding: 4px 10px;
-  color: #ffffff;
-  border: 1px solid rgba(255, 255, 255, 0.35);
-  border-radius: 6px;
-  cursor: pointer;
-  font-weight: 600;
-  margin-right: 4px;
-  transition: all 0.2s ease;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
-}
-
-.kasa-btn-quiz:hover {
-  transform: translateY(-1px);
-}
-
-.kasa-btn-quiz:active {
-  transform: translateY(0);
-}
-
-.kasa-btn-quiz.start {
-  background: linear-gradient(135deg, #10b981, #059669);
-  box-shadow: 0 2px 8px rgba(16, 185, 129, 0.45);
-}
-
-.kasa-btn-quiz.start:hover {
-  background: linear-gradient(135deg, #059669, #047857);
-  box-shadow: 0 4px 12px rgba(16, 185, 129, 0.55);
-}
-
-.kasa-btn-quiz.pause {
-  background: linear-gradient(135deg, #f59e0b, #d97706);
-  box-shadow: 0 2px 8px rgba(245, 158, 11, 0.45);
-}
-
-.kasa-btn-quiz.pause:hover {
-  background: linear-gradient(135deg, #d97706, #b45309);
-  box-shadow: 0 4px 12px rgba(245, 158, 11, 0.55);
-}
-
-.kasa-btn-quiz.resume {
-  background: linear-gradient(135deg, #06b6d4, #0891b2);
-  box-shadow: 0 2px 8px rgba(6, 182, 212, 0.45);
-}
-
-.kasa-btn-quiz.resume:hover {
-  background: linear-gradient(135deg, #0891b2, #0e7490);
-  box-shadow: 0 4px 12px rgba(6, 182, 212, 0.55);
-}
-
-.kasa-btn-icon {
-  background: none;
-  border: none;
-  color: #ffffff;
-  opacity: 0.8;
-  cursor: pointer;
-  padding: 3px 6px;
-  border-radius: 4px;
-  font-size: 12px;
-  line-height: 1;
-}
-
-.kasa-btn-icon:hover {
-  opacity: 1;
-  background: rgba(255, 255, 255, 0.2);
-}
-
+/* Tabs: Segmented Capsule Track */
 .kasa-tabs {
   display: flex;
-  border-bottom: 1px solid #f3f4f6;
-  background: #f9fafb;
+  background: var(--kasa-surface-muted);
+  padding: 3px;
+  border-radius: var(--kasa-radius-md);
+  margin: 8px 12px 0;
+  gap: 4px;
 }
 
 .kasa-tab {
   flex: 1;
   text-align: center;
-  padding: 8px 0;
+  padding: 6px 0;
   font-size: 12px;
-  color: #6b7280;
+  font-weight: 500;
+  color: var(--kasa-text-secondary);
   cursor: pointer;
-  border-bottom: 2px solid transparent;
+  border-radius: var(--kasa-radius-sm);
   transition: all 0.15s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  position: relative;
+}
+
+.kasa-tab:hover {
+  color: var(--kasa-text);
 }
 
 .kasa-tab.active {
-  color: #2563eb;
+  color: var(--kasa-primary);
   font-weight: 600;
-  border-bottom-color: #2563eb;
-  background: #ffffff;
+  background: #FFFFFF;
+  box-shadow: var(--kasa-shadow-sm);
 }
 
+.tab-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  background: var(--kasa-danger);
+  color: #FFFFFF;
+  font-size: 10px;
+  font-weight: 700;
+  border-radius: 9999px;
+  line-height: 1;
+}
+
+/* Body */
 .kasa-body {
-  padding: 12px 14px;
+  padding: 10px 12px;
   max-height: 380px;
   overflow-y: auto;
 }
 
-/* Scrollbar */
 .kasa-body::-webkit-scrollbar {
-  width: 5px;
+  width: 4px;
 }
 .kasa-body::-webkit-scrollbar-thumb {
-  background: #d1d5db;
+  background: var(--kasa-border-strong);
   border-radius: 4px;
+}
+
+/* Pinned Error Alerts */
+.kasa-pinned-alerts {
+  background: var(--kasa-danger-bg);
+  border: 1px solid var(--kasa-danger-border);
+  border-left: 3px solid var(--kasa-danger);
+  border-radius: var(--kasa-radius-md);
+  padding: 8px 10px;
+  margin-bottom: 8px;
+}
+
+.pinned-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.pinned-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--kasa-danger-text);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.pinned-btn-ack-all {
+  font-size: 11px;
+  font-weight: 500;
+  padding: 1px 6px;
+  background: #FFFFFF;
+  border: 1px solid var(--kasa-danger-border);
+  color: var(--kasa-danger-text);
+  border-radius: var(--kasa-radius-sm);
+  cursor: pointer;
+  min-height: 22px;
+  transition: all 0.15s ease;
+}
+
+.pinned-btn-ack-all:hover {
+  background: #FEE2E2;
+  border-color: var(--kasa-danger);
+}
+
+.pinned-list {
+  max-height: 120px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.pinned-list::-webkit-scrollbar {
+  width: 4px;
+}
+.pinned-list::-webkit-scrollbar-thumb {
+  background: #FCA5A5;
+  border-radius: 4px;
+}
+
+.pinned-item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 5px 8px;
+  background: #FFFFFF;
+  border-radius: var(--kasa-radius-sm);
+  border: 1px solid #FEE2E2;
+}
+
+.pinned-item-content {
+  flex: 1;
+  min-width: 0;
+  word-break: break-all;
+  color: var(--kasa-text);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.pinned-item-time {
+  color: var(--kasa-danger-text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 10px;
+  font-weight: 600;
+  margin-right: 4px;
+}
+
+.pinned-item-badge {
+  display: inline-block;
+  background: var(--kasa-danger);
+  color: #FFFFFF;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 0 4px;
+  border-radius: 9999px;
+  margin-left: 4px;
+  line-height: 1.3;
+}
+
+.kasa-ack-btn {
+  flex-shrink: 0;
+  min-height: 24px;
+  padding: 1px 7px;
+  background: #FFFFFF;
+  border: 1px solid var(--kasa-danger-border);
+  color: var(--kasa-danger-text);
+  border-radius: var(--kasa-radius-sm);
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.kasa-ack-btn:hover {
+  background: #FEE2E2;
+  border-color: var(--kasa-danger);
+}
+
+.kasa-ack-btn:focus-visible {
+  outline: 2px solid var(--kasa-danger);
+  outline-offset: 1px;
 }
 
 /* Log View */
@@ -502,17 +717,19 @@
   gap: 6px;
   line-height: 1.4;
   word-break: break-all;
+  align-items: baseline;
 }
 
 .log-time {
-  color: #9ca3af;
+  color: var(--kasa-text-muted);
   flex-shrink: 0;
+  font-size: 10px;
 }
 
-.log-msg.info { color: #374151; }
-.log-msg.success { color: #16a34a; font-weight: 500; }
-.log-msg.warning { color: #d97706; }
-.log-msg.error { color: #dc2626; font-weight: 500; }
+.log-msg.info { color: var(--kasa-text-secondary); }
+.log-msg.success { color: var(--kasa-success); font-weight: 500; }
+.log-msg.warning { color: var(--kasa-warning); }
+.log-msg.error { color: var(--kasa-danger); font-weight: 600; }
 
 /* Settings View */
 .setting-item {
@@ -524,24 +741,25 @@
   justify-content: space-between;
   align-items: center;
   font-size: 12px;
-  color: #4b5563;
+  color: var(--kasa-text-secondary);
   margin-bottom: 4px;
 }
 
 .setting-input, .setting-select {
   width: 100%;
   padding: 6px 10px;
-  border: 1px solid #d1d5db;
-  border-radius: 6px;
+  border: 1px solid var(--kasa-border-strong);
+  border-radius: var(--kasa-radius-sm);
   font-size: 12px;
-  color: #1f2937;
+  color: var(--kasa-text);
   outline: none;
-  background: #ffffff;
+  background: #FFFFFF;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
 .setting-input:focus, .setting-select:focus {
-  border-color: #2563eb;
-  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15);
+  border-color: var(--kasa-primary);
+  box-shadow: 0 0 0 2px var(--kasa-primary-subtle);
 }
 
 .toggle-switch {
@@ -561,7 +779,7 @@
   position: absolute;
   cursor: pointer;
   top: 0; left: 0; right: 0; bottom: 0;
-  background-color: #cbd5e1;
+  background-color: var(--kasa-border-strong);
   transition: .2s;
   border-radius: 18px;
 }
@@ -579,31 +797,53 @@
 }
 
 input:checked + .toggle-slider {
-  background-color: #2563eb;
+  background-color: var(--kasa-primary);
 }
 
 input:checked + .toggle-slider:before {
   transform: translateX(16px);
 }
 
+/* Minimized Floating Ball */
 .minimized-ball {
   width: 44px;
   height: 44px;
-  background: linear-gradient(135deg, #2563eb, #1d4ed8);
-  color: #ffffff;
+  background: var(--kasa-primary);
+  color: #FFFFFF;
   border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 18px;
-  font-weight: bold;
   cursor: grab;
-  box-shadow: 0 8px 16px rgba(37, 99, 235, 0.35);
-  transition: transform 0.15s ease;
+  box-shadow: var(--kasa-shadow-md);
+  position: relative;
+  transition: transform 0.15s ease, background-color 0.15s ease;
 }
 
 .minimized-ball:hover {
-  transform: scale(1.08);
+  transform: scale(1.06);
+  background: var(--kasa-primary-hover);
+}
+
+.minimized-alert-dot {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  background: var(--kasa-danger);
+  color: #FFFFFF;
+  font-size: 10px;
+  font-weight: 700;
+  border-radius: 9999px;
+  border: 2px solid #FFFFFF;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+  pointer-events: none;
+  line-height: 1;
 }
 
 /* Action & Setting Buttons */
@@ -611,14 +851,14 @@ input:checked + .toggle-slider:before {
   margin-top: 6px;
   width: 100%;
   padding: 6px 10px;
-  background: #f1f5f9;
-  color: #2563eb;
-  border: 1px solid #cbd5e1;
-  border-radius: 6px;
+  background: var(--kasa-surface-muted);
+  color: var(--kasa-primary);
+  border: 1px solid var(--kasa-border-strong);
+  border-radius: var(--kasa-radius-sm);
   font-size: 12px;
   font-weight: 500;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: all 0.15s ease;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -626,8 +866,8 @@ input:checked + .toggle-slider:before {
 }
 
 .kasa-btn-fetch:hover:not(:disabled) {
-  background: #e2e8f0;
-  border-color: #94a3b8;
+  background: #E2E8F0;
+  border-color: #94A3B8;
 }
 
 .kasa-btn-fetch:disabled {
@@ -638,25 +878,23 @@ input:checked + .toggle-slider:before {
 .kasa-btn-save {
   width: 100%;
   padding: 8px 12px;
-  background: #2563eb;
-  color: #ffffff;
+  background: var(--kasa-primary);
+  color: #FFFFFF;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--kasa-radius-sm);
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
-  box-shadow: 0 2px 4px rgba(37, 99, 235, 0.2);
-  transition: all 0.2s ease;
+  box-shadow: 0 1px 2px rgba(37, 99, 235, 0.2);
+  transition: all 0.15s ease;
 }
 
 .kasa-btn-save:hover {
-  background: #1d4ed8;
-  box-shadow: 0 4px 6px rgba(37, 99, 235, 0.3);
+  background: var(--kasa-primary-hover);
 }
 
 .kasa-btn-save.saved {
-  background: #16a34a !important;
-  box-shadow: 0 2px 4px rgba(22, 163, 74, 0.3) !important;
+  background: var(--kasa-success) !important;
 }
 
 .kasa-link-btn {
@@ -664,20 +902,29 @@ input:checked + .toggle-slider:before {
   border: none;
   padding: 0;
   font-size: 11px;
-  color: #2563eb;
+  color: var(--kasa-primary);
   cursor: pointer;
   text-decoration: underline;
   font-weight: normal;
 }
 
 .kasa-link-btn:hover {
-  color: #1d4ed8;
+  color: var(--kasa-primary-hover);
 }
 
 .kasa-input-btn-group {
   display: flex;
   gap: 6px;
   align-items: center;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 `;
 	var buildAiPrompt = (type, stem, options, paperContext, images, subType) => {
@@ -1272,6 +1519,8 @@ input:checked + .toggle-slider:before {
 		isManualModelInput = false;
 		isFetchingModels = false;
 		lastRenderedLogKey = "";
+		lastRenderedPinnedKey = "";
+		storeUnsubscribe = null;
 		constructor() {
 			super();
 			this.shadow = this.attachShadow({ mode: "open" });
@@ -1279,7 +1528,14 @@ input:checked + .toggle-slider:before {
 		connectedCallback() {
 			this.applyHostStyles();
 			this.render();
-			store.subscribe(() => this.onStoreUpdate());
+			if (this.storeUnsubscribe) this.storeUnsubscribe();
+			this.storeUnsubscribe = store.subscribe(() => this.onStoreUpdate());
+		}
+		disconnectedCallback() {
+			if (this.storeUnsubscribe) {
+				this.storeUnsubscribe();
+				this.storeUnsubscribe = null;
+			}
 		}
 		applyHostStyles() {
 			this.style.position = "fixed";
@@ -1299,10 +1555,16 @@ input:checked + .toggle-slider:before {
 			styleEl.textContent = PANEL_STYLES;
 			const container = document.createElement("div");
 			container.id = "root-container";
+			const pinnedCount = store.pinnedErrors.length;
+			const badgeText = pinnedCount > 99 ? "99+" : String(pinnedCount);
 			if (isMinimized) {
 				container.innerHTML = `
-        <div class="minimized-ball" id="drag-handle" title="点击展开 Kasa 学习通助手">
-          💯
+        <div class="minimized-ball" id="drag-handle" title="点击展开 Kasa 学习通助手" role="button" aria-label="展开 Kasa 学习通助手">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M22 10v6M2 10l10-5 10 5-10 5z"></path>
+            <path d="M6 12v5c3 3 9 3 12 0v-5"></path>
+          </svg>
+          <span class="minimized-alert-dot" style="${pinnedCount === 0 ? "display:none;" : ""}">${badgeText}</span>
         </div>
       `;
 				this.shadow.replaceChildren(styleEl, container);
@@ -1320,7 +1582,11 @@ input:checked + .toggle-slider:before {
             </div>
             <div class="kasa-actions">
               <button class="kasa-btn-quiz ${isRunning ? "pause" : isPaused ? "resume" : "start"}" id="btn-start-quiz" title="${btnText}">${btnText}</button>
-              <button class="kasa-btn-icon" id="btn-minimize" title="最小化">一</button>
+              <button class="kasa-btn-icon" id="btn-minimize" title="最小化" aria-label="最小化面板">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <line x1="5" y1="12" x2="19" y2="12"></line>
+                </svg>
+              </button>
             </div>
           </div>
 
@@ -1334,12 +1600,15 @@ input:checked + .toggle-slider:before {
             </div>
             <div class="kasa-progress-footer">
               <span id="kasa-prog-time">${this.formatProgressTime(store.progress.currentTime, store.progress.duration)}</span>
-              <span id="kasa-prog-percent" style="font-weight:600;color:#2563eb;">${store.progress.percent}%</span>
+              <span id="kasa-prog-percent" style="font-weight:600;color:var(--kasa-primary);">${store.progress.percent}%</span>
             </div>
           </div>
 
           <div class="kasa-tabs">
-            <div class="kasa-tab ${this.currentTab === "log" ? "active" : ""}" data-tab="log">运行日志</div>
+            <div class="kasa-tab ${this.currentTab === "log" ? "active" : ""}" data-tab="log">
+              <span>运行日志</span>
+              <span class="tab-badge" id="tab-alert-badge" style="${pinnedCount === 0 ? "display:none;" : ""}">${badgeText}</span>
+            </div>
             <div class="kasa-tab ${this.currentTab === "setting" ? "active" : ""}" data-tab="setting">AI 设置</div>
             <div class="kasa-tab ${this.currentTab === "about" ? "active" : ""}" data-tab="about">说明</div>
           </div>
@@ -1349,7 +1618,10 @@ input:checked + .toggle-slider:before {
           </div>
         </div>
       `;
-				if (this.currentTab === "log") this.lastRenderedLogKey = `${store.logs.length}:${store.logs[0]?.id || ""}`;
+				if (this.currentTab === "log") {
+					this.lastRenderedLogKey = `${store.logs.length}:${store.logs[0]?.id || ""}:${pinnedCount > 0 ? "p" : "e"}`;
+					this.lastRenderedPinnedKey = store.pinnedErrors.map((p) => `${p.id}:${p.time}:${p.count || 1}`).join("|");
+				}
 				this.shadow.replaceChildren(styleEl, container);
 				this.bindCardEvents(container);
 				this.setupDragging(container.querySelector("#drag-handle"), false);
@@ -1360,7 +1632,18 @@ input:checked + .toggle-slider:before {
 				this.render();
 				return;
 			}
-			if (this.renderedMinimized) return;
+			const pinnedCount = store.pinnedErrors.length;
+			const badgeText = pinnedCount > 99 ? "99+" : String(pinnedCount);
+			if (this.renderedMinimized) {
+				const alertDot = this.shadow.querySelector(".minimized-alert-dot");
+				if (alertDot) {
+					if (pinnedCount > 0) {
+						alertDot.style.display = "flex";
+						alertDot.textContent = badgeText;
+					} else alertDot.style.display = "none";
+				}
+				return;
+			}
 			const progTitle = this.shadow.querySelector("#kasa-prog-title");
 			const progStatus = this.shadow.querySelector("#kasa-prog-status");
 			const progBar = this.shadow.querySelector("#kasa-prog-bar");
@@ -1384,12 +1667,40 @@ input:checked + .toggle-slider:before {
 				startQuizBtn.title = btnText;
 				startQuizBtn.className = `kasa-btn-quiz ${btnStateClass}`;
 			}
+			const tabBadge = this.shadow.querySelector("#tab-alert-badge");
+			if (tabBadge) {
+				if (pinnedCount > 0) {
+					tabBadge.style.display = "inline-flex";
+					tabBadge.textContent = badgeText;
+				} else tabBadge.style.display = "none";
+			}
 			if (this.currentTab === "log") {
-				const currentLogKey = `${store.logs.length}:${store.logs[0]?.id || ""}`;
+				const pinnedContainer = this.shadow.querySelector("#kasa-pinned-alerts");
+				const logListContainer = this.shadow.querySelector("#kasa-log-list");
+				if (!pinnedContainer || !logListContainer) {
+					const tabContent = this.shadow.querySelector("#tab-content");
+					if (tabContent) {
+						tabContent.innerHTML = this.getTabContentHtml();
+						this.lastRenderedLogKey = `${store.logs.length}:${store.logs[0]?.id || ""}:${pinnedCount > 0 ? "p" : "e"}`;
+						this.lastRenderedPinnedKey = store.pinnedErrors.map((p) => `${p.id}:${p.time}:${p.count || 1}`).join("|");
+					}
+					return;
+				}
+				const currentPinnedKey = store.pinnedErrors.map((p) => `${p.id}:${p.time}:${p.count || 1}`).join("|");
+				if (currentPinnedKey !== this.lastRenderedPinnedKey) {
+					this.lastRenderedPinnedKey = currentPinnedKey;
+					if (pinnedCount > 0) {
+						pinnedContainer.style.display = "";
+						pinnedContainer.innerHTML = this.getPinnedAlertsHtml();
+					} else {
+						pinnedContainer.style.display = "none";
+						pinnedContainer.innerHTML = "";
+					}
+				}
+				const currentLogKey = `${store.logs.length}:${store.logs[0]?.id || ""}:${pinnedCount > 0 ? "p" : "e"}`;
 				if (currentLogKey !== this.lastRenderedLogKey) {
 					this.lastRenderedLogKey = currentLogKey;
-					const tabContent = this.shadow.querySelector("#tab-content");
-					if (tabContent) tabContent.innerHTML = this.getTabContentHtml();
+					logListContainer.innerHTML = this.getLogListHtml();
 				}
 			}
 		}
@@ -1414,20 +1725,60 @@ input:checked + .toggle-slider:before {
 				default: return "待机中";
 			}
 		}
-		getTabContentHtml() {
-			if (this.currentTab === "log") {
-				if (!store.logs.length) return `<div style="text-align:center;color:#9ca3af;padding:24px 0;">等待任务开始...</div>`;
-				return `
-        <div class="log-container">
-          ${store.logs.map((log) => `
-            <div class="log-item">
-              <span class="log-time">[${log.time}]</span>
-              <span class="log-msg ${log.level}">${this.escapeHtml(log.message)}</span>
+		getPinnedAlertsHtml() {
+			const list = store.pinnedErrors;
+			if (!list.length) return "";
+			return `
+      <div class="pinned-header">
+        <div class="pinned-title">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;" aria-hidden="true">
+            <circle cx="12" cy="12" r="10"></circle>
+            <line x1="12" y1="8" x2="12" y2="12"></line>
+            <line x1="12" y1="16" x2="12.01" y2="16"></line>
+          </svg>
+          <span>待复核关键告警 (${list.length})</span>
+        </div>
+        <button type="button" class="pinned-btn-ack-all" id="btn-ack-all" title="忽略并确认所有告警">全部确认</button>
+      </div>
+      <ul class="pinned-list">
+        ${list.map((p) => `
+          <li class="pinned-item">
+            <div class="pinned-item-content">
+              <span class="pinned-item-time">[${p.time}]</span>
+              <span>${this.escapeHtml(p.message)}</span>
+              ${p.count && p.count > 1 ? `<span class="pinned-item-badge">×${p.count}</span>` : ""}
             </div>
-          `).join("")}
+            <button type="button" class="kasa-ack-btn" data-ack-id="${p.id}" title="确认并移除该项告警" aria-label="确认告警">确认</button>
+          </li>
+        `).join("")}
+      </ul>
+    `;
+		}
+		getLogListHtml() {
+			if (!store.logs.length) {
+				if (store.pinnedErrors.length > 0) return "";
+				return `<div style="text-align:center;color:var(--kasa-text-muted);padding:24px 0;font-size:12px;">等待任务开始...</div>`;
+			}
+			return `
+      <div class="log-container">
+        ${store.logs.map((log) => `
+          <div class="log-item">
+            <span class="log-time">[${log.time}]</span>
+            <span class="log-msg ${log.level}">${this.escapeHtml(log.message)}</span>
+          </div>
+        `).join("")}
+      </div>
+    `;
+		}
+		getTabContentHtml() {
+			if (this.currentTab === "log") return `
+        <div id="kasa-pinned-alerts" class="kasa-pinned-alerts" role="alert" aria-live="assertive" style="${store.pinnedErrors.length > 0 ? "" : "display:none;"}">
+          ${this.getPinnedAlertsHtml()}
+        </div>
+        <div id="kasa-log-list">
+          ${this.getLogListHtml()}
         </div>
       `;
-			}
 			if (this.currentTab === "setting") {
 				const cfg = store.config;
 				const cachedModels = cfg.cachedModelList || [];
@@ -1521,7 +1872,7 @@ input:checked + .toggle-slider:before {
           <div class="setting-label">
             <span>作答题型范围</span>
           </div>
-          <div style="display:flex;flex-wrap:wrap;gap:8px 12px;padding:4px 0;font-size:12px;color:#374151;">
+          <div style="display:flex;flex-wrap:wrap;gap:8px 12px;padding:4px 0;font-size:12px;color:var(--kasa-text-secondary);">
             <label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" id="cfg-type-single" ${cfg.enabledQuestionTypes?.single !== false ? "checked" : ""}> 单选</label>
             <label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" id="cfg-type-multiple" ${cfg.enabledQuestionTypes?.multiple !== false ? "checked" : ""}> 多选</label>
             <label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" id="cfg-type-judge" ${cfg.enabledQuestionTypes?.judge !== false ? "checked" : ""}> 判断</label>
@@ -1536,12 +1887,12 @@ input:checked + .toggle-slider:before {
       `;
 			}
 			return `
-      <div style="font-size:12px;color:#4b5563;line-height:1.7;">
-        <div style="font-weight:600;margin-bottom:6px;color:#1f2937;">使用说明</div>
+      <div style="font-size:12px;color:var(--kasa-text-secondary);line-height:1.7;">
+        <div style="font-weight:600;margin-bottom:6px;color:var(--kasa-text);">使用说明</div>
         <p style="margin:4px 0;">• <strong>课程学习</strong>：进入章节后自动原速播放音视频、浏览课件，完成后自动跳转下一节。</p>
         <p style="margin:4px 0;">• <strong>作业与测验</strong>：在「AI 设置」中填好 API Key 与模型，点击右上角「开始答题」即可自动作答。</p>
         <p style="margin:4px 0;">• <strong>数据安全</strong>：配置与 Key 仅保存在当前浏览器本地，直接请求服务商接口。</p>
-        <div style="margin-top:12px;padding-top:8px;border-top:1px solid #f3f4f6;color:#9ca3af;font-size:11px;">
+        <div style="margin-top:12px;padding-top:8px;border-top:1px solid var(--kasa-border);color:var(--kasa-text-muted);font-size:11px;">
           提示：遇到遮挡可点击右上角最小化面板 · v1.3.0
         </div>
       </div>
@@ -1594,14 +1945,34 @@ input:checked + .toggle-slider:before {
 						const tabContent = container.querySelector("#tab-content");
 						if (tabContent) {
 							tabContent.innerHTML = this.getTabContentHtml();
-							if (tab === "log") this.lastRenderedLogKey = `${store.logs.length}:${store.logs[0]?.id || ""}`;
-							else if (tab === "setting") this.bindSettingEvents(tabContent);
+							if (tab === "log") {
+								const pCount = store.pinnedErrors.length;
+								this.lastRenderedLogKey = `${store.logs.length}:${store.logs[0]?.id || ""}:${pCount > 0 ? "p" : "e"}`;
+								this.lastRenderedPinnedKey = store.pinnedErrors.map((p) => `${p.id}:${p.time}:${p.count || 1}`).join("|");
+							} else if (tab === "setting") this.bindSettingEvents(tabContent);
 						}
 					}
 				});
 			});
 			const tabContent = container.querySelector("#tab-content");
-			if (tabContent && this.currentTab === "setting") this.bindSettingEvents(tabContent);
+			if (tabContent) {
+				tabContent.addEventListener("click", (e) => {
+					const target = e.target;
+					const ackBtn = target.closest("[data-ack-id]");
+					if (ackBtn) {
+						e.stopPropagation();
+						const ackId = ackBtn.dataset.ackId;
+						if (ackId) store.acknowledgeError(ackId);
+						return;
+					}
+					if (target.closest("#btn-ack-all")) {
+						e.stopPropagation();
+						store.acknowledgeAllErrors();
+						return;
+					}
+				});
+				if (this.currentTab === "setting") this.bindSettingEvents(tabContent);
+			}
 		}
 		bindSettingEvents(tabContent) {
 			const nextChapterCheck = tabContent.querySelector("#cfg-next-chapter");
@@ -25407,7 +25778,7 @@ input:checked + .toggle-slider:before {
 				answers = matchFallbackAnswer(cleanTitle, optionsTextList, idx + 1);
 				if (answers.length > 0) store.addLog(`第 ${idx + 1} 题启用保底题库匹配: [${answers.join(", ")}]`, "success");
 			}
-			if (questionObj.images && questionObj.images.length > 0 && answers.some((ans) => /无法(?:唯一)?确定答案|没有(?:给出|提供).*?(?:结构式|图片)/.test(ans))) store.addLog(`第 ${idx + 1} 题模型提示无法完整识别图片内容，请在交卷前重点人工核对该题！`, "warning");
+			if (questionObj.images && questionObj.images.length > 0 && answers.some((ans) => /无法(?:唯一)?确定答案|没有(?:给出|提供).*?(?:结构式|图片)/.test(ans))) store.addLog(`第 ${idx + 1} 题模型提示无法完整识别图片内容，请在交卷前重点人工核对该题！`, "error");
 			questionObj.answer = answers;
 			questionObj.status = answers.length > 0 ? "success" : "failed";
 			store.setQuestions([...questionList]);
@@ -25463,10 +25834,10 @@ input:checked + .toggle-slider:before {
 			} else if (answers.some((ans) => isAiRefusalOrApology(ans))) {
 				questionObj.status = "failed";
 				store.setQuestions([...questionList]);
-				store.addLog(`第 ${idx + 1} 题 AI 反映缺少关键图片或数据，已放弃自动填入并保留空白，请人工核对！`, "warning");
+				store.addLog(`第 ${idx + 1} 题 AI 反映缺少关键图片或数据，已放弃自动填入并保留空白，请人工核对！`, "error");
 				if (store.config.autoSubmitWork) {
 					cancelAutoSubmit = true;
-					store.addLog(`检测到第 ${idx + 1} 题未成功获得有效作答，为防学业事故，已自动取消自动提交，请人工复核后手动提交！`, "warning");
+					store.addLog(`检测到第 ${idx + 1} 题未成功获得有效作答，为防学业事故，已自动取消自动提交，请人工复核后手动提交！`, "error");
 				}
 			} else {
 				const textInputs = Array.from(timuEl.querySelectorAll("textarea.answerText, textarea, input.answerInput, input.newAnswerInput, input[type=\"text\"]")).filter((input) => {
@@ -25531,6 +25902,12 @@ input:checked + .toggle-slider:before {
 						} catch {}
 					}
 					store.addLog(`第 ${idx + 1}/${timuNodes.length} 题作答完成：已填入文本`, "success");
+				} else {
+					questionObj.status = "failed";
+					store.setQuestions([...questionList]);
+					if (store.config.autoSubmitWork) cancelAutoSubmit = true;
+					if (answers.length === 0) store.addLog(`第 ${idx + 1} 题未获取到有效答案，已保留空白，请人工核对！`, "error");
+					else store.addLog(`第 ${idx + 1} 题未检测到可填入的输入框，请人工检查填入！`, "error");
 				}
 			}
 			const currentPct = Math.round((idx + 1) / timuNodes.length * 100);
@@ -25574,7 +25951,7 @@ input:checked + .toggle-slider:before {
 				store.addLog("作业已成功自动提交！", "success");
 			} else store.addLog("未找到明确的提交按钮，作业已保持作答状态", "warning");
 		} else {
-			if (autoSubmitWork && cancelAutoSubmit) store.addLog("因存在未成功有效作答的题目，为防学业事故已自动取消自动提交，转为暂存模式，请人工复核后手动提交！", "warning");
+			if (autoSubmitWork && cancelAutoSubmit) store.addLog("因存在未成功有效作答的题目，为防学业事故已自动取消自动提交，转为暂存模式，请人工复核后手动提交！", "error");
 			else store.addLog("当前为自动暂存模式，正在定位暂存按钮", "info");
 			if (typeof targetWin?.noSubmit === "function") try {
 				targetWin.noSubmit();
