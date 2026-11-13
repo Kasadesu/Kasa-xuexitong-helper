@@ -39,7 +39,9 @@ import {
   selectBestOptions,
   isQuestionAnswered,
   extractQuestionImages,
-  hasMeaningfulContent
+  hasMeaningfulContent,
+  blobToDataUrl,
+  compressImageBlob
 } from '../src/adapters/quiz';
 import { parseAiResponse } from '../src/adapters/ai-solver/parser';
 import { buildAiPrompt } from '../src/adapters/ai-solver/prompt';
@@ -1600,6 +1602,374 @@ C 是温迪（风神巴巴托斯）
       assert.ok(sys.includes('严禁解释性括号与别名打补丁'));
       assert.ok(user.includes('高校优秀考生手写答案口吻'));
       assert.ok(user.includes('聚焦核心采分点'));
+    });
+  });
+
+  describe('【第 22 关】v1.3.0 多模态硬超时防假死、图片压缩白底防护与去答字前缀专项回归测试', () => {
+    it('22.1 blobToDataUrl 支持 Node Buffer 并具备超时防御能力', async () => {
+      const buffer = Buffer.from('fake-image-bytes');
+      const dataUrl = await blobToDataUrl(buffer);
+      assert.ok(dataUrl.startsWith('data:image/png;base64,'));
+    });
+
+    it('22.2 compressImageBlob 降级保护：非浏览器环境或 SVG / 小体积直接返回原始 dataUrl', async () => {
+      const raw = 'data:image/png;base64,12345';
+      const resNonBrowser = await compressImageBlob(null, raw);
+      assert.equal(resNonBrowser, raw);
+
+      const svgBlob = { type: 'image/svg+xml', size: 1000 };
+      const resSvg = await compressImageBlob(svgBlob, raw);
+      assert.equal(resSvg, raw);
+
+      const smallBlob = { type: 'image/png', size: 50 * 1024 };
+      const resSmall = await compressImageBlob(smallBlob, raw);
+      assert.equal(resSmall, raw);
+    });
+
+    it('22.3 cleanRichTextAnswer 彻底剥离“答：”、“答案：”、“解：”等开篇前缀，且不误伤正文“水解：”', () => {
+      assert.equal(
+        cleanRichTextAnswer('答：牛磺酸是一种非蛋白氨基酸。'),
+        '牛磺酸是一种非蛋白氨基酸。'
+      );
+      assert.equal(
+        cleanRichTextAnswer('答案：牛磺酸是一种非蛋白氨基酸。'),
+        '牛磺酸是一种非蛋白氨基酸。'
+      );
+      assert.equal(
+        cleanRichTextAnswer('【参考答案】：牛磺酸是一种非蛋白氨基酸。'),
+        '牛磺酸是一种非蛋白氨基酸。'
+      );
+      assert.equal(
+        cleanRichTextAnswer('解：首先计算其分子量。'),
+        '首先计算其分子量。'
+      );
+      assert.equal(
+        cleanRichTextAnswer('解答：\n牛磺酸具有调节渗透压等功能。'),
+        '牛磺酸具有调节渗透压等功能。'
+      );
+
+      // 严防误伤正文句中及科学术语（如 水解：、电解：）
+      const chemicalText = '该反应分两步进行：\n水解：在酸性催化下生成羧酸；\n电解：在阳极发生氧化。';
+      const resChem = cleanRichTextAnswer(chemicalText);
+      assert.ok(resChem.includes('水解：在酸性催化下生成羧酸；'));
+      assert.ok(resChem.includes('电解：在阳极发生氧化。'));
+    });
+
+    it('22.4 buildAiPrompt 主观题拆分为优秀考生直答人设，严禁前缀复述与八股排比', () => {
+      const essayPrompt = buildAiPrompt('essay', '请简述紫外光谱与红外光谱的区别', []);
+      const sys = typeof essayPrompt[0].content === 'string' ? essayPrompt[0].content : '';
+      const user = typeof essayPrompt[1].content === 'string' ? essayPrompt[1].content : '';
+
+      // 验证已剥离“助教”说教腔，改为优秀考生直答人设
+      assert.ok(!sys.includes('高校答题助教'));
+      assert.ok(sys.includes('高校优秀考生'));
+
+      // 验证新增的禁止前缀、禁止提纲复述、禁止八股排比与禁止总结升华
+      assert.ok(sys.includes('严禁前缀与题干复述'));
+      assert.ok(sys.includes('杜绝八股排比与去 AI 味'));
+      assert.ok(sys.includes('杜绝说教总结与升华废话'));
+
+      assert.ok(user.includes('严禁开篇写“答：”、“答案：”、“解：”'));
+      assert.ok(user.includes('严禁机械使用“一、…… 二、……”八股排比'));
+      assert.ok(user.includes('严禁在结尾写“综上所述”'));
+
+      // 验证客观题保留助教人设不受影响
+      const singlePrompt = buildAiPrompt('single', '1+1=?', ['1', '2']);
+      const sysSingle = typeof singlePrompt[0].content === 'string' ? singlePrompt[0].content : '';
+      assert.ok(sysSingle.includes('高校答题助教'));
+    });
+
+    it('22.5 extractQuestionImages 在 GM_xmlhttpRequest 存在静默中止或丢包时具备外层超时与 abort 防护', async () => {
+      const originalXHR = (globalThis as any).GM_xmlhttpRequest;
+      const originalDoc = (globalThis as any).document;
+
+      try {
+        const dom = {
+          querySelectorAll: () => [
+            {
+              currentSrc: 'https://pan-yz.chaoxing.com/star3/origin/hanging-test.png',
+              className: '',
+              getAttribute: () => null,
+              style: {},
+              width: 200,
+              height: 200,
+              complete: true,
+              naturalWidth: 200,
+              naturalHeight: 200,
+              closest: () => null
+            }
+          ]
+        };
+
+        const controller = new AbortController();
+        // 模拟外部主动中止
+        (globalThis as any).GM_xmlhttpRequest = (opts: any) => {
+          assert.ok(typeof opts.onabort === 'function', '必须提供原生 onabort 回调');
+          assert.equal(opts.timeout, 6000, '内部 timeout 必须为 6000ms');
+          // 模拟静默挂起：不调用 onload/onerror，等待外部 abort
+          return {
+            abort: () => {
+              if (opts.onabort) opts.onabort();
+            }
+          };
+        };
+
+        const promise = extractQuestionImages(dom as any, controller.signal);
+        controller.abort();
+        const res = await promise;
+        assert.deepEqual(res, [], '外部中止后应安全返回空数组');
+      } finally {
+        (globalThis as any).GM_xmlhttpRequest = originalXHR;
+        (globalThis as any).document = originalDoc;
+      }
+    });
+
+    it('22.6 compressImageBlob 纯白底色 #ffffff 铺设与异常路径下 100% 释放 objectUrl', async () => {
+      const originalDoc = (globalThis as any).document;
+      const originalImage = (globalThis as any).Image;
+      const originalURL = (globalThis as any).URL;
+
+      let fillStyleApplied = '';
+      let fillRectCalls: any[] = [];
+      let drawImageCalls: any[] = [];
+      let revokedUrls: string[] = [];
+
+      try {
+        (globalThis as any).URL = {
+          createObjectURL: () => 'blob:mock-url-123',
+          revokeObjectURL: (url: string) => revokedUrls.push(url)
+        };
+
+        (globalThis as any).document = {
+          createElement: (tag: string) => {
+            if (tag === 'canvas') {
+              return {
+                width: 0,
+                height: 0,
+                getContext: () => ({
+                  set fillStyle(val: string) {
+                    fillStyleApplied = val;
+                  },
+                  get fillStyle() {
+                    return fillStyleApplied;
+                  },
+                  fillRect: (x: number, y: number, w: number, h: number) => {
+                    fillRectCalls.push({ x, y, w, h, currentFill: fillStyleApplied });
+                  },
+                  drawImage: (img: any, x: number, y: number, w: number, h: number) => {
+                    drawImageCalls.push({ x, y, w, h });
+                  }
+                }),
+                toDataURL: (mime: string, quality: number) => 'data:image/jpeg;base64,mocked-compressed'
+              };
+            }
+            return {};
+          }
+        };
+
+        // 1. 模拟正常加载：必须先铺纯白底色 #ffffff，再 drawImage
+        (globalThis as any).Image = class {
+          width = 800;
+          height = 600;
+          naturalWidth = 800;
+          naturalHeight = 600;
+          onload: any = null;
+          onerror: any = null;
+          set src(_: string) {
+            setTimeout(() => this.onload?.(), 5);
+          }
+        };
+
+        const bigBlob = { type: 'image/png', size: 300 * 1024 };
+        const raw = 'data:image/png;base64,very-long-raw-uncompressed-data-string';
+        const compressed = await compressImageBlob(bigBlob, raw);
+
+        assert.equal(compressed, 'data:image/jpeg;base64,mocked-compressed');
+        assert.equal(fillStyleApplied, '#ffffff', '必须先设置纯白底色');
+        assert.equal(fillRectCalls.length, 1);
+        assert.equal(fillRectCalls[0].currentFill, '#ffffff');
+        assert.equal(drawImageCalls.length, 1);
+        assert.ok(revokedUrls.includes('blob:mock-url-123'), '必须调用 URL.revokeObjectURL 释放内存');
+
+        // 2. 模拟图片加载失败：必须安全降级返回原始 rawDataUrl，且依然释放 objectUrl
+        revokedUrls = [];
+        (globalThis as any).Image = class {
+          onload: any = null;
+          onerror: any = null;
+          set src(_: string) {
+            setTimeout(() => this.onerror?.(new Error('Image decode error')), 5);
+          }
+        };
+
+        const fallbackRes = await compressImageBlob(bigBlob, raw);
+        assert.equal(fallbackRes, raw, '图片报错时必须安全回退原始 rawDataUrl');
+        assert.ok(revokedUrls.includes('blob:mock-url-123'), '图片报错时依然必须释放 URL.revokeObjectURL');
+      } finally {
+        (globalThis as any).document = originalDoc;
+        (globalThis as any).Image = originalImage;
+        (globalThis as any).URL = originalURL;
+      }
+    });
+
+    it('22.7 blobToDataUrl FileReader 异常分支与 abort 安全机制', async () => {
+      const originalFileReader = (globalThis as any).FileReader;
+
+      try {
+        // 1. 模拟 FileReader 成功读取
+        (globalThis as any).FileReader = class {
+          result = 'data:image/png;base64,file-reader-ok';
+          onloadend: any = null;
+          onerror: any = null;
+          onabort: any = null;
+          readAsDataURL() {
+            setTimeout(() => this.onloadend?.(), 5);
+          }
+        };
+        const okRes = await blobToDataUrl({ type: 'image/png' });
+        assert.equal(okRes, 'data:image/png;base64,file-reader-ok');
+
+        // 2. 模拟 FileReader 出错
+        (globalThis as any).FileReader = class {
+          result = null;
+          onloadend: any = null;
+          onerror: any = null;
+          onabort: any = null;
+          readAsDataURL() {
+            setTimeout(() => this.onerror?.(new Error('read failed')), 5);
+          }
+        };
+        await assert.rejects(async () => {
+          await blobToDataUrl({ type: 'image/png' });
+        }, /read failed/);
+
+        // 3. 模拟 FileReader 中止
+        (globalThis as any).FileReader = class {
+          result = null;
+          onloadend: any = null;
+          onerror: any = null;
+          onabort: any = null;
+          readAsDataURL() {
+            setTimeout(() => this.onabort?.(), 5);
+          }
+        };
+        await assert.rejects(async () => {
+          await blobToDataUrl({ type: 'image/png' });
+        }, /FileReader 已中止/);
+      } finally {
+        (globalThis as any).FileReader = originalFileReader;
+      }
+    });
+
+    it('22.8 queryAiAnswer 在外部信号预先 abort 时秒级响应且绝无 TDZ 崩溃', async () => {
+      const ac = new AbortController();
+      ac.abort();
+
+      const q: Question = {
+        id: 'tdz-test-1',
+        index: 1,
+        title: '测试预中止信号',
+        type: 'single',
+        options: ['A', 'B'],
+        status: 'searching'
+      };
+
+      const result = await queryAiAnswer(q, undefined, ac.signal);
+      assert.deepEqual(result, [], '已中止的信号必须立即返回空数组且无任何异常抛出');
+    });
+
+    it('22.10 runGuardedXhr 与 extractQuestionImages 原生 onabort 回调直接解除挂起防御测试', async () => {
+      const originalXHR = (globalThis as any).GM_xmlhttpRequest;
+      const oldKey = store.config.aiApiKey;
+
+      try {
+        // 1. 验证 queryAiAnswer 进入 runGuardedXhr 后遭遇在途 abort 且无 TDZ 崩溃
+        store.updateConfig({ aiApiKey: 'test-key-v13' });
+        let abortMethodCalled = false;
+        let onabortRegistered = false;
+        const ac = new AbortController();
+
+        (globalThis as any).GM_xmlhttpRequest = (opts: any) => {
+          onabortRegistered = typeof opts.onabort === 'function';
+          setTimeout(() => ac.abort(), 10);
+          return {
+            abort: () => {
+              abortMethodCalled = true;
+              if (opts.onabort) opts.onabort();
+            }
+          };
+        };
+
+        const q: Question = {
+          id: 'xhr-abort-1',
+          index: 1,
+          title: '测试在途 GM_xmlhttpRequest 中止',
+          type: 'single',
+          options: ['A', 'B'],
+          status: 'searching'
+        };
+        const aiRes = await queryAiAnswer(q, undefined, ac.signal);
+        assert.deepEqual(aiRes, []);
+        assert.equal(onabortRegistered, true);
+        assert.equal(abortMethodCalled, true);
+
+        // 2. 验证 extractQuestionImages 在未中止 signal 但 GM_xmlhttpRequest 自身触发 onabort 时不会永久挂起
+        const dom = {
+          querySelectorAll: () => [
+            {
+              currentSrc: 'https://pan-yz.chaoxing.com/star3/origin/internal-abort.png',
+              className: '',
+              getAttribute: () => null,
+              style: {},
+              width: 200,
+              height: 200,
+              complete: true,
+              naturalWidth: 200,
+              naturalHeight: 200,
+              closest: () => null
+            }
+          ]
+        };
+
+        (globalThis as any).GM_xmlhttpRequest = (opts: any) => {
+          setTimeout(() => opts.onabort?.(), 10);
+          return { abort: () => {} };
+        };
+
+        const imgs = await extractQuestionImages(dom as any);
+        assert.deepEqual(imgs, []);
+      } finally {
+        (globalThis as any).GM_xmlhttpRequest = originalXHR;
+        store.updateConfig({ aiApiKey: oldKey });
+      }
+    });
+
+    it('22.9 cleanRichTextAnswer 全方位生化/物理专业术语防误伤与复合答案前缀彻底剥离', () => {
+      // 复合前缀彻底剥离
+      assert.equal(cleanRichTextAnswer('【标准答案】：本反应属于亲电加成反应。'), '本反应属于亲电加成反应。');
+      assert.equal(cleanRichTextAnswer('【参考答案】\n核酸是遗传信息的携带者。'), '核酸是遗传信息的携带者。');
+      assert.equal(cleanRichTextAnswer('【解】：设 x=1，y=2。'), '设 x=1，y=2。');
+      assert.equal(cleanRichTextAnswer('【答】：线粒体是细胞的动力车间。'), '线粒体是细胞的动力车间。');
+      assert.equal(cleanRichTextAnswer('参考答案：酶具有高效性与专一性。'), '酶具有高效性与专一性。');
+      assert.equal(cleanRichTextAnswer('答案: 细胞膜具有流动镶嵌特征。'), '细胞膜具有流动镶嵌特征。');
+
+      // 专业术语防误伤：水解、电解、酶解、氧化分解、裂解、光解
+      const fullBioText = [
+        '物质代谢主要包括以下过程：',
+        '水解：在酸性或碱性催化下发生水解；',
+        '电解：溶液中阴阳离子在电极表面放电；',
+        '酶解：淀粉在淀粉酶作用下酶解为麦芽糖；',
+        '氧化分解：葡萄糖在线粒体内氧化分解为二氧化碳和水；',
+        '光解：叶绿体类囊体薄膜上水的光解产生氧气；',
+        '裂解：石油重油在催化裂化装置中裂解为低碳烯烃。'
+      ].join('\n');
+
+      const cleanedBio = cleanRichTextAnswer(fullBioText);
+      assert.ok(cleanedBio.includes('水解：在酸性或碱性催化下发生水解；'));
+      assert.ok(cleanedBio.includes('电解：溶液中阴阳离子在电极表面放电；'));
+      assert.ok(cleanedBio.includes('酶解：淀粉在淀粉酶作用下酶解为麦芽糖；'));
+      assert.ok(cleanedBio.includes('氧化分解：葡萄糖在线粒体内氧化分解为二氧化碳和水；'));
+      assert.ok(cleanedBio.includes('光解：叶绿体类囊体薄膜上水的光解产生氧气；'));
+      assert.ok(cleanedBio.includes('裂解：石油重油在催化裂化装置中裂解为低碳烯烃。'));
     });
   });
 });

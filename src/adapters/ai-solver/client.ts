@@ -45,6 +45,80 @@ export const parseModelsFromJson = (
 };
 
 /**
+ * 封装带防重入 settled 锁、外部信号 abort 联动与外层 JS 硬超时的 GM_xmlhttpRequest 执行器
+ */
+interface XhrGuardOptions<T> {
+  signal?: AbortSignal;
+  hardTimeoutMs: number;
+  onAbortResult: () => T;
+  onTimeoutResult: () => T;
+  execute: (
+    safeResolve: (value: T) => void,
+    setReq: (req: any) => void
+  ) => void;
+}
+
+const runGuardedXhr = <T>(options: XhrGuardOptions<T>): Promise<T> => {
+  return new Promise<T>((resolve) => {
+    let settled = false;
+    let reqInstance: any = null;
+    let timer: any = null;
+
+    const cleanup = () => {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      if (options.signal && onSignalAbort) {
+        options.signal.removeEventListener('abort', onSignalAbort);
+      }
+    };
+
+    const safeResolve = (val: T) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(val);
+    };
+
+    const onSignalAbort = () => {
+      try {
+        if (reqInstance && typeof reqInstance.abort === 'function') {
+          reqInstance.abort();
+        }
+      } catch {}
+      safeResolve(options.onAbortResult());
+    };
+
+    if (options.signal?.aborted) {
+      safeResolve(options.onAbortResult());
+      return;
+    }
+
+    if (options.signal) {
+      options.signal.addEventListener('abort', onSignalAbort, { once: true });
+    }
+
+    timer = setTimeout(() => {
+      try {
+        if (reqInstance && typeof reqInstance.abort === 'function') {
+          reqInstance.abort();
+        }
+      } catch {}
+      safeResolve(options.onTimeoutResult());
+    }, options.hardTimeoutMs);
+
+    try {
+      options.execute(safeResolve, (r) => {
+        reqInstance = r;
+      });
+    } catch {
+      safeResolve(options.onTimeoutResult());
+    }
+  });
+};
+
+/**
  * Fetches available models from OpenAI-compatible /models endpoint
  * and caches both model IDs and full model metadata into store.
  */
@@ -74,15 +148,14 @@ export const fetchRemoteModels = async (baseUrl: string, apiKey: string): Promis
   const xhr = typeof GM_xmlhttpRequest !== 'undefined' ? GM_xmlhttpRequest : null;
 
   if (!xhr) {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), 15000);
     try {
-      const controller = new AbortController();
-      const timer = window.setTimeout(() => controller.abort(), 15000);
       const res = await window.fetch(endpoint, {
         method: 'GET',
         headers,
         signal: controller.signal
       });
-      window.clearTimeout(timer);
 
       if (res.ok) {
         const json = await res.json();
@@ -106,44 +179,58 @@ export const fetchRemoteModels = async (baseUrl: string, apiKey: string): Promis
         store.addLog(`拉取模型列表失败 (fetch): ${String(err)}`, 'error');
       }
       return [];
+    } finally {
+      window.clearTimeout(timer);
     }
   }
 
-  return new Promise<string[]>((resolve) => {
-    xhr({
-      url: endpoint,
-      method: 'GET',
-      headers,
-      timeout: 15000,
-      onload: (res: any) => {
-        try {
-          if (res.status >= 200 && res.status < 300) {
-            const parsed = parseModelsFromJson(res.responseText);
-            if (parsed.ids.length > 0) {
-              store.updateConfig({
-                cachedModelList: parsed.ids,
-                cachedModelItems: parsed.items
-              });
+  return runGuardedXhr<string[]>({
+    hardTimeoutMs: 18000,
+    onAbortResult: () => [],
+    onTimeoutResult: () => {
+      store.addLog('拉取模型列表超时（18秒）', 'error');
+      return [];
+    },
+    execute: (safeResolve, setReq) => {
+      const req = xhr({
+        url: endpoint,
+        method: 'GET',
+        headers,
+        timeout: 15000,
+        onload: (res: any) => {
+          try {
+            if (res.status >= 200 && res.status < 300) {
+              const parsed = parseModelsFromJson(res.responseText);
+              if (parsed.ids.length > 0) {
+                store.updateConfig({
+                  cachedModelList: parsed.ids,
+                  cachedModelItems: parsed.items
+                });
+              }
+              safeResolve(parsed.ids);
+            } else {
+              store.addLog(`拉取模型列表失败 HTTP ${res.status}: ${res.responseText.slice(0, 100)}`, 'error');
+              safeResolve([]);
             }
-            resolve(parsed.ids);
-          } else {
-            store.addLog(`拉取模型列表失败 HTTP ${res.status}: ${res.responseText.slice(0, 100)}`, 'error');
-            resolve([]);
+          } catch (err) {
+            store.addLog(`解析模型列表失败: ${String(err)}`, 'error');
+            safeResolve([]);
           }
-        } catch (err) {
-          store.addLog(`解析模型列表失败: ${String(err)}`, 'error');
-          resolve([]);
+        },
+        onerror: (err: any) => {
+          store.addLog(`拉取模型列表失败，网络错误: ${String(err)}`, 'error');
+          safeResolve([]);
+        },
+        ontimeout: () => {
+          store.addLog('拉取模型列表超时（15秒）', 'error');
+          safeResolve([]);
+        },
+        onabort: () => {
+          safeResolve([]);
         }
-      },
-      onerror: (err: any) => {
-        store.addLog(`拉取模型列表失败，网络错误: ${String(err)}`, 'error');
-        resolve([]);
-      },
-      ontimeout: () => {
-        store.addLog('拉取模型列表超时（15秒）', 'error');
-        resolve([]);
-      }
-    });
+      });
+      setReq(req);
+    }
   });
 };
 
@@ -327,7 +414,6 @@ export const queryAiAnswer = async (
           body: bodyStr,
           signal: controller.signal
         });
-        window.clearTimeout(timer);
 
         if (signal?.aborted) {
           return { ok: false, status: 0, answers: [], errText: '' };
@@ -341,77 +427,65 @@ export const queryAiAnswer = async (
           return { ok: false, status: res.status, answers: [], errText };
         }
       } catch (err: any) {
-        window.clearTimeout(timer);
         if (signal?.aborted) {
           return { ok: false, status: 0, answers: [], errText: '' };
         }
         const errMsg = err?.name === 'AbortError' ? 'AI 请求超时（60秒）' : String(err);
         return { ok: false, status: 0, answers: [], errText: errMsg };
       } finally {
+        window.clearTimeout(timer);
         signal?.removeEventListener('abort', onExternalAbort);
       }
     }
 
-    return new Promise((resolve) => {
-      if (signal?.aborted) {
-        return resolve({ ok: false, status: 0, answers: [], errText: '' });
-      }
-
-      let req: any = null;
-      const cleanupSignal = () => {
-        signal?.removeEventListener('abort', onExternalAbort);
-      };
-      const onExternalAbort = () => {
-        cleanupSignal();
-        try {
-          if (req && typeof req.abort === 'function') {
-            req.abort();
-          }
-        } catch {}
-        resolve({ ok: false, status: 0, answers: [], errText: '' });
-      };
-      signal?.addEventListener('abort', onExternalAbort, { once: true });
-
-      req = xhr({
-        url: endpoint,
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${aiApiKey.trim()}`
-        },
-        data: bodyStr,
-        timeout: 60000,
-        onload: (res: any) => {
-          cleanupSignal();
-          if (signal?.aborted) {
-            return resolve({ ok: false, status: 0, answers: [], errText: '' });
-          }
-          try {
-            if (res.status >= 200 && res.status < 300) {
-              const data = JSON.parse(res.responseText);
-              resolve({ ok: true, status: res.status, answers: extractAnswersFromData(data), errText: '' });
-            } else {
-              resolve({ ok: false, status: res.status, answers: [], errText: String(res.responseText || '') });
+    return runGuardedXhr<{ ok: boolean; status: number; answers: string[]; errText: string }>({
+      signal,
+      hardTimeoutMs: 65000,
+      onAbortResult: () => ({ ok: false, status: 0, answers: [], errText: '' }),
+      onTimeoutResult: () => ({ ok: false, status: 0, answers: [], errText: 'AI 请求硬超时（65秒）' }),
+      execute: (safeResolve, setReq) => {
+        const req = xhr({
+          url: endpoint,
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${aiApiKey.trim()}`
+          },
+          data: bodyStr,
+          timeout: 60000,
+          onload: (res: any) => {
+            if (signal?.aborted) {
+              return safeResolve({ ok: false, status: 0, answers: [], errText: '' });
             }
-          } catch (err) {
-            resolve({ ok: false, status: res.status || 0, answers: [], errText: `解析响应失败: ${String(err)}` });
+            try {
+              if (res.status >= 200 && res.status < 300) {
+                const data = JSON.parse(res.responseText);
+                safeResolve({ ok: true, status: res.status, answers: extractAnswersFromData(data), errText: '' });
+              } else {
+                safeResolve({ ok: false, status: res.status, answers: [], errText: String(res.responseText || '') });
+              }
+            } catch (err) {
+              safeResolve({ ok: false, status: res.status || 0, answers: [], errText: `解析响应失败: ${String(err)}` });
+            }
+          },
+          onerror: (err: any) => {
+            if (signal?.aborted) {
+              return safeResolve({ ok: false, status: 0, answers: [], errText: '' });
+            }
+            safeResolve({ ok: false, status: 0, answers: [], errText: `网络错误: ${String(err)}` });
+          },
+          ontimeout: () => {
+            if (signal?.aborted) {
+              return safeResolve({ ok: false, status: 0, answers: [], errText: '' });
+            }
+            safeResolve({ ok: false, status: 0, answers: [], errText: 'AI 请求超时（60秒）' });
+          },
+          onabort: () => {
+            safeResolve({ ok: false, status: 0, answers: [], errText: '' });
           }
-        },
-        onerror: (err: any) => {
-          cleanupSignal();
-          if (signal?.aborted) {
-            return resolve({ ok: false, status: 0, answers: [], errText: '' });
-          }
-          resolve({ ok: false, status: 0, answers: [], errText: `网络错误: ${String(err)}` });
-        },
-        ontimeout: () => {
-          cleanupSignal();
-          if (signal?.aborted) {
-            return resolve({ ok: false, status: 0, answers: [], errText: '' });
-          }
-          resolve({ ok: false, status: 0, answers: [], errText: 'AI 请求超时（60秒）' });
-        }
-      });
+        });
+        setReq(req);
+      }
     });
   };
 

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Kasa-xuexitong-helper
 // @namespace    kasa.ai
-// @version      1.2.0
+// @version      1.3.0
 // @author       Kasa
 // @description  超星学习通辅助脚本：支持视频自动播放、章节连播与作业测验作答。
 // @icon         data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext x='50' y='54' text-anchor='middle' dominant-baseline='central' font-size='82' font-family='Apple Color Emoji,Segoe UI Emoji,Noto Color Emoji,sans-serif'%3E%F0%9F%92%AF%3C/text%3E%3C/svg%3E
@@ -714,17 +714,19 @@ input:checked + .toggle-slider:before {
 				outputContract = "请先简要说明依据，最后一行输出最终答案。";
 		}
 		const baseGuidelines = type === "essay" ? `审题与作答准则：
-1. 【高校优秀考生作答风格】：严格以中国高校优秀本科生在期末考试中手写的标准答案口吻作答，逻辑自然凝练，直切采分点。
-2. 【杜绝维基百科式报户口】：聚焦核心得分采分点（本质属性 + 核心机制/生理功能 + 关键应用或意义）。除非题目明确要求，否则切勿主动机械罗列化学结构简式（如 H2NCH2CH2SO3H）、分子式或机械套话。
-3. 【严禁解释性括号与别名打补丁】：严禁在正文中使用括号给名词加同义词、英文简称或冗余别名（严禁使用“A（又称B）”、“A（即B）”），直接采用单一最标准教材术语，行文连贯自然。
-4. 【纯文本规范】：输出内容将直接注入超星富文本编辑器，严禁携带任何 Markdown（如加粗、标题、列表符号）、LaTeX 语法标记（如 $、\\(、\\mathrm）或 JSON 数组。
-5. 【输出格式】：${outputContract}` : `审题与作答准则：
+1. 【高校优秀考生作答风格】：严格以中国高校优秀本科生在期末考试中手写的标准答案口吻作答，逻辑自然凝练，聚焦核心采分点。
+2. 【严禁前缀与题干复述】：严禁开篇写“答：”、“答案：”、“解：”或重复题干；严禁开头先写一段总体提纲复述句然后再分点重复。
+3. 【杜绝八股排比与去 AI 味】：严禁机械使用“一、…… 二、……”八股排比，采用自然朴实的学生答题笔触写核心得分点，写完要点直接收笔。
+4. 【杜绝说教总结与升华废话】：严禁在结尾写“综上所述”、“全过程须综合解析，不能凭单一谱图下结论”等老师叮嘱式或总结升华式废话。
+5. 【杜绝维基百科式报户口】：聚焦核心得分采分点（本质属性 + 核心机制/生理功能 + 关键应用或意义）。除非题目明确要求，否则切勿主动机械罗列化学结构简式（如 H2NCH2CH2SO3H）、分子式或机械套话。
+6. 【严禁解释性括号与别名打补丁】：严禁在正文中使用括号给名词加同义词、英文简称或冗余别名（严禁使用“A（又称B）”、“A（即B）”），直接采用单一最标准教材术语，行文连贯自然。
+7. 【纯文本规范】：输出内容将直接注入超星富文本编辑器，严禁携带任何 Markdown（如加粗、标题、列表符号）、LaTeX 语法标记（如 $、\\(、\\mathrm）或 JSON 数组。
+8. 【输出格式】：${outputContract}` : `审题与作答准则：
 1. 【教材定义溯源】：严格依据中国高校统编教材的标准定义与学科体系作答，切勿使用日常口语或直觉臆测替代专业教材表述。
 2. 【限定词与正反核对】：精准锁定题干中的核心限定词（如“基本模式”、“最基本/首要/根本”、“直接/间接”、“属于/不属于”、“正确/错误”）。
 3. 【相近干扰项辨析】：遇到相近选项时，必须先对比教材定义边界并明确排除干扰项，切勿盲目锚定第一个看似沾边的选项。
 4. 【输出格式】：${outputContract}`;
-		const systemContent = `你是一位高效、专业、思维严密的高校答题助教，精通中国高校权威教材（如马工程教材、国家级规划教材、高等教育出版社教材）的标准定义与学科体系。你的思考推理过程将帮助你得出最精准的结论。${typeRule}
-${baseGuidelines}`;
+		const systemContent = type === "essay" ? `你是一位严谨的高校优秀考生，正在高校作业答题框中手写回答课程主观题。你精通高校教材核心知识体系，行文自然凝练，直切采分点，绝不说教或复述套话。${typeRule}\n${baseGuidelines}` : `你是一位高效、专业、思维严密的高校答题助教，精通中国高校权威教材（如马工程教材、国家级规划教材、高等教育出版社教材）的标准定义与学科体系。你的思考推理过程将帮助你得出最精准的结论。${typeRule}\n${baseGuidelines}`;
 		const formattedOptions = options.length ? "\n选项列表：\n" + options.map((opt, i) => `${String.fromCharCode(65 + i)}. ${opt}`).join("\n") : "";
 		const contextPrefix = paperContext && paperContext.trim() ? `【试卷上下文】：${paperContext.trim()}\n\n` : "";
 		let userTail = "";
@@ -738,7 +740,7 @@ ${baseGuidelines}`;
 				userTail = "\n\n【作答要求】请在最后一行严格输出标准 JSON 字符串数组，按空位顺序对应填入内容，例如：[\"答案1\", \"答案2\"]；严禁使用 Markdown 和 LaTeX。";
 				break;
 			case "essay":
-				userTail = "\n\n【作答要求】请以高校优秀考生手写答案口吻直接输出纯文本标准答案正文，聚焦核心采分点，严禁解释性别名括号（如“（又称...）”），严禁使用 Markdown 格式符（如 **、#）和 LaTeX 公式（如 $、\\(），不要输出 JSON 数组。";
+				userTail = "\n\n【作答要求】请以高校优秀考生手写答案口吻直接输出纯文本标准答案正文，聚焦核心采分点。严禁开篇写“答：”、“答案：”、“解：”或复述题干；严禁开头先写一段总体提纲复述句然后再分点重复；严禁机械使用“一、…… 二、……”八股排比，写完核心要点直接收笔；严禁在结尾写“综上所述”、“全过程须综合解析，不能凭单一谱图下结论”等老师叮嘱式或总结升华式废话；严禁解释性别名括号（如“（又称...）”）；严禁使用 Markdown 格式符（如 **、#）和 LaTeX 公式（如 $、\\(），不要输出 JSON 数组。";
 				break;
 			default: userTail = "";
 		}
@@ -871,6 +873,50 @@ ${baseGuidelines}`;
 			};
 		}
 	};
+	var runGuardedXhr = (options) => {
+		return new Promise((resolve) => {
+			let settled = false;
+			let reqInstance = null;
+			let timer = null;
+			const cleanup = () => {
+				if (timer) {
+					clearTimeout(timer);
+					timer = null;
+				}
+				if (options.signal && onSignalAbort) options.signal.removeEventListener("abort", onSignalAbort);
+			};
+			const safeResolve = (val) => {
+				if (settled) return;
+				settled = true;
+				cleanup();
+				resolve(val);
+			};
+			const onSignalAbort = () => {
+				try {
+					if (reqInstance && typeof reqInstance.abort === "function") reqInstance.abort();
+				} catch {}
+				safeResolve(options.onAbortResult());
+			};
+			if (options.signal?.aborted) {
+				safeResolve(options.onAbortResult());
+				return;
+			}
+			if (options.signal) options.signal.addEventListener("abort", onSignalAbort, { once: true });
+			timer = setTimeout(() => {
+				try {
+					if (reqInstance && typeof reqInstance.abort === "function") reqInstance.abort();
+				} catch {}
+				safeResolve(options.onTimeoutResult());
+			}, options.hardTimeoutMs);
+			try {
+				options.execute(safeResolve, (r) => {
+					reqInstance = r;
+				});
+			} catch {
+				safeResolve(options.onTimeoutResult());
+			}
+		});
+	};
 	var fetchRemoteModels = async (baseUrl, apiKey) => {
 		if (!baseUrl.trim()) {
 			store.addLog("获取模型列表失败: Base URL 不能为空", "warning");
@@ -883,65 +929,79 @@ ${baseGuidelines}`;
 		const headers = { Accept: "application/json" };
 		if (apiKey.trim()) headers["Authorization"] = `Bearer ${apiKey.trim()}`;
 		const xhr = typeof GM_xmlhttpRequest !== "undefined" ? GM_xmlhttpRequest : null;
-		if (!xhr) try {
+		if (!xhr) {
 			const controller = new AbortController();
 			const timer = window.setTimeout(() => controller.abort(), 15e3);
-			const res = await window.fetch(endpoint, {
-				method: "GET",
-				headers,
-				signal: controller.signal
-			});
-			window.clearTimeout(timer);
-			if (res.ok) {
-				const parsed = parseModelsFromJson(await res.json());
-				if (parsed.ids.length > 0) store.updateConfig({
-					cachedModelList: parsed.ids,
-					cachedModelItems: parsed.items
+			try {
+				const res = await window.fetch(endpoint, {
+					method: "GET",
+					headers,
+					signal: controller.signal
 				});
-				return parsed.ids;
-			} else {
-				const errText = await res.text().catch(() => "");
-				store.addLog(`拉取模型列表失败 HTTP ${res.status}: ${errText.slice(0, 100)}`, "error");
-				return [];
-			}
-		} catch (err) {
-			if (err?.name === "AbortError") store.addLog("拉取模型列表超时（15秒）", "error");
-			else store.addLog(`拉取模型列表失败 (fetch): ${String(err)}`, "error");
-			return [];
-		}
-		return new Promise((resolve) => {
-			xhr({
-				url: endpoint,
-				method: "GET",
-				headers,
-				timeout: 15e3,
-				onload: (res) => {
-					try {
-						if (res.status >= 200 && res.status < 300) {
-							const parsed = parseModelsFromJson(res.responseText);
-							if (parsed.ids.length > 0) store.updateConfig({
-								cachedModelList: parsed.ids,
-								cachedModelItems: parsed.items
-							});
-							resolve(parsed.ids);
-						} else {
-							store.addLog(`拉取模型列表失败 HTTP ${res.status}: ${res.responseText.slice(0, 100)}`, "error");
-							resolve([]);
-						}
-					} catch (err) {
-						store.addLog(`解析模型列表失败: ${String(err)}`, "error");
-						resolve([]);
-					}
-				},
-				onerror: (err) => {
-					store.addLog(`拉取模型列表失败，网络错误: ${String(err)}`, "error");
-					resolve([]);
-				},
-				ontimeout: () => {
-					store.addLog("拉取模型列表超时（15秒）", "error");
-					resolve([]);
+				if (res.ok) {
+					const parsed = parseModelsFromJson(await res.json());
+					if (parsed.ids.length > 0) store.updateConfig({
+						cachedModelList: parsed.ids,
+						cachedModelItems: parsed.items
+					});
+					return parsed.ids;
+				} else {
+					const errText = await res.text().catch(() => "");
+					store.addLog(`拉取模型列表失败 HTTP ${res.status}: ${errText.slice(0, 100)}`, "error");
+					return [];
 				}
-			});
+			} catch (err) {
+				if (err?.name === "AbortError") store.addLog("拉取模型列表超时（15秒）", "error");
+				else store.addLog(`拉取模型列表失败 (fetch): ${String(err)}`, "error");
+				return [];
+			} finally {
+				window.clearTimeout(timer);
+			}
+		}
+		return runGuardedXhr({
+			hardTimeoutMs: 18e3,
+			onAbortResult: () => [],
+			onTimeoutResult: () => {
+				store.addLog("拉取模型列表超时（18秒）", "error");
+				return [];
+			},
+			execute: (safeResolve, setReq) => {
+				setReq(xhr({
+					url: endpoint,
+					method: "GET",
+					headers,
+					timeout: 15e3,
+					onload: (res) => {
+						try {
+							if (res.status >= 200 && res.status < 300) {
+								const parsed = parseModelsFromJson(res.responseText);
+								if (parsed.ids.length > 0) store.updateConfig({
+									cachedModelList: parsed.ids,
+									cachedModelItems: parsed.items
+								});
+								safeResolve(parsed.ids);
+							} else {
+								store.addLog(`拉取模型列表失败 HTTP ${res.status}: ${res.responseText.slice(0, 100)}`, "error");
+								safeResolve([]);
+							}
+						} catch (err) {
+							store.addLog(`解析模型列表失败: ${String(err)}`, "error");
+							safeResolve([]);
+						}
+					},
+					onerror: (err) => {
+						store.addLog(`拉取模型列表失败，网络错误: ${String(err)}`, "error");
+						safeResolve([]);
+					},
+					ontimeout: () => {
+						store.addLog("拉取模型列表超时（15秒）", "error");
+						safeResolve([]);
+					},
+					onabort: () => {
+						safeResolve([]);
+					}
+				}));
+			}
 		});
 	};
 	var getModelSupportedReasoningEfforts = (modelId, metaList) => {
@@ -1029,7 +1089,6 @@ ${baseGuidelines}`;
 						body: bodyStr,
 						signal: controller.signal
 					});
-					window.clearTimeout(timer);
 					if (signal?.aborted) return {
 						ok: false,
 						status: 0,
@@ -1054,7 +1113,6 @@ ${baseGuidelines}`;
 						};
 					}
 				} catch (err) {
-					window.clearTimeout(timer);
 					if (signal?.aborted) return {
 						ok: false,
 						status: 0,
@@ -1068,105 +1126,104 @@ ${baseGuidelines}`;
 						errText: err?.name === "AbortError" ? "AI 请求超时（60秒）" : String(err)
 					};
 				} finally {
+					window.clearTimeout(timer);
 					signal?.removeEventListener("abort", onExternalAbort);
 				}
 			}
-			return new Promise((resolve) => {
-				if (signal?.aborted) return resolve({
+			return runGuardedXhr({
+				signal,
+				hardTimeoutMs: 65e3,
+				onAbortResult: () => ({
 					ok: false,
 					status: 0,
 					answers: [],
 					errText: ""
-				});
-				let req = null;
-				const cleanupSignal = () => {
-					signal?.removeEventListener("abort", onExternalAbort);
-				};
-				const onExternalAbort = () => {
-					cleanupSignal();
-					try {
-						if (req && typeof req.abort === "function") req.abort();
-					} catch {}
-					resolve({
-						ok: false,
-						status: 0,
-						answers: [],
-						errText: ""
-					});
-				};
-				signal?.addEventListener("abort", onExternalAbort, { once: true });
-				req = xhr({
-					url: endpoint,
-					method: "POST",
-					headers: {
-						"Content-Type": "application/json",
-						Authorization: `Bearer ${aiApiKey.trim()}`
-					},
-					data: bodyStr,
-					timeout: 6e4,
-					onload: (res) => {
-						cleanupSignal();
-						if (signal?.aborted) return resolve({
-							ok: false,
-							status: 0,
-							answers: [],
-							errText: ""
-						});
-						try {
-							if (res.status >= 200 && res.status < 300) {
-								const data = JSON.parse(res.responseText);
-								resolve({
-									ok: true,
-									status: res.status,
-									answers: extractAnswersFromData(data),
-									errText: ""
-								});
-							} else resolve({
+				}),
+				onTimeoutResult: () => ({
+					ok: false,
+					status: 0,
+					answers: [],
+					errText: "AI 请求硬超时（65秒）"
+				}),
+				execute: (safeResolve, setReq) => {
+					setReq(xhr({
+						url: endpoint,
+						method: "POST",
+						headers: {
+							"Content-Type": "application/json",
+							Authorization: `Bearer ${aiApiKey.trim()}`
+						},
+						data: bodyStr,
+						timeout: 6e4,
+						onload: (res) => {
+							if (signal?.aborted) return safeResolve({
 								ok: false,
-								status: res.status,
+								status: 0,
 								answers: [],
-								errText: String(res.responseText || "")
+								errText: ""
 							});
-						} catch (err) {
-							resolve({
+							try {
+								if (res.status >= 200 && res.status < 300) {
+									const data = JSON.parse(res.responseText);
+									safeResolve({
+										ok: true,
+										status: res.status,
+										answers: extractAnswersFromData(data),
+										errText: ""
+									});
+								} else safeResolve({
+									ok: false,
+									status: res.status,
+									answers: [],
+									errText: String(res.responseText || "")
+								});
+							} catch (err) {
+								safeResolve({
+									ok: false,
+									status: res.status || 0,
+									answers: [],
+									errText: `解析响应失败: ${String(err)}`
+								});
+							}
+						},
+						onerror: (err) => {
+							if (signal?.aborted) return safeResolve({
 								ok: false,
-								status: res.status || 0,
+								status: 0,
 								answers: [],
-								errText: `解析响应失败: ${String(err)}`
+								errText: ""
+							});
+							safeResolve({
+								ok: false,
+								status: 0,
+								answers: [],
+								errText: `网络错误: ${String(err)}`
+							});
+						},
+						ontimeout: () => {
+							if (signal?.aborted) return safeResolve({
+								ok: false,
+								status: 0,
+								answers: [],
+								errText: ""
+							});
+							safeResolve({
+								ok: false,
+								status: 0,
+								answers: [],
+								errText: "AI 请求超时（60秒）"
+							});
+						},
+						onabort: () => {
+							safeResolve({
+								ok: false,
+								status: 0,
+								answers: [],
+								errText: ""
 							});
 						}
-					},
-					onerror: (err) => {
-						cleanupSignal();
-						if (signal?.aborted) return resolve({
-							ok: false,
-							status: 0,
-							answers: [],
-							errText: ""
-						});
-						resolve({
-							ok: false,
-							status: 0,
-							answers: [],
-							errText: `网络错误: ${String(err)}`
-						});
-					},
-					ontimeout: () => {
-						cleanupSignal();
-						if (signal?.aborted) return resolve({
-							ok: false,
-							status: 0,
-							answers: [],
-							errText: ""
-						});
-						resolve({
-							ok: false,
-							status: 0,
-							answers: [],
-							errText: "AI 请求超时（60秒）"
-						});
-					}
-				});
+					}));
+				}
 			});
 		};
 		const isMultimodalError = (status, errText) => {
@@ -1258,7 +1315,7 @@ ${baseGuidelines}`;
         <div class="kasa-card">
           <div class="kasa-header" id="drag-handle">
             <div class="kasa-title-group">
-              <span class="kasa-badge">v1.2</span>
+              <span class="kasa-badge">v1.3</span>
               <span class="kasa-title">Kasa 学习通助手</span>
             </div>
             <div class="kasa-actions">
@@ -1485,7 +1542,7 @@ ${baseGuidelines}`;
         <p style="margin:4px 0;">• <strong>作业与测验</strong>：在「AI 设置」中填好 API Key 与模型，点击右上角「开始答题」即可自动作答。</p>
         <p style="margin:4px 0;">• <strong>数据安全</strong>：配置与 Key 仅保存在当前浏览器本地，直接请求服务商接口。</p>
         <div style="margin-top:12px;padding-top:8px;border-top:1px solid #f3f4f6;color:#9ca3af;font-size:11px;">
-          提示：遇到遮挡可点击右上角最小化面板 · v1.2.0
+          提示：遇到遮挡可点击右上角最小化面板 · v1.3.0
         </div>
       </div>
     `;
@@ -2071,10 +2128,12 @@ ${baseGuidelines}`;
 			return `${match.startsWith(" ") ? " " : ""}${p1}`;
 		});
 		res = res.replace(/[（\(](?:又称|亦称|即|俗称)[^）\)]*[）\)]/g, "");
+		res = res.replace(/^\s*(?:【?(?:(?:标准|参考)?答案|解答|答|解)】?)\s*(?:[:：]\s*|\r?\n+)/, "");
 		return res.split(/\r?\n/).map((line) => {
 			let l = line.trim();
 			l = l.replace(/^#{1,6}\s+/, "");
 			l = l.replace(/^>\s+/, "");
+			l = l.replace(/^(?:【?(?:(?:标准|参考)?答案|解答|答|解)】?)\s*[:：]\s*/, "");
 			return l;
 		}).join("\n").trim();
 	};
@@ -24719,13 +24778,46 @@ ${baseGuidelines}`;
 	};
 	var blobToDataUrl = async (blob) => {
 		if (typeof FileReader !== "undefined") return new Promise((resolve, reject) => {
+			let settled = false;
 			const reader = new FileReader();
+			const timer = setTimeout(() => {
+				if (settled) return;
+				settled = true;
+				try {
+					reader.abort();
+				} catch {}
+				reject(new Error("FileReader 读取超时"));
+			}, 5e3);
+			const cleanup = () => {
+				clearTimeout(timer);
+			};
 			reader.onloadend = () => {
+				if (settled) return;
+				settled = true;
+				cleanup();
 				if (typeof reader.result === "string") resolve(reader.result);
 				else reject(new Error("转换图片 Base64 失败"));
 			};
-			reader.onerror = reject;
-			reader.readAsDataURL(blob);
+			reader.onerror = (err) => {
+				if (settled) return;
+				settled = true;
+				cleanup();
+				reject(err || new Error("FileReader 出错"));
+			};
+			reader.onabort = () => {
+				if (settled) return;
+				settled = true;
+				cleanup();
+				reject(new Error("FileReader 已中止"));
+			};
+			try {
+				reader.readAsDataURL(blob);
+			} catch (e) {
+				if (settled) return;
+				settled = true;
+				cleanup();
+				reject(e);
+			}
 		});
 		else {
 			const NodeBuffer = globalThis.Buffer;
@@ -24735,9 +24827,88 @@ ${baseGuidelines}`;
 					const buf = NodeBuffer.from(arr);
 					return `data:${blob.type || "image/png"};base64,${buf.toString("base64")}`;
 				} else if (blob instanceof ArrayBuffer) return `data:image/png;base64,${NodeBuffer.from(blob).toString("base64")}`;
+				else if (NodeBuffer.isBuffer(blob)) return `data:image/png;base64,${blob.toString("base64")}`;
+				else if (blob instanceof Uint8Array) return `data:image/png;base64,${NodeBuffer.from(blob.buffer, blob.byteOffset, blob.byteLength).toString("base64")}`;
 			}
 		}
 		return "";
+	};
+	var compressImageBlob = async (blob, rawDataUrl) => {
+		try {
+			if (typeof document === "undefined" || typeof document.createElement !== "function" || typeof Image === "undefined" || typeof URL === "undefined" || typeof URL.createObjectURL !== "function" || typeof URL.revokeObjectURL !== "function") return rawDataUrl;
+			if (blob?.type === "image/svg+xml") return rawDataUrl;
+			if (blob && typeof blob.size === "number" && blob.size <= 153600) return rawDataUrl;
+			let objectUrl = "";
+			return await new Promise((resolve) => {
+				let settled = false;
+				let timer = null;
+				const cleanup = () => {
+					if (timer) {
+						clearTimeout(timer);
+						timer = null;
+					}
+					if (objectUrl) {
+						try {
+							URL.revokeObjectURL(objectUrl);
+						} catch {}
+						objectUrl = "";
+					}
+				};
+				const finish = (result) => {
+					if (settled) return;
+					settled = true;
+					cleanup();
+					resolve(result);
+				};
+				try {
+					objectUrl = URL.createObjectURL(blob);
+					const img = new Image();
+					timer = setTimeout(() => {
+						finish(rawDataUrl);
+					}, 5e3);
+					img.onload = () => {
+						try {
+							const w = img.naturalWidth || img.width;
+							const h = img.naturalHeight || img.height;
+							if (!w || !h) return finish(rawDataUrl);
+							const MAX_SIDE = 1280;
+							let targetW = w;
+							let targetH = h;
+							if (w > MAX_SIDE || h > MAX_SIDE) {
+								if (w >= h) {
+									targetW = MAX_SIDE;
+									targetH = Math.round(h * MAX_SIDE / w);
+								} else {
+									targetH = MAX_SIDE;
+									targetW = Math.round(w * MAX_SIDE / h);
+								}
+							}
+							const canvas = document.createElement("canvas");
+							canvas.width = targetW;
+							canvas.height = targetH;
+							const ctx = canvas.getContext("2d");
+							if (!ctx) return finish(rawDataUrl);
+							ctx.fillStyle = "#ffffff";
+							ctx.fillRect(0, 0, targetW, targetH);
+							ctx.drawImage(img, 0, 0, targetW, targetH);
+							const compressed = canvas.toDataURL("image/jpeg", .85);
+							if (compressed && compressed.startsWith("data:image/") && compressed.length < rawDataUrl.length) finish(compressed);
+							else finish(rawDataUrl);
+						} catch {
+							finish(rawDataUrl);
+						}
+					};
+					img.onerror = () => {
+						finish(rawDataUrl);
+					};
+					img.src = objectUrl;
+				} catch {
+					finish(rawDataUrl);
+				}
+			});
+		} catch {
+			return rawDataUrl;
+		}
 	};
 	var hasMeaningfulContent = (val) => {
 		if (!val || typeof val !== "string") return false;
@@ -24784,70 +24955,96 @@ ${baseGuidelines}`;
 			try {
 				if (xhr) {
 					const base64 = await new Promise((resolve) => {
+						if (signal?.aborted) return resolve(null);
+						let settled = false;
 						let req = null;
+						let hardTimer = null;
+						const finish = (result) => {
+							if (settled) return;
+							settled = true;
+							if (hardTimer) {
+								clearTimeout(hardTimer);
+								hardTimer = null;
+							}
+							if (signal && onAbort) signal.removeEventListener("abort", onAbort);
+							resolve(result);
+						};
 						const onAbort = () => {
 							try {
 								if (req && typeof req.abort === "function") req.abort();
 							} catch {}
-							resolve(null);
+							finish(null);
 						};
-						signal?.addEventListener("abort", onAbort, { once: true });
-						req = xhr({
-							url,
-							method: "GET",
-							responseType: "blob",
-							timeout: 5e3,
-							onload: async (res) => {
-								signal?.removeEventListener("abort", onAbort);
-								if (res.status >= 200 && res.status < 300 && res.response) {
-									const blob = res.response;
-									if (blob && typeof blob.size === "number" && blob.size > 2097152) {
-										resolve(null);
-										return;
-									}
-									try {
-										resolve(await blobToDataUrl(blob));
-									} catch {
-										resolve(null);
-									}
-								} else resolve(null);
-							},
-							onerror: () => {
-								signal?.removeEventListener("abort", onAbort);
-								resolve(null);
-							},
-							ontimeout: () => {
-								signal?.removeEventListener("abort", onAbort);
-								resolve(null);
-							}
-						});
+						if (signal) signal.addEventListener("abort", onAbort, { once: true });
+						hardTimer = setTimeout(() => {
+							try {
+								if (req && typeof req.abort === "function") req.abort();
+							} catch {}
+							finish(null);
+						}, 8e3);
+						try {
+							req = xhr({
+								url,
+								method: "GET",
+								responseType: "blob",
+								timeout: 6e3,
+								onload: async (res) => {
+									if (settled) return;
+									if (res.status >= 200 && res.status < 300 && res.response) {
+										const blob = res.response;
+										if (blob && typeof blob.size === "number" && blob.size > 2097152) {
+											finish(null);
+											return;
+										}
+										try {
+											const rawB64 = await blobToDataUrl(blob);
+											if (!rawB64) {
+												finish(null);
+												return;
+											}
+											const finalB64 = await compressImageBlob(blob, rawB64);
+											finish(finalB64);
+										} catch {
+											finish(null);
+										}
+									} else finish(null);
+								},
+								onerror: () => finish(null),
+								ontimeout: () => finish(null),
+								onabort: () => finish(null)
+							});
+						} catch {
+							finish(null);
+						}
 					});
 					if (base64) {
 						base64Images.push(base64);
 						if (base64Images.length >= 3) break;
 					}
 				} else if (typeof window !== "undefined" && typeof window.fetch === "function") {
+					if (signal?.aborted) break;
 					const controller = new AbortController();
-					const timer = setTimeout(() => controller.abort(), 5e3);
+					const timer = setTimeout(() => controller.abort(), 8e3);
 					const onAbort = () => controller.abort();
-					signal?.addEventListener("abort", onAbort, { once: true });
+					if (signal) signal.addEventListener("abort", onAbort, { once: true });
 					try {
 						const res = await window.fetch(url, { signal: controller.signal });
-						clearTimeout(timer);
-						signal?.removeEventListener("abort", onAbort);
 						if (res.ok) {
 							const blob = await res.blob();
 							if (blob && typeof blob.size === "number" && blob.size > 2097152) {} else {
-								const b64 = await blobToDataUrl(blob);
-								if (b64) {
-									base64Images.push(b64);
-									if (base64Images.length >= 3) break;
+								const rawB64 = await blobToDataUrl(blob);
+								if (rawB64) {
+									const finalB64 = await compressImageBlob(blob, rawB64);
+									if (finalB64) {
+										base64Images.push(finalB64);
+										if (base64Images.length >= 3) break;
+									}
 								}
 							}
 						}
-					} catch {
+					} catch {} finally {
 						clearTimeout(timer);
-						signal?.removeEventListener("abort", onAbort);
+						if (signal) signal.removeEventListener("abort", onAbort);
 					}
 				}
 			} catch {}

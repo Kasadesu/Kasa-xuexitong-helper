@@ -49,21 +49,59 @@ export const detectQuestionSubType = (rawTitleText: string): QuestionSubType | u
 };
 
 /**
- * 将 Blob 转为 Base64 data URL
+ * 将 Blob 转为 Base64 data URL（包含防重入、abort 与 5000ms 硬超时保护）
  */
-const blobToDataUrl = async (blob: any): Promise<string> => {
+export const blobToDataUrl = async (blob: any): Promise<string> => {
   if (typeof FileReader !== 'undefined') {
     return new Promise((resolve, reject) => {
+      let settled = false;
       const reader = new FileReader();
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        try {
+          reader.abort();
+        } catch {}
+        reject(new Error('FileReader 读取超时'));
+      }, 5000);
+
+      const cleanup = () => {
+        clearTimeout(timer);
+      };
+
       reader.onloadend = () => {
+        if (settled) return;
+        settled = true;
+        cleanup();
         if (typeof reader.result === 'string') {
           resolve(reader.result);
         } else {
           reject(new Error('转换图片 Base64 失败'));
         }
       };
-      reader.onerror = reject;
-      reader.readAsDataURL(blob);
+
+      reader.onerror = (err) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(err || new Error('FileReader 出错'));
+      };
+
+      reader.onabort = () => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(new Error('FileReader 已中止'));
+      };
+
+      try {
+        reader.readAsDataURL(blob);
+      } catch (e) {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(e);
+      }
     });
   } else {
     const NodeBuffer = (globalThis as any).Buffer;
@@ -76,10 +114,137 @@ const blobToDataUrl = async (blob: any): Promise<string> => {
       } else if (blob instanceof ArrayBuffer) {
         const buf = NodeBuffer.from(blob);
         return `data:image/png;base64,${buf.toString('base64')}`;
+      } else if (NodeBuffer.isBuffer(blob)) {
+        return `data:image/png;base64,${blob.toString('base64')}`;
+      } else if (blob instanceof Uint8Array) {
+        const buf = NodeBuffer.from(blob.buffer, blob.byteOffset, blob.byteLength);
+        return `data:image/png;base64,${buf.toString('base64')}`;
       }
     }
   }
   return '';
+};
+
+/**
+ * Canvas 图片等比缩放与 JPEG 压缩辅助函数
+ * 严防透明底化学结构式 PNG 转 JPEG 变黑（铺设纯白底色），并对大图降采样缩减传输耗时
+ */
+export const compressImageBlob = async (blob: any, rawDataUrl: string): Promise<string> => {
+  try {
+    if (
+      typeof document === 'undefined' ||
+      typeof document.createElement !== 'function' ||
+      typeof Image === 'undefined' ||
+      typeof URL === 'undefined' ||
+      typeof URL.createObjectURL !== 'function' ||
+      typeof URL.revokeObjectURL !== 'function'
+    ) {
+      return rawDataUrl;
+    }
+
+    if (blob?.type === 'image/svg+xml') {
+      return rawDataUrl;
+    }
+
+    if (blob && typeof blob.size === 'number' && blob.size <= 150 * 1024) {
+      return rawDataUrl;
+    }
+
+    let objectUrl = '';
+
+    return await new Promise<string>((resolve) => {
+      let settled = false;
+      let timer: any = null;
+
+      const cleanup = () => {
+        if (timer) {
+          clearTimeout(timer);
+          timer = null;
+        }
+        if (objectUrl) {
+          try {
+            URL.revokeObjectURL(objectUrl);
+          } catch {}
+          objectUrl = '';
+        }
+      };
+
+      const finish = (result: string) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(result);
+      };
+
+      try {
+        objectUrl = URL.createObjectURL(blob);
+        const img = new Image();
+
+        timer = setTimeout(() => {
+          finish(rawDataUrl);
+        }, 5000);
+
+        img.onload = () => {
+          try {
+            const w = img.naturalWidth || img.width;
+            const h = img.naturalHeight || img.height;
+            if (!w || !h) {
+              return finish(rawDataUrl);
+            }
+
+            const MAX_SIDE = 1280;
+            let targetW = w;
+            let targetH = h;
+            if (w > MAX_SIDE || h > MAX_SIDE) {
+              if (w >= h) {
+                targetW = MAX_SIDE;
+                targetH = Math.round((h * MAX_SIDE) / w);
+              } else {
+                targetH = MAX_SIDE;
+                targetW = Math.round((w * MAX_SIDE) / h);
+              }
+            }
+
+            const canvas = document.createElement('canvas');
+            canvas.width = targetW;
+            canvas.height = targetH;
+            const ctx = canvas.getContext('2d');
+            if (!ctx) {
+              return finish(rawDataUrl);
+            }
+
+            // 核心防护：必须先铺纯白底色，严防透明底化学结构式 PNG 转 JPEG 变黑！
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, targetW, targetH);
+            ctx.drawImage(img, 0, 0, targetW, targetH);
+
+            const compressed = canvas.toDataURL('image/jpeg', 0.85);
+            if (
+              compressed &&
+              compressed.startsWith('data:image/') &&
+              compressed.length < rawDataUrl.length
+            ) {
+              finish(compressed);
+            } else {
+              finish(rawDataUrl);
+            }
+          } catch {
+            finish(rawDataUrl);
+          }
+        };
+
+        img.onerror = () => {
+          finish(rawDataUrl);
+        };
+
+        img.src = objectUrl;
+      } catch {
+        finish(rawDataUrl);
+      }
+    });
+  } catch {
+    return rawDataUrl;
+  }
 };
 
 /**
@@ -188,79 +353,119 @@ export const extractQuestionImages = async (
     try {
       if (xhr) {
         const base64 = await new Promise<string | null>((resolve) => {
+          if (signal?.aborted) return resolve(null);
+          let settled = false;
           let req: any = null;
+          let hardTimer: any = null;
+
+          const finish = (result: string | null) => {
+            if (settled) return;
+            settled = true;
+            if (hardTimer) {
+              clearTimeout(hardTimer);
+              hardTimer = null;
+            }
+            if (signal && onAbort) {
+              signal.removeEventListener('abort', onAbort);
+            }
+            resolve(result);
+          };
+
           const onAbort = () => {
             try {
               if (req && typeof req.abort === 'function') req.abort();
             } catch {}
-            resolve(null);
+            finish(null);
           };
-          signal?.addEventListener('abort', onAbort, { once: true });
 
-          req = xhr({
-            url,
-            method: 'GET',
-            responseType: 'blob',
-            timeout: 5000,
-            onload: async (res: any) => {
-              signal?.removeEventListener('abort', onAbort);
-              if (res.status >= 200 && res.status < 300 && res.response) {
-                const blob = res.response;
-                // 单图 Blob 体积限制：若 blob.size > 2MB，跳过避免 Base64 膨胀打爆网关
-                if (blob && typeof blob.size === 'number' && blob.size > 2 * 1024 * 1024) {
-                  resolve(null);
-                  return;
+          if (signal) {
+            signal.addEventListener('abort', onAbort, { once: true });
+          }
+
+          // 外层 JS 硬超时 8000ms（内部 timeout 为 6000ms），双层保底防假死
+          hardTimer = setTimeout(() => {
+            try {
+              if (req && typeof req.abort === 'function') req.abort();
+            } catch {}
+            finish(null);
+          }, 8000);
+
+          try {
+            req = xhr({
+              url,
+              method: 'GET',
+              responseType: 'blob',
+              timeout: 6000,
+              onload: async (res: any) => {
+                if (settled) return;
+                if (res.status >= 200 && res.status < 300 && res.response) {
+                  const blob = res.response;
+                  // 单图 Blob 体积限制：若 blob.size > 2MB，跳过避免 Base64 膨胀打爆网关
+                  if (blob && typeof blob.size === 'number' && blob.size > 2 * 1024 * 1024) {
+                    finish(null);
+                    return;
+                  }
+                  try {
+                    const rawB64 = await blobToDataUrl(blob);
+                    if (!rawB64) {
+                      finish(null);
+                      return;
+                    }
+                    const finalB64 = await compressImageBlob(blob, rawB64);
+                    finish(finalB64);
+                  } catch {
+                    finish(null);
+                  }
+                } else {
+                  finish(null);
                 }
-                try {
-                  const b64 = await blobToDataUrl(blob);
-                  resolve(b64);
-                } catch {
-                  resolve(null);
-                }
-              } else {
-                resolve(null);
-              }
-            },
-            onerror: () => {
-              signal?.removeEventListener('abort', onAbort);
-              resolve(null);
-            },
-            ontimeout: () => {
-              signal?.removeEventListener('abort', onAbort);
-              resolve(null);
-            }
-          });
+              },
+              onerror: () => finish(null),
+              ontimeout: () => finish(null),
+              onabort: () => finish(null)
+            });
+          } catch {
+            finish(null);
+          }
         });
         if (base64) {
           base64Images.push(base64);
           if (base64Images.length >= 3) break;
         }
       } else if (typeof window !== 'undefined' && typeof window.fetch === 'function') {
+        if (signal?.aborted) break;
         const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 5000);
+        const timer = setTimeout(() => controller.abort(), 8000);
         const onAbort = () => controller.abort();
-        signal?.addEventListener('abort', onAbort, { once: true });
+        if (signal) {
+          signal.addEventListener('abort', onAbort, { once: true });
+        }
 
         try {
           const res = await window.fetch(url, { signal: controller.signal });
-          clearTimeout(timer);
-          signal?.removeEventListener('abort', onAbort);
           if (res.ok) {
             const blob = await res.blob();
             // 单图 Blob 体积限制：若 blob.size > 2MB，跳过
             if (blob && typeof blob.size === 'number' && blob.size > 2 * 1024 * 1024) {
               // skip
             } else {
-              const b64 = await blobToDataUrl(blob);
-              if (b64) {
-                base64Images.push(b64);
-                if (base64Images.length >= 3) break;
+              const rawB64 = await blobToDataUrl(blob);
+              if (rawB64) {
+                const finalB64 = await compressImageBlob(blob, rawB64);
+                if (finalB64) {
+                  base64Images.push(finalB64);
+                  if (base64Images.length >= 3) break;
+                }
               }
             }
           }
         } catch {
+          // 降级兜底不抛出
+        } finally {
           clearTimeout(timer);
-          signal?.removeEventListener('abort', onAbort);
+          if (signal) {
+            signal.removeEventListener('abort', onAbort);
+          }
         }
       }
     } catch {
