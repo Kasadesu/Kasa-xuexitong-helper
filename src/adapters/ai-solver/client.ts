@@ -1,7 +1,8 @@
 import { store } from '../../store';
 import { Question, RemoteModelItem } from '../../types';
-import { buildAiPrompt } from './prompt';
+import { buildAiPrompt, ChatMessage } from './prompt';
 import { parseAiResponse } from './parser';
+import { isAiRefusalOrApology } from '../../utils/text-sanitizer';
 
 export const DEFAULT_REASONING_EFFORTS = ['none', 'low', 'medium', 'high', 'max'];
 
@@ -348,9 +349,10 @@ export const queryAiAnswer = async (
     question.subType
   );
 
-  const formatMessages = (forcePlainText: boolean) => {
-    if (!forcePlainText) return messages;
-    return messages.map((m) => {
+  const formatMessages = (forcePlainText: boolean, customMessages?: ChatMessage[]) => {
+    const baseMsgs = customMessages || messages;
+    if (!forcePlainText) return baseMsgs;
+    return baseMsgs.map((m) => {
       if (typeof m.content === 'string') return m;
       if (Array.isArray(m.content)) {
         const textParts = m.content
@@ -366,11 +368,12 @@ export const queryAiAnswer = async (
   const buildPayload = (
     includeReasoningEffort: boolean,
     fallbackEffort?: string,
-    forcePlainText = false
+    forcePlainText = false,
+    customMessages?: ChatMessage[]
   ) => {
     const p: any = {
       model: targetModel,
-      messages: formatMessages(forcePlainText),
+      messages: formatMessages(forcePlainText, customMessages),
       temperature: isReasoning ? 0.2 : 0.1,
       stream: false
     };
@@ -381,19 +384,29 @@ export const queryAiAnswer = async (
     return JSON.stringify(p);
   };
 
-  const extractAnswersFromData = (data: any): string[] => {
+  const extractAnswersFromData = (data: any): { answers: string[]; rawContent: string } => {
     const msg = data?.choices?.[0]?.message;
-    const rawContent = msg?.content || '';
+    const rawContent = String(msg?.content || '');
     let answers = parseAiResponse(rawContent, question.type);
     if (answers.length === 0 && msg?.reasoning_content) {
-      answers = parseAiResponse(String(msg.reasoning_content), question.type);
+      const reasoning = String(msg.reasoning_content);
+      answers = parseAiResponse(reasoning, question.type);
+      return { answers, rawContent: rawContent || reasoning };
     }
-    return answers;
+    return { answers, rawContent };
   };
 
-  const sendSingleRequest = async (bodyStr: string): Promise<{ ok: boolean; status: number; answers: string[]; errText: string }> => {
+  interface SingleReqResult {
+    ok: boolean;
+    status: number;
+    answers: string[];
+    rawContent: string;
+    errText: string;
+  }
+
+  const sendSingleRequest = async (bodyStr: string): Promise<SingleReqResult> => {
     if (signal?.aborted) {
-      return { ok: false, status: 0, answers: [], errText: '' };
+      return { ok: false, status: 0, answers: [], rawContent: '', errText: '' };
     }
 
     // @ts-ignore
@@ -416,33 +429,40 @@ export const queryAiAnswer = async (
         });
 
         if (signal?.aborted) {
-          return { ok: false, status: 0, answers: [], errText: '' };
+          return { ok: false, status: 0, answers: [], rawContent: '', errText: '' };
         }
 
         if (res.ok) {
           const data = await res.json();
-          return { ok: true, status: res.status, answers: extractAnswersFromData(data), errText: '' };
+          const extracted = extractAnswersFromData(data);
+          return {
+            ok: true,
+            status: res.status,
+            answers: extracted.answers,
+            rawContent: extracted.rawContent,
+            errText: ''
+          };
         } else {
           const errText = await res.text().catch(() => '');
-          return { ok: false, status: res.status, answers: [], errText };
+          return { ok: false, status: res.status, answers: [], rawContent: '', errText };
         }
       } catch (err: any) {
         if (signal?.aborted) {
-          return { ok: false, status: 0, answers: [], errText: '' };
+          return { ok: false, status: 0, answers: [], rawContent: '', errText: '' };
         }
         const errMsg = err?.name === 'AbortError' ? 'AI 请求超时（60秒）' : String(err);
-        return { ok: false, status: 0, answers: [], errText: errMsg };
+        return { ok: false, status: 0, answers: [], rawContent: '', errText: errMsg };
       } finally {
         window.clearTimeout(timer);
         signal?.removeEventListener('abort', onExternalAbort);
       }
     }
 
-    return runGuardedXhr<{ ok: boolean; status: number; answers: string[]; errText: string }>({
+    return runGuardedXhr<SingleReqResult>({
       signal,
       hardTimeoutMs: 65000,
-      onAbortResult: () => ({ ok: false, status: 0, answers: [], errText: '' }),
-      onTimeoutResult: () => ({ ok: false, status: 0, answers: [], errText: 'AI 请求硬超时（65秒）' }),
+      onAbortResult: () => ({ ok: false, status: 0, answers: [], rawContent: '', errText: '' }),
+      onTimeoutResult: () => ({ ok: false, status: 0, answers: [], rawContent: '', errText: 'AI 请求硬超时（65秒）' }),
       execute: (safeResolve, setReq) => {
         const req = xhr({
           url: endpoint,
@@ -455,38 +475,112 @@ export const queryAiAnswer = async (
           timeout: 60000,
           onload: (res: any) => {
             if (signal?.aborted) {
-              return safeResolve({ ok: false, status: 0, answers: [], errText: '' });
+              return safeResolve({ ok: false, status: 0, answers: [], rawContent: '', errText: '' });
             }
             try {
               if (res.status >= 200 && res.status < 300) {
                 const data = JSON.parse(res.responseText);
-                safeResolve({ ok: true, status: res.status, answers: extractAnswersFromData(data), errText: '' });
+                const extracted = extractAnswersFromData(data);
+                safeResolve({
+                  ok: true,
+                  status: res.status,
+                  answers: extracted.answers,
+                  rawContent: extracted.rawContent,
+                  errText: ''
+                });
               } else {
-                safeResolve({ ok: false, status: res.status, answers: [], errText: String(res.responseText || '') });
+                safeResolve({
+                  ok: false,
+                  status: res.status,
+                  answers: [],
+                  rawContent: '',
+                  errText: String(res.responseText || '')
+                });
               }
             } catch (err) {
-              safeResolve({ ok: false, status: res.status || 0, answers: [], errText: `解析响应失败: ${String(err)}` });
+              safeResolve({
+                ok: false,
+                status: res.status || 0,
+                answers: [],
+                rawContent: '',
+                errText: `解析响应失败: ${String(err)}`
+              });
             }
           },
           onerror: (err: any) => {
             if (signal?.aborted) {
-              return safeResolve({ ok: false, status: 0, answers: [], errText: '' });
+              return safeResolve({ ok: false, status: 0, answers: [], rawContent: '', errText: '' });
             }
-            safeResolve({ ok: false, status: 0, answers: [], errText: `网络错误: ${String(err)}` });
+            safeResolve({ ok: false, status: 0, answers: [], rawContent: '', errText: `网络错误: ${String(err)}` });
           },
           ontimeout: () => {
             if (signal?.aborted) {
-              return safeResolve({ ok: false, status: 0, answers: [], errText: '' });
+              return safeResolve({ ok: false, status: 0, answers: [], rawContent: '', errText: '' });
             }
-            safeResolve({ ok: false, status: 0, answers: [], errText: 'AI 请求超时（60秒）' });
+            safeResolve({ ok: false, status: 0, answers: [], rawContent: '', errText: 'AI 请求超时（60秒）' });
           },
           onabort: () => {
-            safeResolve({ ok: false, status: 0, answers: [], errText: '' });
+            safeResolve({ ok: false, status: 0, answers: [], rawContent: '', errText: '' });
           }
         });
         setReq(req);
       }
     });
+  };
+
+  const recheckMultipleChoiceIfSingle = async (
+    firstRes: SingleReqResult,
+    usedForcePlainText: boolean,
+    includeReasoningEffort = true,
+    usedEffort?: string
+  ): Promise<string[]> => {
+    const firstAns = firstRes.answers[0] || '';
+    if (
+      !firstRes.ok ||
+      question.type !== 'multiple' ||
+      firstRes.answers.length !== 1 ||
+      (question.options?.length || 0) < 2 ||
+      signal?.aborted ||
+      isAiRefusalOrApology(firstAns) ||
+      /无法/.test(firstAns)
+    ) {
+      return firstRes.answers;
+    }
+
+    store.addLog(`多选题初次仅返回 1 个选项 [${firstAns}]，正在进行防漏二次复核...`, 'info');
+    const optionLetters = (question.options || [])
+      .map((_, i) => String.fromCharCode(65 + i))
+      .join('、');
+    const recheckMessages: ChatMessage[] = [
+      ...messages,
+      {
+        role: 'assistant',
+        content: firstRes.rawContent || JSON.stringify(firstRes.answers)
+      },
+      {
+        role: 'user',
+        content: `这是一道多选题（多选题通常有 2 个及以上正确选项），你刚才仅给出了 [${firstAns}]。请务必对 ${optionLetters} 逐项重新核对教材原文与完整知识体系，检查是否遗漏了其余正确选项。请简要说明逐项复核结果，并在最后一行输出包含全部正确选项的标准 JSON 数组，例如：["A", "B", "D"]。`
+      }
+    ];
+
+    try {
+      const targetEff = usedEffort !== undefined ? usedEffort : reasoningEffort;
+      const recheckEffort = targetEff === 'max' ? 'high' : targetEff;
+      const recheckRes = await sendSingleRequest(
+        buildPayload(includeReasoningEffort, recheckEffort, usedForcePlainText, recheckMessages)
+      );
+      if (signal?.aborted) return [];
+      if (
+        recheckRes.ok &&
+        recheckRes.answers.length >= 2 &&
+        !recheckRes.answers.some((a) => isAiRefusalOrApology(a) || /无法/.test(a))
+      ) {
+        return recheckRes.answers;
+      }
+    } catch {
+      // 安全降级回原答案
+    }
+    return firstRes.answers;
   };
 
   const isMultimodalError = (status: number, errText: string): boolean => {
@@ -517,7 +611,7 @@ export const queryAiAnswer = async (
   let firstRes = await sendSingleRequest(buildPayload(true, undefined, forcePlainText));
   if (signal?.aborted) return [];
   if (firstRes.ok && firstRes.answers.length > 0) {
-    return firstRes.answers;
+    return await recheckMultipleChoiceIfSingle(firstRes, forcePlainText);
   }
 
   // Vision fallback: if model doesn't support images or payload too large
@@ -535,7 +629,7 @@ export const queryAiAnswer = async (
     firstRes = await sendSingleRequest(buildPayload(true, undefined, forcePlainText));
     if (signal?.aborted) return [];
     if (firstRes.ok && firstRes.answers.length > 0) {
-      return firstRes.answers;
+      return await recheckMultipleChoiceIfSingle(firstRes, forcePlainText);
     }
   }
 
@@ -553,25 +647,28 @@ export const queryAiAnswer = async (
 
   const isParamError = firstRes.status === 400 || firstRes.status === 422 || firstRes.status === 413;
   const hasEffort = Boolean(reasoningEffort && reasoningEffort !== 'none');
-  const retryBody =
-    isParamError && hasEffort
-      ? reasoningEffort === 'max'
-        ? buildPayload(true, 'high', forcePlainText)
-        : buildPayload(false, undefined, forcePlainText)
-      : buildPayload(!isParamError, undefined, forcePlainText);
+  const secondIncludeEffort = isParamError && hasEffort ? reasoningEffort === 'max' : !isParamError;
+  const secondFallbackEffort =
+    isParamError && hasEffort && reasoningEffort === 'max' ? 'high' : undefined;
+  const retryBody = buildPayload(secondIncludeEffort, secondFallbackEffort, forcePlainText);
 
   let secondRes = await sendSingleRequest(retryBody);
   if (signal?.aborted) return [];
   if (secondRes.ok && secondRes.answers.length > 0) {
-    return secondRes.answers;
+    return await recheckMultipleChoiceIfSingle(
+      secondRes,
+      forcePlainText,
+      secondIncludeEffort,
+      secondFallbackEffort ?? reasoningEffort
+    );
   }
 
   // Attempt 3: 终极保底重试（无论 Attempt 2 还是 Attempt 1，若带图或参数冲突失败，彻底强制纯文本 + 零 reasoning_effort）
   const ultimateForcePlain = hasImages ? true : forcePlainText;
-  const thirdRes = await sendSingleRequest(buildPayload(false, undefined, ultimateForcePlain));
+  const thirdRes = await sendSingleRequest(buildPayload(false, 'none', ultimateForcePlain));
   if (signal?.aborted) return [];
   if (thirdRes.ok && thirdRes.answers.length > 0) {
-    return thirdRes.answers;
+    return await recheckMultipleChoiceIfSingle(thirdRes, ultimateForcePlain, false, 'none');
   }
 
   if (signal?.aborted) return [];

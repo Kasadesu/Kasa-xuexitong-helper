@@ -74,13 +74,20 @@ import {
   detectQuestionSubType,
   matchOptionToAnswer,
   selectBestOptions,
+  extractExplicitOptionLetter,
   isQuestionAnswered,
   extractQuestionImages,
   hasMeaningfulContent,
   blobToDataUrl,
   compressImageBlob,
-  doQuizTask
+  doQuizTask,
+  findNextQuestionBtn,
+  getExamScope,
+  getExamAutoResumeState,
+  setExamAutoResumeState,
+  clearExamAutoResumeState
 } from '../src/adapters/quiz';
+import { ChapterScheduler } from '../src/core/scheduler';
 import { PANEL_STYLES } from '../src/ui/style';
 import { parseAiResponse } from '../src/adapters/ai-solver/parser';
 import { buildAiPrompt } from '../src/adapters/ai-solver/prompt';
@@ -2678,6 +2685,1862 @@ C 是温迪（风神巴巴托斯）
 
       let logHtmlEmpty = (card as any).getLogListHtml();
       assert.ok(logHtmlEmpty.includes('等待任务开始...'), '无日志且告警清空后必须显示等待任务开始');
+    });
+  });
+
+  describe('【第 24 关】考试单题自动翻页与多选题防漏选专项回归测试', () => {
+    it('24.1 cleanQuestionTitle 与 detectQuestionType 对带分值多选题干的精准识别与清洗', () => {
+      assert.equal(
+        cleanQuestionTitle('11. (多选题, 6.0 分) 以下属于党的三大作风的是（ ）'),
+        '以下属于党的三大作风的是（ ）'
+      );
+      assert.equal(
+        cleanQuestionTitle('12、(多选, 5分) 下列关于市场营销组合的说法正确的有'),
+        '下列关于市场营销组合的说法正确的有'
+      );
+      assert.equal(
+        cleanQuestionTitle('13. 【多选题, 8.0 分】影响消费者购买行为的心理因素包括'),
+        '影响消费者购买行为的心理因素包括'
+      );
+
+      assert.equal(detectQuestionType('11. (多选题, 6.0 分) 以下属于...'), 'multiple');
+      assert.equal(detectQuestionType('12. [多选, 4.5分] 下列正确的有'), 'multiple');
+      assert.equal(detectQuestionType('13. （多选，10 分）请选出全部正确项'), 'multiple');
+      assert.equal(detectQuestionType('14. 【多选题, 8.0 分】题干'), 'multiple');
+      assert.equal(detectQuestionType('15. (单选题, 2.0 分) 唯一正确项是'), 'single');
+      assert.equal(detectQuestionType('16. (判断题, 2.0 分) 该说法是否正确'), 'judge');
+      assert.equal(detectQuestionType('17. (填空题, 4.0 分) 请填写空白处'), 'fill');
+    });
+
+    it('24.2 parseAiResponse(..., "multiple") 全面容错、防小写英文单词误拆与第20关术语保留', () => {
+      // 1. JSON 字符串内合并形式
+      assert.deepEqual(parseAiResponse('["A、B、D"]', 'multiple'), ['A', 'B', 'D']);
+      assert.deepEqual(parseAiResponse('["A, B, D"]', 'multiple'), ['A', 'B', 'D']);
+      assert.deepEqual(parseAiResponse('["ABD"]', 'multiple'), ['A', 'B', 'D']);
+      assert.deepEqual(parseAiResponse('"A、B、D"', 'multiple'), ['A', 'B', 'D']);
+
+      // 2. 单引号 / 无引号数组
+      assert.deepEqual(parseAiResponse("['A', 'B', 'D']", 'multiple'), ['A', 'B', 'D']);
+      assert.deepEqual(parseAiResponse('[A, B, D]', 'multiple'), ['A', 'B', 'D']);
+      assert.deepEqual(parseAiResponse('[A、B、D]', 'multiple'), ['A', 'B', 'D']);
+
+      // 3. 带分号 / 换行 / 点号 / 选项内逗号 / 句末中文句号的混合输出
+      assert.deepEqual(
+        parseAiResponse('答案：A. 坚持全面从严治党；B. 坚持不忘初心；D. 坚持一体推进', 'multiple'),
+        ['A', 'B', 'D']
+      );
+      assert.deepEqual(
+        parseAiResponse(
+          '答案：A. 坚持全面从严治党；B. 坚持不忘初心，牢记使命；D. 坚持一体推进',
+          'multiple'
+        ),
+        ['A', 'B', 'D']
+      );
+      assert.deepEqual(
+        parseAiResponse('正确答案：\nA. 选项1\nB. 选项2\nD. 选项4', 'multiple'),
+        ['A', 'B', 'D']
+      );
+      assert.deepEqual(
+        parseAiResponse('答案：A、B、D。解析如下：选项C不对', 'multiple'),
+        ['A', 'B', 'D']
+      );
+
+      // 4. 标题加粗前缀
+      assert.deepEqual(parseAiResponse('**答案**：**A**、**B**、**D**', 'multiple'), ['A', 'B', 'D']);
+      assert.deepEqual(parseAiResponse('【最终答案】：A, B, D', 'multiple'), ['A', 'B', 'D']);
+
+      // 5. 严格大写紧凑字母 vs 小写英文单词防护
+      assert.deepEqual(parseAiResponse('正确答案：ABD', 'multiple'), ['A', 'B', 'D']);
+      assert.deepEqual(parseAiResponse('答案: AC', 'multiple'), ['A', 'C']);
+      assert.deepEqual(
+        parseAiResponse('正确答案：each 都要分析，最终选 A、C', 'multiple'),
+        ['A', 'C']
+      );
+      assert.deepEqual(
+        parseAiResponse('答案：bad，实际选 A、B', 'multiple'),
+        ['A', 'B']
+      );
+
+      // 6. 回归：第 20 关医学化学术语与 single / judge 行为 100% 保留
+      assert.deepEqual(parseAiResponse('答案: **A. 含有 B 族维生素**', 'single'), ['A']);
+      assert.deepEqual(parseAiResponse('经过分析，答案是: A. 本品含有A型肉毒毒素', 'single'), ['A']);
+      assert.deepEqual(parseAiResponse('最终结论: D. 属于D-构型分子', 'single'), ['D']);
+      assert.deepEqual(parseAiResponse('本题选择 A. 肽链与C环结构', 'single'), ['A']);
+      assert.deepEqual(parseAiResponse('["A", "B"]', 'single'), ['A']);
+      assert.deepEqual(parseAiResponse('结论：对', 'judge'), ['对']);
+      assert.deepEqual(parseAiResponse('答案：B', 'judge'), ['B']);
+    });
+
+    it('24.3 client.ts recheckMultipleChoiceIfSingle 全路径防漏复核与安全降级测试', async () => {
+      const prevXhr = (globalThis as any).GM_xmlhttpRequest;
+      const prevKey = store.config.aiApiKey;
+      const prevEffort = store.config.reasoningEffort;
+
+      store.config.aiApiKey = 'sk-test-recheck';
+      store.config.reasoningEffort = 'none';
+
+      const baseMultiQuestion: any = {
+        id: 'q-multi-1',
+        index: 1,
+        type: 'multiple',
+        title: '以下属于中国共产党三大优良作风的有',
+        options: ['理论联系实际', '密切联系群众', '独立自主', '批评与自我批评'],
+        status: 'searching'
+      };
+
+      try {
+        // 场景 1：Attempt 1 返回单选 ["A"] -> 触发二次复核并采纳完整结果 ["A", "B", "D"]
+        let reqBodies: any[] = [];
+        (globalThis as any).GM_xmlhttpRequest = (opts: any) => {
+          const parsedBody = JSON.parse(opts.data);
+          reqBodies.push(parsedBody);
+          const idx = reqBodies.length;
+          setTimeout(() => {
+            opts.onload({
+              status: 200,
+              responseText: JSON.stringify({
+                choices: [{ message: { content: idx === 1 ? '["A"]' : '["A", "B", "D"]' } }]
+              })
+            });
+          }, 5);
+        };
+        const res1 = await queryAiAnswer(baseMultiQuestion);
+        assert.deepEqual(res1, ['A', 'B', 'D']);
+        assert.equal(reqBodies.length, 2);
+        assert.ok(
+          JSON.stringify(reqBodies[1].messages).includes('逐项重新核对'),
+          '二次复核必须包含逐项复核提示词'
+        );
+
+        // 场景 2：识图纯文本降级成功但仅返回 ["A"] -> 触发纯文本二次复核并采纳 ["A", "B", "D"]
+        reqBodies = [];
+        const imgQuestion = { ...baseMultiQuestion, images: ['data:image/png;base64,abc'] };
+        (globalThis as any).GM_xmlhttpRequest = (opts: any) => {
+          const parsedBody = JSON.parse(opts.data);
+          reqBodies.push(parsedBody);
+          const idx = reqBodies.length;
+          setTimeout(() => {
+            if (idx === 1) {
+              opts.onload({ status: 413, responseText: 'payload too large' });
+            } else {
+              opts.onload({
+                status: 200,
+                responseText: JSON.stringify({
+                  choices: [{ message: { content: idx === 2 ? '["A"]' : '["A", "B", "D"]' } }]
+                })
+              });
+            }
+          }, 5);
+        };
+        const resVisionFallback = await queryAiAnswer(imgQuestion);
+        assert.deepEqual(resVisionFallback, ['A', 'B', 'D']);
+        assert.equal(reqBodies.length, 3);
+        assert.ok(
+          typeof reqBodies[2].messages[1].content === 'string',
+          '识图降级后的二次复核必须保持纯文本'
+        );
+
+        // 场景 3：Attempt 2 成功但仅返回 ["A"] -> 触发二次复核并采纳 ["A", "C"]
+        reqBodies = [];
+        (globalThis as any).GM_xmlhttpRequest = (opts: any) => {
+          const parsedBody = JSON.parse(opts.data);
+          reqBodies.push(parsedBody);
+          const idx = reqBodies.length;
+          setTimeout(() => {
+            if (idx === 1) {
+              opts.onload({ status: 500, responseText: 'server error' });
+            } else {
+              opts.onload({
+                status: 200,
+                responseText: JSON.stringify({
+                  choices: [{ message: { content: idx === 2 ? '["A"]' : '["A", "C"]' } }]
+                })
+              });
+            }
+          }, 5);
+        };
+        const resAttempt2 = await queryAiAnswer(baseMultiQuestion);
+        assert.deepEqual(resAttempt2, ['A', 'C']);
+        assert.equal(reqBodies.length, 3);
+
+        // 场景 4：Attempt 3 成功但仅返回 ["B"] -> 触发二次复核并采纳 ["B", "D"]
+        reqBodies = [];
+        (globalThis as any).GM_xmlhttpRequest = (opts: any) => {
+          const parsedBody = JSON.parse(opts.data);
+          reqBodies.push(parsedBody);
+          const idx = reqBodies.length;
+          setTimeout(() => {
+            if (idx <= 2) {
+              opts.onload({ status: 502, responseText: 'bad gateway' });
+            } else {
+              opts.onload({
+                status: 200,
+                responseText: JSON.stringify({
+                  choices: [{ message: { content: idx === 3 ? '["B"]' : '["B", "D"]' } }]
+                })
+              });
+            }
+          }, 5);
+        };
+        const resAttempt3 = await queryAiAnswer(baseMultiQuestion);
+        assert.deepEqual(resAttempt3, ['B', 'D']);
+        assert.equal(reqBodies.length, 4);
+
+        // 场景 5a：复核失败（HTTP 500/网络异常）-> 安全降级回原 ["A"]
+        reqBodies = [];
+        (globalThis as any).GM_xmlhttpRequest = (opts: any) => {
+          reqBodies.push(JSON.parse(opts.data));
+          const idx = reqBodies.length;
+          setTimeout(() => {
+            if (idx === 1) {
+              opts.onload({
+                status: 200,
+                responseText: JSON.stringify({ choices: [{ message: { content: '["A"]' } }] })
+              });
+            } else {
+              opts.onerror(new Error('network down'));
+            }
+          }, 5);
+        };
+        const resRecheckFail = await queryAiAnswer(baseMultiQuestion);
+        assert.deepEqual(resRecheckFail, ['A']);
+
+        // 场景 5b：复核仍仅返回 1 项 -> 安全保留原 ["A"]
+        reqBodies = [];
+        (globalThis as any).GM_xmlhttpRequest = (opts: any) => {
+          reqBodies.push(JSON.parse(opts.data));
+          const idx = reqBodies.length;
+          setTimeout(() => {
+            opts.onload({
+              status: 200,
+              responseText: JSON.stringify({
+                choices: [{ message: { content: idx === 1 ? '["A"]' : '["B"]' } }]
+              })
+            });
+          }, 5);
+        };
+        const resRecheckSingle = await queryAiAnswer(baseMultiQuestion);
+        assert.deepEqual(resRecheckSingle, ['A']);
+
+        // 场景 6：拒答文案、选项不足 2 个、single/judge 均不触发多余复核请求
+        const checkNoRecheck = async (q: any, content: string) => {
+          reqBodies = [];
+          (globalThis as any).GM_xmlhttpRequest = (opts: any) => {
+            reqBodies.push(JSON.parse(opts.data));
+            setTimeout(() => {
+              opts.onload({
+                status: 200,
+                responseText: JSON.stringify({ choices: [{ message: { content } }] })
+              });
+            }, 5);
+          };
+          const out = await queryAiAnswer(q);
+          assert.equal(reqBodies.length, 1, '不应触发多余复核请求');
+          return out;
+        };
+
+        await checkNoRecheck(baseMultiQuestion, '["没有提供图片，无法判断"]');
+        await checkNoRecheck({ ...baseMultiQuestion, options: ['唯一选项'] }, '["A"]');
+        await checkNoRecheck({ ...baseMultiQuestion, type: 'single' }, '["A"]');
+        await checkNoRecheck({ ...baseMultiQuestion, type: 'judge' }, '["对"]');
+      } finally {
+        (globalThis as any).GM_xmlhttpRequest = prevXhr;
+        store.config.aiApiKey = prevKey;
+        store.config.reasoningEffort = prevEffort;
+      }
+    });
+
+    it('24.4 findNextQuestionBtn 精准定位下一题按钮并严格排除非目标与不可见控件', () => {
+      const makeBtn = (opts: {
+        id?: string;
+        text?: string;
+        value?: string;
+        tag?: string;
+        onclick?: string;
+        cls?: string[];
+        closestHits?: string[];
+        disabled?: boolean;
+        ariaDisabled?: string;
+        display?: string;
+        visibility?: string;
+        computedDisplay?: string;
+      }) => {
+        const clsList = opts.cls || [];
+        const tagName = (opts.tag || 'A').toUpperCase();
+        return {
+          id: opts.id || '',
+          tagName,
+          innerText: opts.text ?? '',
+          textContent: opts.text ?? '',
+          value: opts.value ?? '',
+          disabled: Boolean(opts.disabled),
+          style: {
+            display: opts.display || '',
+            visibility: opts.visibility || ''
+          },
+          classList: {
+            contains: (c: string) => clsList.includes(c)
+          },
+          hasAttribute: (k: string) => (k === 'disabled' ? Boolean(opts.disabled) : false),
+          getAttribute: (k: string) => {
+            if (k === 'onclick') return opts.onclick || '';
+            if (k === 'aria-disabled') return opts.ariaDisabled || '';
+            if (k === 'value') return opts.value ?? '';
+            return null;
+          },
+          closest: (sel: string) =>
+            (opts.closestHits || []).some((hit) => sel.includes(hit)) ? {} : null,
+          _computedDisplay: opts.computedDisplay
+        } as any;
+      };
+
+      const makeDoc = (group1: any[], group2: any[] = []) =>
+        ({
+          defaultView: {
+            getComputedStyle: (el: any) => ({
+              display: el._computedDisplay || el.style?.display || 'inline-block',
+              visibility: el.style?.visibility || 'visible'
+            })
+          },
+          querySelectorAll: (sel: string) => {
+            if (sel.includes('.nextDiv')) return group1;
+            return group2;
+          }
+        }) as any;
+
+      // 1. 排除悬浮窗内部、下一章、上一题、负向参数、disabled、display:none 后命中真正 #nextBtn
+      const panelBtn = makeBtn({ text: '下一题', closestHits: ['kasa-helper-panel'] });
+      const cardBtn = makeBtn({ text: '下一题', closestHits: ['.kasa-card'] });
+      const nextChapterBtn = makeBtn({ text: '下一节', cls: ['nextChapter'] });
+      const prevBtn = makeBtn({ text: '上一题', onclick: "getTheNextQuestion('exam-1', -1)" });
+      const disabledBtn = makeBtn({ text: '下一题', cls: ['disabled'] });
+      const ariaDisabledBtn = makeBtn({ text: '下一题', ariaDisabled: 'true' });
+      const hiddenBtn = makeBtn({ text: '下一题', display: 'none' });
+      const computedHiddenBtn = makeBtn({ text: '下一题', computedDisplay: 'none' });
+      const realNextBtn = makeBtn({ id: 'nextBtn', text: '保存并下一题' });
+
+      const found1 = findNextQuestionBtn(
+        makeDoc([
+          panelBtn,
+          cardBtn,
+          nextChapterBtn,
+          prevBtn,
+          disabledBtn,
+          ariaDisabledBtn,
+          hiddenBtn,
+          computedHiddenBtn,
+          realNextBtn
+        ])
+      );
+      assert.equal(found1, realNextBtn);
+
+      // 2. 命中 onclick="getTheNextQuestion('exam-1', 1)"
+      const onclickBtn = makeBtn({ text: '继续', onclick: "getTheNextQuestion('exam-1', 1)" });
+      assert.equal(findNextQuestionBtn(makeDoc([onclickBtn])), onclickBtn);
+
+      // 3. 兜底选择器组命中 <input type="button" value="下一题">
+      const inputBtn = makeBtn({ tag: 'INPUT', value: '下一题' });
+      assert.equal(findNextQuestionBtn(makeDoc([], [prevBtn, inputBtn])), inputBtn);
+    });
+
+    it('24.5 doQuizTask 多页单题考试集成测试 — 场景 A：AJAX 3 题翻页、多选、自动提交及 cancelAutoSubmit 全程传递', async () => {
+      const prevXhr = (globalThis as any).GM_xmlhttpRequest;
+      const prevSession = (globalThis as any).sessionStorage;
+      const prevKey = store.config.aiApiKey;
+      const prevAutoSubmit = store.config.autoSubmitWork;
+
+      const sMap = new Map<string, string>();
+      (globalThis as any).sessionStorage = {
+        getItem: (k: string) => sMap.get(k) ?? null,
+        setItem: (k: string, v: string) => sMap.set(k, String(v)),
+        removeItem: (k: string) => sMap.delete(k),
+        clear: () => sMap.clear()
+      };
+
+      const buildOptionEl = (letter: string, text: string) => {
+        const inputEl: any = {
+          type: 'checkbox',
+          value: letter,
+          checked: false,
+          dispatchEvent: () => true
+        };
+        const numEl: any = {
+          classList: { contains: () => false, add: () => {}, remove: () => {} },
+          getAttribute: () => letter,
+          innerText: letter,
+          textContent: letter
+        };
+        const el: any = {
+          innerText: `${letter}. ${text}`,
+          textContent: `${letter}. ${text}`,
+          selected: false,
+          getAttribute: () => null,
+          setAttribute: (k: string, v: string) => {
+            if (k === 'aria-checked' && v === 'true') el.selected = true;
+          },
+          classList: {
+            contains: (c: string) => el.selected && (c === 'check_answer_dx' || c === 'check_answer'),
+            add: () => {},
+            remove: () => {}
+          },
+          contains: () => false,
+          scrollIntoView: () => {},
+          click: () => {
+            el.selected = true;
+            inputEl.checked = true;
+          },
+          dispatchEvent: () => true,
+          querySelector: (sel: string) => {
+            if (sel.includes('num_option')) return numEl;
+            if (sel.includes('input')) return inputEl;
+            if (sel.includes('.answer_p')) return { innerText: text, textContent: text };
+            return null;
+          }
+        };
+        return { el, inputEl };
+      };
+
+      const makeSinglePageTimu = (opts: {
+        id: string;
+        title: string;
+        answered?: boolean;
+        options?: Array<{ letter: string; text: string }>;
+        noInputFill?: boolean;
+      }) => {
+        const optionObjs = (opts.options || []).map((o) => buildOptionEl(o.letter, o.text));
+        const node: any = {
+          style: {},
+          getAttribute: (k: string) => (k === 'data-id' ? opts.id : null),
+          closest: () => null,
+          contains: () => false,
+          cloneNode: function() {
+            return this;
+          },
+          querySelector: (sel: string) => {
+            if (sel.includes('.mark_name') || sel.includes('.Zy_TItle')) {
+              return { innerText: opts.title, textContent: opts.title };
+            }
+            if (opts.answered && (sel.includes(':checked') || sel.includes('.check_answer'))) {
+              return { checked: true };
+            }
+            if (sel.includes(':checked') || sel.includes('.check_answer')) return null;
+            if (opts.options?.length && (sel.includes('input') || sel.includes('li'))) {
+              return optionObjs[0].el;
+            }
+            return null;
+          },
+          querySelectorAll: (sel: string) => {
+            if (sel === 'ul.Zy_ulTop, ul.Zy_ulBottom, ul.options, ul.mark_letter, .stem_answer') {
+              return opts.options?.length ? [{}] : [];
+            }
+            if (sel.includes('input[type="checkbox"]')) {
+              return opts.title.includes('多选') ? optionObjs.map((o) => o.inputEl) : [];
+            }
+            if (sel.includes('input[type="radio"]')) {
+              return !opts.title.includes('多选') && opts.options?.length
+                ? optionObjs.map((o) => o.inputEl)
+                : [];
+            }
+            if (sel.includes('li') && opts.options?.length) {
+              return optionObjs.map((o) => o.el);
+            }
+            if (opts.noInputFill && (sel.includes('textarea') || sel.includes('input'))) {
+              return [];
+            }
+            return [];
+          }
+        };
+        return { node, optionObjs };
+      };
+
+      try {
+        store.config.aiApiKey = 'sk-test-ajax-exam';
+        store.config.autoSubmitWork = true;
+        store.acknowledgeAllErrors();
+
+        // 子场景 A1：Q1 已答跳过 -> Q2 多选题选 A/B/D -> Q3 单选 -> 末题无下一题且自动提交
+        let currentPage = 1;
+        let submitClicked = 0;
+        let saveClicked = 0;
+
+        const q1 = makeSinglePageTimu({
+          id: 'exam-q1',
+          title: '1. (单选题, 2.0 分) 已作答第一题',
+          answered: true,
+          options: [
+            { letter: 'A', text: '选项一' },
+            { letter: 'B', text: '选项二' }
+          ]
+        });
+        const q2 = makeSinglePageTimu({
+          id: 'exam-q2',
+          title: '2. (多选题, 6.0 分) 以下属于正确答案的有',
+          options: [
+            { letter: 'A', text: '核心一' },
+            { letter: 'B', text: '核心二' },
+            { letter: 'C', text: '干扰项' },
+            { letter: 'D', text: '核心四' }
+          ]
+        });
+        const q3 = makeSinglePageTimu({
+          id: 'exam-q3',
+          title: '3. (单选题, 2.0 分) 最终单选收尾题',
+          options: [
+            { letter: 'A', text: '错误项' },
+            { letter: 'B', text: '正确收尾项' }
+          ]
+        });
+
+        const nextBtnA1: any = {
+          tagName: 'A',
+          innerText: '下一题',
+          textContent: '下一题',
+          style: {},
+          classList: { contains: () => false },
+          hasAttribute: () => false,
+          getAttribute: () => null,
+          closest: () => null,
+          click: () => {
+            currentPage++;
+          }
+        };
+        const submitBtnA1: any = {
+          click: () => {
+            submitClicked++;
+          }
+        };
+        const saveBtnA1: any = {
+          click: () => {
+            saveClicked++;
+          }
+        };
+
+        const docA1: any = {
+          defaultView: {
+            addEventListener: () => {},
+            removeEventListener: () => {},
+            getComputedStyle: () => ({ display: 'block', visibility: 'visible' })
+          },
+          querySelector: (sel: string) => {
+            if (sel.includes('.TiMu') || sel.includes('.questionLi')) {
+              return currentPage === 1 ? q1.node : currentPage === 2 ? q2.node : q3.node;
+            }
+            if (sel.includes('btnSubmit') || sel.includes('#submitBtn')) return submitBtnA1;
+            if (sel.includes('btnSave') || sel.includes('#saveBtn')) return saveBtnA1;
+            return null;
+          },
+          querySelectorAll: (sel: string) => {
+            if (sel.includes('.questionLi') || sel.includes('.TiMu')) {
+              return [currentPage === 1 ? q1.node : currentPage === 2 ? q2.node : q3.node];
+            }
+            if (sel.includes('.nextDiv') || sel.includes('#nextBtn')) {
+              return currentPage < 3 ? [nextBtnA1] : [];
+            }
+            return [];
+          }
+        };
+
+        (globalThis as any).GM_xmlhttpRequest = (opts: any) => {
+          const body = JSON.parse(opts.data);
+          const promptTxt = JSON.stringify(body.messages);
+          setTimeout(() => {
+            let content = '["B"]';
+            if (promptTxt.includes('以下属于正确答案的有')) {
+              content = '["A、B、D"]';
+            }
+            opts.onload({
+              status: 200,
+              responseText: JSON.stringify({ choices: [{ message: { content } }] })
+            });
+          }, 5);
+        };
+
+        await doQuizTask(null, docA1, {
+          signal: new AbortController().signal,
+          isCurrent: () => true
+        });
+
+        assert.equal(currentPage, 3, '应自动从第1页翻页至第3页');
+        assert.equal(store.questions.length, 3, '三页题目必须全部记录到 store.questions');
+        assert.equal(q2.optionObjs[0].inputEl.checked, true, '多选题 A 应被选中');
+        assert.equal(q2.optionObjs[1].inputEl.checked, true, '多选题 B 应被选中');
+        assert.equal(q2.optionObjs[2].inputEl.checked, false, '多选题干扰项 C 不应被选中');
+        assert.equal(q2.optionObjs[3].inputEl.checked, true, '多选题 D 应被选中');
+        assert.equal(q3.optionObjs[1].inputEl.checked, true, '第3题 B 应被选中');
+        assert.equal(submitClicked, 1, '全部成功时末题应自动提交');
+        assert.equal(saveClicked, 0);
+        assert.equal(getExamAutoResumeState(), null, '末题结束后必须清空续跑状态');
+
+        // 子场景 A2：Q2 无输入框失败置 cancelAutoSubmit=true，翻页到 Q3 完成后仍绝不自动提交
+        currentPage = 1;
+        submitClicked = 0;
+        saveClicked = 0;
+        const q2Fail = makeSinglePageTimu({
+          id: 'exam-q2-fail',
+          title: '2. (填空题, 4.0 分) 无输入框导致失败的题目',
+          noInputFill: true
+        });
+        const q3Clean = makeSinglePageTimu({
+          id: 'exam-q3-clean',
+          title: '3. (单选题, 2.0 分) 后续正常单选题',
+          options: [
+            { letter: 'A', text: '错' },
+            { letter: 'B', text: '对的选项' }
+          ]
+        });
+
+        const docA2: any = {
+          ...docA1,
+          querySelector: (sel: string) => {
+            if (sel.includes('.TiMu') || sel.includes('.questionLi')) {
+              return currentPage === 1 ? q1.node : currentPage === 2 ? q2Fail.node : q3Clean.node;
+            }
+            if (sel.includes('btnSubmit') || sel.includes('#submitBtn')) return submitBtnA1;
+            if (sel.includes('btnSave') || sel.includes('#saveBtn')) return saveBtnA1;
+            return null;
+          },
+          querySelectorAll: (sel: string) => {
+            if (sel.includes('.questionLi') || sel.includes('.TiMu')) {
+              return [currentPage === 1 ? q1.node : currentPage === 2 ? q2Fail.node : q3Clean.node];
+            }
+            if (sel.includes('.nextDiv') || sel.includes('#nextBtn')) {
+              return currentPage < 3 ? [nextBtnA1] : [];
+            }
+            return [];
+          }
+        };
+
+        await doQuizTask(null, docA2, {
+          signal: new AbortController().signal,
+          isCurrent: () => true
+        });
+
+        assert.equal(currentPage, 3);
+        assert.equal(submitClicked, 0, '中间题目失败后 cancelAutoSubmit 必须全程传递，绝不触发自动提交');
+        assert.equal(saveClicked, 1, '取消自动提交后应改为点击暂存按钮');
+      } finally {
+        (globalThis as any).GM_xmlhttpRequest = prevXhr;
+        (globalThis as any).sessionStorage = prevSession;
+        store.config.aiApiKey = prevKey;
+        store.config.autoSubmitWork = prevAutoSubmit;
+      }
+    });
+
+    it('24.6 doQuizTask 场景 B：严格过滤隐藏题与 .topicNumber_list 答题卡容器中的 div[data-id]', async () => {
+      const prevXhr = (globalThis as any).GM_xmlhttpRequest;
+      const prevKey = store.config.aiApiKey;
+      store.config.aiApiKey = 'sk-test-scene-b';
+
+      try {
+        let aiCalledCount = 0;
+        let hiddenClicked = false;
+        let cardClicked = false;
+        let visibleClicked = false;
+
+        const hiddenTimu: any = {
+          style: { display: 'none' },
+          getAttribute: (k: string) => (k === 'data-id' ? 'hidden-q1' : null),
+          closest: () => null,
+          contains: () => false,
+          cloneNode: function() { return this; },
+          querySelector: (sel: string) => {
+            if (sel.includes('mark_name') || sel.includes('Zy_TItle')) {
+              return { innerText: '1. (单选题) 隐藏题目不应作答' };
+            }
+            if (sel.includes('input') || sel.includes('li')) return {};
+            return null;
+          },
+          querySelectorAll: (sel: string) => {
+            if (sel === 'ul.Zy_ulTop, ul.Zy_ulBottom, ul.options, ul.mark_letter, .stem_answer') return [{}];
+            if (sel.includes('li')) {
+              return [
+                {
+                  innerText: 'A. 隐藏选项',
+                  textContent: 'A. 隐藏选项',
+                  getAttribute: () => null,
+                  setAttribute: () => {},
+                  contains: () => false,
+                  classList: { contains: () => false, add: () => {} },
+                  querySelector: () => null,
+                  click: () => { hiddenClicked = true; }
+                }
+              ];
+            }
+            return [];
+          }
+        };
+
+        const answerCardNode: any = {
+          style: {},
+          getAttribute: (k: string) => (k === 'data-id' ? 'card-1' : null),
+          closest: (sel: string) => (sel.includes('.topicNumber_list') ? {} : null),
+          contains: () => false,
+          querySelector: () => ({ click: () => { cardClicked = true; } }),
+          querySelectorAll: () => [{ click: () => { cardClicked = true; } }]
+        };
+
+        const visibleTimu: any = {
+          style: {},
+          getAttribute: (k: string) => (k === 'data-id' ? 'visible-q2' : null),
+          closest: () => null,
+          contains: () => false,
+          cloneNode: function() { return this; },
+          querySelector: (sel: string) => {
+            if (sel.includes('mark_name') || sel.includes('Zy_TItle')) {
+              return { innerText: '2. (单选题) 唯一可见题目' };
+            }
+            if (sel.includes(':checked') || sel.includes('.check_answer')) return null;
+            if (sel.includes('input') || sel.includes('li')) return {};
+            return null;
+          },
+          querySelectorAll: (sel: string) => {
+            if (sel === 'ul.Zy_ulTop, ul.Zy_ulBottom, ul.options, ul.mark_letter, .stem_answer') return [{}];
+            if (sel.includes('li')) {
+              return [
+                {
+                  innerText: 'A. 可见选项',
+                  textContent: 'A. 可见选项',
+                  getAttribute: () => null,
+                  setAttribute: () => {},
+                  contains: () => false,
+                  classList: { contains: () => false, add: () => {} },
+                  querySelector: () => null,
+                  click: () => { visibleClicked = true; }
+                }
+              ];
+            }
+            return [];
+          }
+        };
+
+        const mockDoc: any = {
+          defaultView: {
+            getComputedStyle: (el: any) => ({
+              display: el.style?.display || 'block',
+              visibility: 'visible'
+            })
+          },
+          querySelector: (sel: string) => {
+            if (sel.includes('.questionLi') || sel.includes('.TiMu') || sel.includes('div[data-id]')) {
+              return visibleTimu;
+            }
+            return null;
+          },
+          querySelectorAll: (sel: string) => {
+            if (sel.includes('div[data-id]') || sel.includes('.TiMu')) {
+              return [hiddenTimu, answerCardNode, visibleTimu];
+            }
+            return [];
+          }
+        };
+
+        (globalThis as any).GM_xmlhttpRequest = (opts: any) => {
+          aiCalledCount++;
+          setTimeout(() => {
+            opts.onload({
+              status: 200,
+              responseText: JSON.stringify({ choices: [{ message: { content: '["A"]' } }] })
+            });
+          }, 5);
+        };
+
+        await doQuizTask(null, mockDoc, {
+          signal: new AbortController().signal,
+          isCurrent: () => true
+        });
+
+        assert.equal(aiCalledCount, 1, '仅可请求 1 次 AI（唯一可见题）');
+        assert.equal(visibleClicked, true, '必须点击唯一可见题选项');
+        assert.equal(hiddenClicked, false, '绝不可点击隐藏题选项');
+        assert.equal(cardClicked, false, '绝不可将 .topicNumber_list 中的 div[data-id] 当成题目');
+        assert.equal(store.questions.length, 1);
+        assert.equal(store.questions[0].id, 'visible-q2');
+      } finally {
+        (globalThis as any).GM_xmlhttpRequest = prevXhr;
+        store.config.aiApiKey = prevKey;
+      }
+    });
+
+    it('24.7 doQuizTask 场景 C：点击下一题后页面卡死未变化时置 paused、不调用 submitBtn', async () => {
+      const prevXhr = (globalThis as any).GM_xmlhttpRequest;
+      const prevSession = (globalThis as any).sessionStorage;
+      const prevKey = store.config.aiApiKey;
+      const prevAutoSubmit = store.config.autoSubmitWork;
+
+      const sMap = new Map<string, string>();
+      (globalThis as any).sessionStorage = {
+        getItem: (k: string) => sMap.get(k) ?? null,
+        setItem: (k: string, v: string) => sMap.set(k, String(v)),
+        removeItem: (k: string) => sMap.delete(k),
+        clear: () => sMap.clear()
+      };
+
+      try {
+        store.config.aiApiKey = 'sk-test-stuck';
+        store.config.autoSubmitWork = true;
+
+        let nextClicks = 0;
+        let submitClicks = 0;
+
+        const stuckTimu: any = {
+          style: {},
+          getAttribute: (k: string) => (k === 'data-id' ? 'stuck-q1' : null),
+          closest: () => null,
+          contains: () => false,
+          cloneNode: function() { return this; },
+          querySelector: (sel: string) => {
+            if (sel.includes('mark_name') || sel.includes('Zy_TItle')) {
+              return { innerText: '1. (单选题) 翻页卡死测试题' };
+            }
+            if (sel.includes(':checked') || sel.includes('.check_answer')) return null;
+            if (sel.includes('input') || sel.includes('li')) return {};
+            return null;
+          },
+          querySelectorAll: (sel: string) => {
+            if (sel === 'ul.Zy_ulTop, ul.Zy_ulBottom, ul.options, ul.mark_letter, .stem_answer') return [{}];
+            if (sel.includes('li')) {
+              return [
+                {
+                  innerText: 'A. 选项',
+                  textContent: 'A. 选项',
+                  getAttribute: () => null,
+                  setAttribute: () => {},
+                  contains: () => false,
+                  classList: { contains: () => false, add: () => {} },
+                  querySelector: () => null,
+                  click: () => {}
+                }
+              ];
+            }
+            return [];
+          }
+        };
+
+        const stuckNextBtn: any = {
+          tagName: 'A',
+          innerText: '下一题',
+          textContent: '下一题',
+          style: {},
+          classList: { contains: () => false },
+          hasAttribute: () => false,
+          getAttribute: () => null,
+          closest: () => null,
+          click: () => {
+            nextClicks++;
+          }
+        };
+
+        const mockDoc: any = {
+          defaultView: {
+            addEventListener: () => {},
+            removeEventListener: () => {},
+            getComputedStyle: () => ({ display: 'block', visibility: 'visible' })
+          },
+          querySelector: (sel: string) => {
+            if (sel.includes('.questionLi') || sel.includes('.TiMu')) return stuckTimu;
+            if (sel.includes('btnSubmit') || sel.includes('#submitBtn')) {
+              return { click: () => { submitClicks++; } };
+            }
+            return null;
+          },
+          querySelectorAll: (sel: string) => {
+            if (sel.includes('.questionLi') || sel.includes('.TiMu')) return [stuckTimu];
+            if (sel.includes('.nextDiv') || sel.includes('#nextBtn')) return [stuckNextBtn];
+            return [];
+          }
+        };
+
+        (globalThis as any).GM_xmlhttpRequest = (opts: any) => {
+          setTimeout(() => {
+            opts.onload({
+              status: 200,
+              responseText: JSON.stringify({ choices: [{ message: { content: '["A"]' } }] })
+            });
+          }, 5);
+        };
+
+        await doQuizTask(null, mockDoc, {
+          signal: new AbortController().signal,
+          isCurrent: () => true
+        });
+
+        assert.equal(nextClicks, 1, '应尝试点击一次下一题');
+        assert.equal(submitClicks, 0, '翻页卡死退出时绝不可调用 submitBtn');
+        assert.equal(store.progress.status, 'paused');
+        assert.equal(store.progress.currentTime, '翻页未切换已停止');
+        assert.equal(getExamAutoResumeState(), null, '卡死退出必须清除续跑态');
+      } finally {
+        (globalThis as any).GM_xmlhttpRequest = prevXhr;
+        (globalThis as any).sessionStorage = prevSession;
+        store.config.aiApiKey = prevKey;
+        store.config.autoSubmitWork = prevAutoSubmit;
+      }
+    });
+
+    it('24.8 getExamScope 与跨页续跑状态 (set/get/clear) 同作用域匹配、跨课程隔离与 10 分钟 TTL 过期清理', () => {
+      const prevWin = (globalThis as any).window;
+      const prevSession = (globalThis as any).sessionStorage;
+      const sMap = new Map<string, string>();
+      (globalThis as any).sessionStorage = {
+        getItem: (k: string) => sMap.get(k) ?? null,
+        setItem: (k: string, v: string) => sMap.set(k, String(v)),
+        removeItem: (k: string) => sMap.delete(k),
+        clear: () => sMap.clear()
+      };
+
+      try {
+        // 1. 同作用域下 questionId / pageNum / index 变化仍精准命中
+        (globalThis as any).window = {
+          ...prevWin,
+          location: {
+            pathname: '/exam-ans/exam/test/reVersionTestStartNew',
+            search: '?courseId=101&examId=202&questionId=11&pageNum=1&index=0'
+          }
+        };
+        const scope1 = getExamScope();
+        setExamAutoResumeState({ cancelAutoSubmit: true, solvedCount: 5 });
+
+        (globalThis as any).window = {
+          ...prevWin,
+          location: {
+            pathname: '/exam-ans/exam/test/reVersionTestStartNew',
+            search: '?courseId=101&examId=202&questionId=12&pageNum=2&index=1'
+          }
+        };
+        assert.equal(getExamScope(), scope1);
+        const stateHit = getExamAutoResumeState();
+        assert.ok(stateHit);
+        assert.equal(stateHit!.cancelAutoSubmit, true);
+        assert.equal(stateHit!.solvedCount, 5);
+
+        // setExamAutoResumeState 保留 cancelAutoSubmit 的 OR 语义
+        setExamAutoResumeState({ cancelAutoSubmit: false, solvedCount: 6 });
+        assert.equal(getExamAutoResumeState()?.cancelAutoSubmit, true);
+        assert.equal(getExamAutoResumeState()?.solvedCount, 6);
+
+        // 2. 不同 courseId 或不同 pathname 严格隔离
+        (globalThis as any).window = {
+          ...prevWin,
+          location: {
+            pathname: '/exam-ans/exam/test/reVersionTestStartNew',
+            search: '?courseId=999&examId=202&questionId=12'
+          }
+        };
+        assert.equal(getExamAutoResumeState(), null, '不同 courseId 必须隔离');
+
+        (globalThis as any).window = {
+          ...prevWin,
+          location: {
+            pathname: '/exam-ans/exam/test/otherExam',
+            search: '?courseId=101&examId=202'
+          }
+        };
+        assert.equal(getExamAutoResumeState(), null, '不同 pathname 必须隔离');
+
+        // 3. 10 分钟 TTL 过期自动清理
+        (globalThis as any).window = {
+          ...prevWin,
+          location: {
+            pathname: '/exam-ans/exam/test/reVersionTestStartNew',
+            search: '?courseId=101&examId=202'
+          }
+        };
+        setExamAutoResumeState({
+          startedAt: Date.now() - (10 * 60 * 1000 + 1000),
+          solvedCount: 2
+        });
+        assert.equal(getExamAutoResumeState(), null, '超过 10 分钟 TTL 必须返回 null');
+        assert.equal(sMap.size, 0, 'TTL 过期后必须自动清理 sessionStorage');
+
+        // 4. clearExamAutoResumeState 显式清理
+        setExamAutoResumeState({ solvedCount: 1 });
+        assert.ok(getExamAutoResumeState());
+        clearExamAutoResumeState();
+        assert.equal(getExamAutoResumeState(), null);
+      } finally {
+        (globalThis as any).window = prevWin;
+        (globalThis as any).sessionStorage = prevSession;
+      }
+    });
+
+    it('24.9 ChapterScheduler 跨页自动续跑、pauseQuiz 清理及心跳不覆盖已完成进度', async () => {
+      const prevWin = (globalThis as any).window;
+      const prevDoc = (globalThis as any).document;
+      const prevSession = (globalThis as any).sessionStorage;
+      const prevXhr = (globalThis as any).GM_xmlhttpRequest;
+      const prevKey = store.config.aiApiKey;
+
+      const sMap = new Map<string, string>();
+      (globalThis as any).sessionStorage = {
+        getItem: (k: string) => sMap.get(k) ?? null,
+        setItem: (k: string, v: string) => sMap.set(k, String(v)),
+        removeItem: (k: string) => sMap.delete(k),
+        clear: () => sMap.clear()
+      };
+
+      const makeStandaloneDoc = (id: string, titleText: string) => {
+        const timuEl: any = {
+          style: {},
+          getAttribute: (k: string) => (k === 'data-id' ? id : null),
+          closest: () => null,
+          contains: () => false,
+          cloneNode: function() { return this; },
+          querySelector: (sel: string) => {
+            if (sel.includes('mark_name') || sel.includes('Zy_TItle')) {
+              return { innerText: titleText, textContent: titleText };
+            }
+            if (sel.includes(':checked') || sel.includes('.check_answer')) return null;
+            if (sel.includes('input') || sel.includes('li')) return {};
+            return null;
+          },
+          querySelectorAll: (sel: string) => {
+            if (sel === 'ul.Zy_ulTop, ul.Zy_ulBottom, ul.options, ul.mark_letter, .stem_answer') return [{}];
+            if (sel.includes('li')) {
+              return [
+                {
+                  innerText: 'A. 选项A',
+                  textContent: 'A. 选项A',
+                  getAttribute: () => null,
+                  setAttribute: () => {},
+                  contains: () => false,
+                  classList: { contains: () => false, add: () => {} },
+                  querySelector: () => null,
+                  click: () => {}
+                }
+              ];
+            }
+            return [];
+          }
+        };
+        return {
+          title: '独立考试页面',
+          defaultView: {
+            getComputedStyle: () => ({ display: 'block', visibility: 'visible' })
+          },
+          querySelector: (sel: string) => {
+            if (sel.includes('.questionLi') || sel.includes('.TiMu') || sel.includes('div[data-id]')) {
+              return timuEl;
+            }
+            if (sel.includes('ul.Zy_ulTop') || sel.includes('input[type="radio"]')) return {};
+            return null;
+          },
+          querySelectorAll: (sel: string) => {
+            if (sel.includes('.questionLi') || sel.includes('.TiMu')) return [timuEl];
+            return [];
+          }
+        };
+      };
+
+      try {
+        store.config.aiApiKey = 'sk-test-scheduler';
+        (globalThis as any).GM_xmlhttpRequest = (opts: any) => {
+          setTimeout(() => {
+            opts.onload({
+              status: 200,
+              responseText: JSON.stringify({ choices: [{ message: { content: '["A"]' } }] })
+            });
+          }, 5);
+        };
+
+        (globalThis as any).window = {
+          ...prevWin,
+          location: {
+            href: 'https://mooc1.chaoxing.com/exam-ans/exam/test/reVersionTestStartNew?courseId=88',
+            pathname: '/exam-ans/exam/test/reVersionTestStartNew',
+            search: '?courseId=88'
+          }
+        };
+        (globalThis as any).document = makeStandaloneDoc('sched-q1', '1. (单选题) 调度器测试题');
+
+        // 1. triggerManualQuiz 完成后，心跳 runPipeline() 绝不把进度重置为 0% 未开始
+        const scheduler1 = new ChapterScheduler();
+        await scheduler1.triggerManualQuiz();
+        assert.equal(store.progress.status, 'finished');
+        assert.equal(store.progress.percent, 100);
+        assert.equal(store.progress.currentTime, '已完成');
+
+        await (scheduler1 as any).runPipeline();
+        assert.equal(store.progress.status, 'finished', '心跳扫描绝不能重置已完成状态');
+        assert.equal(store.progress.percent, 100, '心跳扫描绝不能把 100% 覆写为 0%');
+        assert.equal(store.progress.currentTime, '已完成', '心跳扫描绝不能把已完成覆写为未开始');
+
+        // 2. pauseQuiz 清空续跑状态并置 status = paused
+        setExamAutoResumeState({ solvedCount: 3, cancelAutoSubmit: true });
+        assert.ok(getExamAutoResumeState());
+        scheduler1.pauseQuiz();
+        assert.equal(getExamAutoResumeState(), null, 'pauseQuiz 必须清空续跑状态');
+        assert.equal(store.progress.status, 'paused');
+
+        // 3. 模拟页面重载（新 scheduler 实例）且 sessionStorage 含有效续跑态 -> runPipeline 自动触发 triggerManualQuiz
+        store.updateProgress({ status: 'idle', percent: 0, currentTime: '未开始' });
+        setExamAutoResumeState({ solvedCount: 2 });
+
+        const scheduler2 = new ChapterScheduler();
+        let resumedCalled = false;
+        const origTrigger = scheduler2.triggerManualQuiz.bind(scheduler2);
+        scheduler2.triggerManualQuiz = async () => {
+          resumedCalled = true;
+          return origTrigger();
+        };
+
+        await (scheduler2 as any).runPipeline();
+        await new Promise((r) => setTimeout(r, 100));
+
+        assert.equal(resumedCalled, true, '页面重载且含有效续跑态时，runPipeline 必须自动触发 triggerManualQuiz');
+        // 等待触发后的异步答题收尾完成，防止残留定时污染后续环境
+        for (let i = 0; i < 40 && store.isQuizRunning; i++) {
+          await new Promise((r) => setTimeout(r, 100));
+        }
+        assert.equal(store.progress.status, 'finished');
+      } finally {
+        clearExamAutoResumeState();
+        (globalThis as any).window = prevWin;
+        (globalThis as any).document = prevDoc;
+        (globalThis as any).sessionStorage = prevSession;
+        (globalThis as any).GM_xmlhttpRequest = prevXhr;
+        store.config.aiApiKey = prevKey;
+      }
+    });
+
+    it('24.10 祖先不可见、双参数负向翻页、交卷排除及隐藏题干祖先过滤', async () => {
+      const makeBtnWithAncestors = (opts: {
+        id?: string;
+        text?: string;
+        onclick?: string;
+        cls?: string[];
+        parentElement?: any;
+        computedDisplay?: string;
+      }) => {
+        const clsList = opts.cls || [];
+        return {
+          id: opts.id || '',
+          tagName: 'A',
+          innerText: opts.text ?? '',
+          textContent: opts.text ?? '',
+          disabled: false,
+          style: { display: '', visibility: '' },
+          parentElement: opts.parentElement ?? null,
+          classList: { contains: (c: string) => clsList.includes(c) },
+          hasAttribute: () => false,
+          getAttribute: (k: string) => (k === 'onclick' ? opts.onclick || '' : null),
+          closest: () => null,
+          _computedDisplay: opts.computedDisplay
+        } as any;
+      };
+
+      const makeDoc = (group1: any[], group2: any[] = []) =>
+        ({
+          defaultView: {
+            getComputedStyle: (el: any) => ({
+              display: el._computedDisplay || el.style?.display || 'block',
+              visibility: el.style?.visibility || 'visible'
+            })
+          },
+          querySelectorAll: (sel: string) => {
+            if (sel.includes('.nextDiv')) return group1;
+            return group2;
+          }
+        }) as any;
+
+      // 1. 祖先容器 style.display === 'none' 或 getComputedStyle(ancestor).display === 'none' 时跳过内部 #nextBtn
+      const hiddenParentStyle = { style: { display: 'none', visibility: '' }, parentElement: null };
+      const hiddenParentComputed = { style: { display: '', visibility: '' }, _computedDisplay: 'none', parentElement: null };
+      const btnInHiddenParent1 = makeBtnWithAncestors({ id: 'nextBtn', text: '下一题', parentElement: hiddenParentStyle });
+      const btnInHiddenParent2 = makeBtnWithAncestors({ id: 'nextBtn', text: '下一题', parentElement: hiddenParentComputed });
+
+      // 2. 双参数负向翻页（空文本）必须排除，正向翻页（空文本）正常命中
+      const negTwoArgBtn = makeBtnWithAncestors({ text: '', onclick: "getTheNextQuestion('exam-1', -1)" });
+      const posTwoArgBtn = makeBtnWithAncestors({ text: '', onclick: "getTheNextQuestion('exam-1', 1)" });
+
+      // 3. 含 交卷 / 提交 / 结束考试 文案的按钮即使含 "下一题" 或 .nextBtn 类也必须排除
+      const submitWordBtn1 = makeBtnWithAncestors({ text: '交卷并下一题', cls: ['nextBtn'] });
+      const submitWordBtn2 = makeBtnWithAncestors({ text: '提交下一题', cls: ['nextBtn'] });
+      const submitWordBtn3 = makeBtnWithAncestors({ text: '结束考试' });
+
+      assert.equal(
+        findNextQuestionBtn(
+          makeDoc([btnInHiddenParent1, btnInHiddenParent2, negTwoArgBtn, submitWordBtn1, submitWordBtn2, submitWordBtn3])
+        ),
+        null,
+        '祖先隐藏、负向翻页与交卷/提交按钮均不得被命中'
+      );
+      assert.equal(
+        findNextQuestionBtn(makeDoc([btnInHiddenParent1, negTwoArgBtn, submitWordBtn1, posTwoArgBtn])),
+        posTwoArgBtn,
+        '正向双参数 getTheNextQuestion("exam-1", 1) 必须正常命中'
+      );
+
+      // 4. doQuizTask 过滤祖先存在 display:none 的题干容器，仅作答可见题干
+      const prevXhr = (globalThis as any).GM_xmlhttpRequest;
+      const prevKey = store.config.aiApiKey;
+      store.config.aiApiKey = 'sk-test-ancestor-hidden';
+      try {
+        let hiddenAncestorClicked = false;
+        let visibleClicked = false;
+        let aiCount = 0;
+
+        const hiddenAncestor = { style: { display: 'none', visibility: '' }, parentElement: null };
+        const hiddenTimu: any = {
+          style: {},
+          parentElement: hiddenAncestor,
+          getAttribute: (k: string) => (k === 'data-id' ? 'hidden-anc-q1' : null),
+          closest: () => null,
+          contains: () => false,
+          cloneNode: function() { return this; },
+          querySelector: (sel: string) => {
+            if (sel.includes('mark_name') || sel.includes('Zy_TItle')) return { innerText: '1. (单选题) 祖先隐藏题目' };
+            if (sel.includes('input') || sel.includes('li')) return {};
+            return null;
+          },
+          querySelectorAll: (sel: string) => {
+            if (sel === 'ul.Zy_ulTop, ul.Zy_ulBottom, ul.options, ul.mark_letter, .stem_answer') return [{}];
+            if (sel.includes('li')) {
+              return [
+                {
+                  innerText: 'A. 隐藏选项',
+                  textContent: 'A. 隐藏选项',
+                  getAttribute: () => null,
+                  setAttribute: () => {},
+                  contains: () => false,
+                  classList: { contains: () => false, add: () => {} },
+                  querySelector: () => null,
+                  click: () => { hiddenAncestorClicked = true; }
+                }
+              ];
+            }
+            return [];
+          }
+        };
+
+        const visibleTimu: any = {
+          style: {},
+          parentElement: { style: {}, parentElement: null },
+          getAttribute: (k: string) => (k === 'data-id' ? 'visible-anc-q2' : null),
+          closest: () => null,
+          contains: () => false,
+          cloneNode: function() { return this; },
+          querySelector: (sel: string) => {
+            if (sel.includes('mark_name') || sel.includes('Zy_TItle')) return { innerText: '2. (单选题) 祖先可见题目' };
+            if (sel.includes(':checked') || sel.includes('.check_answer')) return null;
+            if (sel.includes('input') || sel.includes('li')) return {};
+            return null;
+          },
+          querySelectorAll: (sel: string) => {
+            if (sel === 'ul.Zy_ulTop, ul.Zy_ulBottom, ul.options, ul.mark_letter, .stem_answer') return [{}];
+            if (sel.includes('li')) {
+              return [
+                {
+                  innerText: 'A. 可见选项',
+                  textContent: 'A. 可见选项',
+                  getAttribute: () => null,
+                  setAttribute: () => {},
+                  contains: () => false,
+                  classList: { contains: () => false, add: () => {} },
+                  querySelector: () => null,
+                  click: () => { visibleClicked = true; }
+                }
+              ];
+            }
+            return [];
+          }
+        };
+
+        const quizDoc: any = {
+          defaultView: {
+            getComputedStyle: (el: any) => ({
+              display: el.style?.display || 'block',
+              visibility: 'visible'
+            })
+          },
+          querySelector: (sel: string) => {
+            if (sel.includes('.questionLi') || sel.includes('.TiMu') || sel.includes('div[data-id]')) {
+              return visibleTimu;
+            }
+            return null;
+          },
+          querySelectorAll: (sel: string) => {
+            if (sel.includes('div[data-id]') || sel.includes('.TiMu')) {
+              return [hiddenTimu, visibleTimu];
+            }
+            return [];
+          }
+        };
+
+        (globalThis as any).GM_xmlhttpRequest = (opts: any) => {
+          aiCount++;
+          setTimeout(() => {
+            opts.onload({
+              status: 200,
+              responseText: JSON.stringify({ choices: [{ message: { content: '["A"]' } }] })
+            });
+          }, 5);
+        };
+
+        await doQuizTask(null, quizDoc, { signal: new AbortController().signal, isCurrent: () => true });
+        assert.equal(aiCount, 1);
+        assert.equal(hiddenAncestorClicked, false, '祖先隐藏题绝不可被作答');
+        assert.equal(visibleClicked, true);
+      } finally {
+        (globalThis as any).GM_xmlhttpRequest = prevXhr;
+        store.config.aiApiKey = prevKey;
+      }
+    });
+
+    it('24.11 doQuizTask 翻页等待期间 Abort 监听器 100% 释放与 jQuery 异步翻页无盲调竞态防护', async () => {
+      const prevXhr = (globalThis as any).GM_xmlhttpRequest;
+      const prevSession = (globalThis as any).sessionStorage;
+      const prevKey = store.config.aiApiKey;
+
+      const sMap = new Map<string, string>();
+      (globalThis as any).sessionStorage = {
+        getItem: (k: string) => sMap.get(k) ?? null,
+        setItem: (k: string, v: string) => sMap.set(k, String(v)),
+        removeItem: (k: string) => sMap.delete(k),
+        clear: () => sMap.clear()
+      };
+      store.config.aiApiKey = 'sk-test-abort-listeners';
+
+      const makePageTimu = (id: string, titleText: string) => ({
+        style: {},
+        getAttribute: (k: string) => (k === 'data-id' ? id : null),
+        closest: () => null,
+        contains: () => false,
+        cloneNode: function() { return this; },
+        querySelector: (sel: string) => {
+          if (sel.includes('mark_name') || sel.includes('Zy_TItle')) {
+            return { innerText: titleText, textContent: titleText };
+          }
+          if (sel.includes(':checked') || sel.includes('.check_answer')) return null;
+          if (sel.includes('input') || sel.includes('li')) return {};
+          return null;
+        },
+        querySelectorAll: (sel: string) => {
+          if (sel === 'ul.Zy_ulTop, ul.Zy_ulBottom, ul.options, ul.mark_letter, .stem_answer') return [{}];
+          if (sel.includes('li')) {
+            return [
+              {
+                innerText: 'A. 选项A',
+                textContent: 'A. 选项A',
+                getAttribute: () => null,
+                setAttribute: () => {},
+                contains: () => false,
+                classList: { contains: () => false, add: () => {} },
+                querySelector: () => null,
+                click: () => {}
+              }
+            ];
+          }
+          return [];
+        }
+      });
+
+      try {
+        // 子场景 A：4000ms 轮询等待期间触发 abort -> beforeunload 与 pagehide 监听器 100% removeEventListener 释放
+        const activeListeners = new Map<string, Set<any>>();
+        const abortCtrl = new AbortController();
+        const q1 = makePageTimu('abort-q1', '1. (单选题) 等待中止监听器测试');
+        const nextBtnA: any = {
+          tagName: 'A',
+          innerText: '下一题',
+          textContent: '下一题',
+          style: {},
+          classList: { contains: () => false },
+          hasAttribute: () => false,
+          getAttribute: () => null,
+          closest: () => null,
+          click: () => {
+            // 点击下一题进入 4000ms 等待后立即 abort
+            setTimeout(() => abortCtrl.abort(), 150);
+          }
+        };
+
+        const targetWinA: any = {
+          addEventListener: (type: string, fn: any) => {
+            if (!activeListeners.has(type)) activeListeners.set(type, new Set());
+            activeListeners.get(type)!.add(fn);
+          },
+          removeEventListener: (type: string, fn: any) => {
+            activeListeners.get(type)?.delete(fn);
+          },
+          getComputedStyle: () => ({ display: 'block', visibility: 'visible' })
+        };
+
+        const docA: any = {
+          defaultView: targetWinA,
+          querySelector: (sel: string) => (sel.includes('.TiMu') || sel.includes('.questionLi') ? q1 : null),
+          querySelectorAll: (sel: string) => {
+            if (sel.includes('.questionLi') || sel.includes('.TiMu')) return [q1];
+            if (sel.includes('.nextDiv') || sel.includes('#nextBtn')) return [nextBtnA];
+            return [];
+          }
+        };
+
+        (globalThis as any).GM_xmlhttpRequest = (opts: any) => {
+          setTimeout(() => {
+            opts.onload({
+              status: 200,
+              responseText: JSON.stringify({ choices: [{ message: { content: '["A"]' } }] })
+            });
+          }, 5);
+        };
+
+        await assert.rejects(
+          () => doQuizTask(null, docA, { signal: abortCtrl.signal, isCurrent: () => !abortCtrl.signal.aborted }),
+          (err: any) => err?.name === 'AbortError'
+        );
+        assert.equal(activeListeners.get('beforeunload')?.size || 0, 0, 'beforeunload 监听器必须 100% 清理');
+        assert.equal(activeListeners.get('pagehide')?.size || 0, 0, 'pagehide 监听器必须 100% 清理');
+
+        // 子场景 B：nextBtn 无 onclick 属性（模拟 jQuery .on('click') 慢异步 AJAX，1300ms 后才切题）
+        // 等待超过 1000ms 时绝不能盲目调用 targetWin.getTheNextQuestion(1)
+        clearExamAutoResumeState();
+        let page = 1;
+        let blindCalls = 0;
+        const q1b = makePageTimu('jq-q1', '1. (单选题) jQuery 异步翻页第1题');
+        const q2 = makePageTimu('jq-q2', '2. (单选题) jQuery 异步翻页第2题');
+        const nextBtnB: any = {
+          tagName: 'A',
+          innerText: '下一题',
+          textContent: '下一题',
+          style: {},
+          classList: { contains: () => false },
+          hasAttribute: () => false,
+          getAttribute: () => null, // 无 onclick 属性
+          closest: () => null,
+          click: () => {
+            setTimeout(() => {
+              page = 2;
+            }, 1300);
+          }
+        };
+        const targetWinB: any = {
+          addEventListener: () => {},
+          removeEventListener: () => {},
+          getComputedStyle: () => ({ display: 'block', visibility: 'visible' }),
+          getTheNextQuestion: () => {
+            blindCalls++;
+          }
+        };
+        const docB: any = {
+          defaultView: targetWinB,
+          querySelector: (sel: string) => (sel.includes('.TiMu') || sel.includes('.questionLi') ? (page === 1 ? q1b : q2) : null),
+          querySelectorAll: (sel: string) => {
+            if (sel.includes('.questionLi') || sel.includes('.TiMu')) return [page === 1 ? q1b : q2];
+            if (sel.includes('.nextDiv') || sel.includes('#nextBtn')) return page === 1 ? [nextBtnB] : [];
+            return [];
+          }
+        };
+
+        await doQuizTask(null, docB, { signal: new AbortController().signal, isCurrent: () => true });
+        assert.equal(page, 2, '异步 AJAX 1300ms 切题后应顺利完成第 2 题');
+        assert.equal(blindCalls, 0, '超过 1000ms 轮询期间绝不可盲调 targetWin.getTheNextQuestion');
+      } finally {
+        clearExamAutoResumeState();
+        (globalThis as any).GM_xmlhttpRequest = prevXhr;
+        (globalThis as any).sessionStorage = prevSession;
+        store.config.aiApiKey = prevKey;
+      }
+    });
+
+    it('24.12 跨整页重载防死循环 (lastPageSig / recentSigs / pageTurnCount>=200) 及 ChapterScheduler 异常与非答题页状态清理', async () => {
+      const prevWin = (globalThis as any).window;
+      const prevDoc = (globalThis as any).document;
+      const prevSession = (globalThis as any).sessionStorage;
+      const prevXhr = (globalThis as any).GM_xmlhttpRequest;
+      const prevKey = store.config.aiApiKey;
+      const prevAutoSubmit = store.config.autoSubmitWork;
+
+      const sMap = new Map<string, string>();
+      (globalThis as any).sessionStorage = {
+        getItem: (k: string) => sMap.get(k) ?? null,
+        setItem: (k: string, v: string) => sMap.set(k, String(v)),
+        removeItem: (k: string) => sMap.delete(k),
+        clear: () => sMap.clear()
+      };
+
+      try {
+        store.config.aiApiKey = 'sk-test-loop-guard';
+        store.config.autoSubmitWork = true;
+        (globalThis as any).window = {
+          ...prevWin,
+          location: {
+            href: 'https://mooc1.chaoxing.com/exam-ans/exam/test?courseId=77',
+            pathname: '/exam-ans/exam/test',
+            search: '?courseId=77'
+          }
+        };
+
+        let submitClicks = 0;
+        const sameTimu: any = {
+          style: {},
+          getAttribute: (k: string) => (k === 'data-id' ? 'same-q1' : null),
+          closest: () => null,
+          contains: () => false,
+          cloneNode: function() { return this; },
+          querySelector: (sel: string) => {
+            if (sel.includes('mark_name') || sel.includes('Zy_TItle')) {
+              return { innerText: '1. (单选题) 重载停留在同一题' };
+            }
+            if (sel.includes('input') || sel.includes('li')) return {};
+            return null;
+          },
+          querySelectorAll: (sel: string) => {
+            if (sel === 'ul.Zy_ulTop, ul.Zy_ulBottom, ul.options, ul.mark_letter, .stem_answer') return [{}];
+            return [];
+          }
+        };
+
+        const mockDoc: any = {
+          defaultView: {
+            getComputedStyle: () => ({ display: 'block', visibility: 'visible' })
+          },
+          querySelector: (sel: string) => {
+            if (sel.includes('.questionLi') || sel.includes('.TiMu')) return sameTimu;
+            if (sel.includes('btnSubmit') || sel.includes('#submitBtn')) {
+              return { click: () => { submitClicks++; } };
+            }
+            return null;
+          },
+          querySelectorAll: (sel: string) => {
+            if (sel.includes('.questionLi') || sel.includes('.TiMu')) return [sameTimu];
+            return [];
+          }
+        };
+
+        // 1. sessionStorage 中 recentSigs / lastPageSig 包含当前页签名 -> 立即清状态、置 paused、不提交
+        const expectedSig = 'same-q1::重载停留在同一题';
+        setExamAutoResumeState({
+          solvedCount: 1,
+          lastPageSig: expectedSig,
+          recentSigs: [expectedSig],
+          pageTurnCount: 1
+        });
+        await doQuizTask(null, mockDoc, { signal: new AbortController().signal, isCurrent: () => true });
+        assert.equal(getExamAutoResumeState(), null, '命中跨重载签名防重时必须清空续跑状态');
+        assert.equal(store.progress.status, 'paused');
+        assert.equal(submitClicks, 0);
+
+        // 2. pageTurnCount >= 200 -> 立即清状态、置 paused、不提交
+        setExamAutoResumeState({
+          solvedCount: 200,
+          lastPageSig: 'other-q::其他题',
+          recentSigs: ['other-q::其他题'],
+          pageTurnCount: 200
+        });
+        await doQuizTask(null, mockDoc, { signal: new AbortController().signal, isCurrent: () => true });
+        assert.equal(getExamAutoResumeState(), null, 'pageTurnCount >= 200 必须清空续跑状态');
+        assert.equal(store.progress.status, 'paused');
+        assert.equal(submitClicks, 0);
+
+        // 3. ChapterScheduler 在非独立答题页面检测到残留 ExamAutoResumeState -> runPipeline 自动清理
+        (globalThis as any).window = {
+          ...prevWin,
+          location: {
+            href: 'https://mooc1.chaoxing.com/mycourse/studentstudy?chapterId=123',
+            pathname: '/mycourse/studentstudy',
+            search: '?chapterId=123'
+          }
+        };
+        (globalThis as any).document = {
+          title: '视频学习页',
+          documentElement: { querySelectorAll: () => [] },
+          querySelector: () => null,
+          querySelectorAll: () => []
+        };
+        setExamAutoResumeState({ solvedCount: 4 });
+        assert.ok(getExamAutoResumeState());
+        const sched = new ChapterScheduler();
+        await (sched as any).runPipeline();
+        assert.equal(getExamAutoResumeState(), null, '非独立答题页必须自动清理残留 ExamAutoResumeState');
+
+        // 4. ChapterScheduler.triggerManualQuiz 异常捕获路径也会清理残留状态
+        setExamAutoResumeState({ solvedCount: 2 });
+        (globalThis as any).document = {
+          title: '异常考试页',
+          querySelector: () => { throw new Error('DOM exploded'); },
+          querySelectorAll: () => []
+        };
+        await sched.triggerManualQuiz();
+        assert.equal(getExamAutoResumeState(), null, 'triggerManualQuiz 异常路径必须清理续跑状态');
+      } finally {
+        clearExamAutoResumeState();
+        (globalThis as any).window = prevWin;
+        (globalThis as any).document = prevDoc;
+        (globalThis as any).sessionStorage = prevSession;
+        (globalThis as any).GM_xmlhttpRequest = prevXhr;
+        store.config.aiApiKey = prevKey;
+        store.config.autoSubmitWork = prevAutoSubmit;
+      }
+    });
+
+    it('24.13 cancelAutoSubmit 全场景阻断（缺图拒答、保底猜选）与 .active/.selected 防反选及 answertype* 排除', async () => {
+      const prevXhr = (globalThis as any).GM_xmlhttpRequest;
+      const prevSession = (globalThis as any).sessionStorage;
+      const prevKey = store.config.aiApiKey;
+      const prevAutoSubmit = store.config.autoSubmitWork;
+
+      const sMap = new Map<string, string>();
+      (globalThis as any).sessionStorage = {
+        getItem: (k: string) => sMap.get(k) ?? null,
+        setItem: (k: string, v: string) => sMap.set(k, String(v)),
+        removeItem: (k: string) => sMap.delete(k),
+        clear: () => sMap.clear()
+      };
+
+      try {
+        store.config.aiApiKey = 'sk-test-cancel-submit';
+        store.config.autoSubmitWork = true;
+        store.acknowledgeAllErrors();
+
+        // 子场景 A：题 1 含图片但 AI 返回缺图提示；翻页后题 2 保底猜选；翻页后题 3 正常作答 -> 仍绝不自动提交
+        let page = 1;
+        let submitClicks = 0;
+        let saveClicks = 0;
+
+        const makeSelectableTimu = (opts: {
+          id: string;
+          title: string;
+          hasImg?: boolean;
+          optionTexts: string[];
+          useActiveClassOnly?: boolean;
+          answertypeEl?: any;
+          answerEl?: any;
+        }) => {
+          const optStates = opts.optionTexts.map((txt, i) => {
+            const letter = String.fromCharCode(65 + i);
+            let clickCount = 0;
+            let active = false;
+            const childBadge = {
+              classList: { contains: (c: string) => active && c === 'selected', add: () => {}, remove: () => {} },
+              getAttribute: () => letter,
+              innerText: letter,
+              textContent: letter
+            };
+            const el: any = {
+              innerText: `${letter}. ${txt}`,
+              textContent: `${letter}. ${txt}`,
+              getAttribute: () => null,
+              setAttribute: () => {},
+              contains: () => false,
+              scrollIntoView: () => {},
+              classList: {
+                contains: (c: string) => active && (c === 'active' || c === 'selected'),
+                add: () => {},
+                remove: () => {}
+              },
+              click: () => {
+                clickCount++;
+                active = !active; // 模拟真实 toggle：若重复点击则会取消选中！
+              },
+              querySelector: (sel: string) => {
+                if (sel.includes('num_option')) return childBadge;
+                if (sel.includes('.selected') || sel.includes('.active')) return active ? childBadge : null;
+                return null;
+              },
+              _getClickCount: () => clickCount,
+              _isActive: () => active
+            };
+            return el;
+          });
+
+          const timu: any = {
+            style: {},
+            getAttribute: (k: string) => (opts.answertypeEl ? null : k === 'data-id' ? opts.id : null),
+            closest: () => null,
+            contains: () => false,
+            cloneNode: function() { return this; },
+            querySelector: (sel: string) => {
+              if (sel.includes('mark_name') || sel.includes('Zy_TItle')) return { innerText: opts.title };
+              if (sel.includes(':checked') || sel.includes('.check_answer')) return null;
+              if (sel === 'input[name^="answer"]:not([name^="answertype"])') return opts.answerEl ?? null;
+              if (sel.includes('input') || sel.includes('li')) return optStates[0];
+              return null;
+            },
+            querySelectorAll: (sel: string) => {
+              if (sel === 'ul.Zy_ulTop, ul.Zy_ulBottom, ul.options, ul.mark_letter, .stem_answer') return [{}];
+              if (sel === 'img' && opts.hasImg) {
+                return [
+                  {
+                    currentSrc:
+                      'data:image/png;base64,' + 'A'.repeat(240),
+                    className: '',
+                    getAttribute: () => null,
+                    style: { width: '200px', height: '200px' },
+                    complete: true,
+                    naturalWidth: 200,
+                    naturalHeight: 200,
+                    closest: () => null
+                  }
+                ];
+              }
+              if (sel.includes('li')) return optStates;
+              return [];
+            }
+          };
+          return { timu, optStates };
+        };
+
+        const p1 = makeSelectableTimu({
+          id: 'img-refuse-q1',
+          title: '1. (单选题) 观察结构式判断所属类别',
+          hasImg: true,
+          optionTexts: ['黄酮类', '生物碱类']
+        });
+        const p2 = makeSelectableTimu({
+          id: 'fallback-guess-q2',
+          title: '2. (单选题) 无精准匹配保底猜选测试',
+          optionTexts: ['甲选项', '乙选项']
+        });
+        const answertypeHidden = { name: 'answertype12345', value: '1', dispatchEvent: () => true };
+        const answerHidden = { id: 'answer12345', name: 'answer12345', value: '', dispatchEvent: () => true };
+        const p3 = makeSelectableTimu({
+          id: 'active-only-q3',
+          title: '3. (单选题) 非标准化 .active 节点防反选与 hiddenInput 排除测试',
+          optionTexts: ['错误项', '正确项'],
+          useActiveClassOnly: true,
+          answertypeEl: answertypeHidden,
+          answerEl: answerHidden
+        });
+
+        const nextBtn: any = {
+          tagName: 'A',
+          innerText: '下一题',
+          textContent: '下一题',
+          style: {},
+          classList: { contains: () => false },
+          hasAttribute: () => false,
+          getAttribute: () => null,
+          closest: () => null,
+          click: () => { page++; }
+        };
+
+        const mockDoc: any = {
+          defaultView: {
+            addEventListener: () => {},
+            removeEventListener: () => {},
+            getComputedStyle: () => ({ display: 'block', visibility: 'visible' })
+          },
+          querySelector: (sel: string) => {
+            if (sel.includes('answertype')) return answertypeHidden;
+            if (sel.includes('answer12345')) return answerHidden;
+            if (sel.includes('.questionLi') || sel.includes('.TiMu')) {
+              return page === 1 ? p1.timu : page === 2 ? p2.timu : p3.timu;
+            }
+            if (sel.includes('btnSubmit') || sel.includes('#submitBtn')) return { click: () => { submitClicks++; } };
+            if (sel.includes('btnSave') || sel.includes('#saveBtn')) return { click: () => { saveClicks++; } };
+            return null;
+          },
+          querySelectorAll: (sel: string) => {
+            if (sel.includes('.questionLi') || sel.includes('.TiMu')) {
+              return [page === 1 ? p1.timu : page === 2 ? p2.timu : p3.timu];
+            }
+            if (sel.includes('.nextDiv') || sel.includes('#nextBtn')) return page < 3 ? [nextBtn] : [];
+            return [];
+          }
+        };
+
+        (globalThis as any).GM_xmlhttpRequest = (opts: any) => {
+          const promptTxt = JSON.stringify(JSON.parse(opts.data).messages);
+          setTimeout(() => {
+            let content = '["B"]';
+            if (promptTxt.includes('观察结构式')) {
+              content = '["没有提供反应物结构式图片，无法唯一确定答案"]';
+            } else if (promptTxt.includes('无精准匹配保底猜选测试')) {
+              content = '["完全无关的不存在内容XYZ"]';
+            }
+            opts.onload({
+              status: 200,
+              responseText: JSON.stringify({ choices: [{ message: { content } }] })
+            });
+          }, 5);
+        };
+
+        await doQuizTask(null, mockDoc, { signal: new AbortController().signal, isCurrent: () => true });
+
+        assert.equal(page, 3);
+        assert.equal(submitClicks, 0, '含缺图拒答或保底猜选后绝不可触发自动提交');
+        assert.equal(saveClicks, 1, '取消自动提交后必须转为点击暂存');
+        assert.equal(p3.optStates[1]._getClickCount(), 1, '命中 .active/.selected 后绝不可二次点击反选取消');
+        assert.equal(p3.optStates[1]._isActive(), true, '选项 B 必须维持选中态');
+        assert.equal(answertypeHidden.value, '1', 'answertype12345 绝不可被误改');
+        assert.equal(answerHidden.value, 'B', '真正隐藏框 answer12345 必须写入 B');
+      } finally {
+        clearExamAutoResumeState();
+        (globalThis as any).GM_xmlhttpRequest = prevXhr;
+        (globalThis as any).sessionStorage = prevSession;
+        store.config.aiApiKey = prevKey;
+        store.config.autoSubmitWork = prevAutoSubmit;
+      }
+    });
+
+    it('24.14 parser.ts 对抗性边界与 3000+ 字符防回溯性能 (<50ms)', () => {
+      // 1. 不跨越句号吞并解析段
+      assert.deepEqual(
+        parseAiResponse('答案：A. 正确，C. 正确。解析：B. 错误，D. 错误', 'multiple'),
+        ['A', 'C']
+      );
+
+      // 2. 不被小写缩写/拉丁/数学函数字母 e/a/f 污染
+      assert.deepEqual(
+        parseAiResponse('答案：B. 如 e.g. 所示或 9 a.m. 场景；This is a good choice，设 f: X->Y', 'multiple'),
+        ['B']
+      );
+
+      // 3. 否定/错选/漏选前缀绝不被当成选出的选项字母
+      const negatedRes = parseAiResponse('错选 B；漏选 C；少选 D；不应选 A；不能选择 A', 'multiple');
+      assert.ok(
+        !negatedRes.some((item) => ['A', 'B', 'C', 'D'].includes(item)),
+        `否定词后的选项字母绝不能被误抽取为答案，实际得到: ${JSON.stringify(negatedRes)}`
+      );
+
+      // 4. 中文括号选项与 "A 项、B 项" 格式
+      assert.deepEqual(
+        parseAiResponse('答案：A（坚持全面从严治党）、B（坚持不忘初心）、D（坚持一体推进）', 'multiple'),
+        ['A', 'B', 'D']
+      );
+      assert.deepEqual(parseAiResponse('答案：A 项、B 项', 'multiple'), ['A', 'B']);
+
+      // 5. essay 主观题中含矩阵 [A, B] 与 ['a', 'b'] 必须完整保留正文，不被 4b/4c 截断
+      const essayText = "这道简答题涉及矩阵 [A, B] 与集合 ['a', 'b'] 的证明过程。";
+      assert.deepEqual(parseAiResponse(essayText, 'essay'), [essayText]);
+
+      // 6. ReDoS 防回溯性能测试（3000+ 字符长文本严格 < 50ms）
+      const evilChunk = '选   **   答案   **   ';
+      const evilInput = evilChunk.repeat(200) + '这是纯干扰长文本，没有任何标准选项结论。';
+      assert.ok(evilInput.length > 3000);
+      const t0 = performance.now();
+      const perfRes = parseAiResponse(evilInput, 'multiple');
+      const elapsed = performance.now() - t0;
+      assert.ok(Array.isArray(perfRes));
+      assert.ok(elapsed < 50, `parseAiResponse 耗时 ${elapsed.toFixed(2)}ms 超过 50ms 阈值`);
+    });
+
+    it('24.15 selectBestOptions 与 extractExplicitOptionLetter 术语防护 ("B 族维生素（核心内容）" 与 "E. coli")', () => {
+      assert.equal(extractExplicitOptionLetter('B 族维生素（核心内容）'), null);
+      assert.equal(extractExplicitOptionLetter('E. coli'), null);
+      assert.equal(extractExplicitOptionLetter('D-构型'), null);
+      assert.equal(extractExplicitOptionLetter('B. 正确选项'), 'B');
+
+      const options = [
+        { letter: 'A', rawText: 'A. 脂溶性维生素', cleanText: normalizeText('A. 脂溶性维生素') },
+        { letter: 'B', rawText: 'B. 无关干扰项乙', cleanText: normalizeText('B. 无关干扰项乙') },
+        {
+          letter: 'C',
+          rawText: 'C. B 族维生素（核心内容）',
+          cleanText: normalizeText('C. B 族维生素（核心内容）')
+        },
+        { letter: 'D', rawText: 'D. 维生素 C', cleanText: normalizeText('D. 维生素 C') },
+        { letter: 'E', rawText: 'E. 无关干扰项戊', cleanText: normalizeText('E. 无关干扰项戊') },
+        { letter: 'F', rawText: 'F. E. coli（大肠杆菌）', cleanText: normalizeText('F. E. coli（大肠杆菌）') }
+      ];
+
+      const pickedVitamin = selectBestOptions(options, ['B 族维生素（核心内容）'], 'single');
+      assert.equal(pickedVitamin.length, 1);
+      assert.equal(pickedVitamin[0].letter, 'C', '必须命中文本 C 而非把 B 族误判为选项 B');
+
+      const pickedEcoli = selectBestOptions(options, ['E. coli'], 'single');
+      assert.equal(pickedEcoli.length, 1);
+      assert.equal(pickedEcoli[0].letter, 'F', '必须命中文本 F 而非把 E. coli 误判为选项 E');
     });
   });
 });

@@ -3,13 +3,14 @@ import { getAllNestedIframes, waitIframeLoaded, isFinishedTask, isInternalChildO
 import { LifecycleWatchdog } from './lifecycle';
 import { playMediaTask } from '../adapters/video';
 import { readDocumentTask } from '../adapters/document';
-import { doQuizTask } from '../adapters/quiz';
+import { doQuizTask, getExamAutoResumeState, clearExamAutoResumeState } from '../adapters/quiz';
 import { tryNavigateNextChapter } from './navigator';
 import { IframeContext } from '../types';
 
 export class ChapterScheduler {
   private watchdog = new LifecycleWatchdog();
   private isProcessing = false;
+  private isAutoResuming = false;
   private processedIframeDocs = new WeakSet<Document>();
   private scanDebounceTimer: number | null = null;
 
@@ -110,6 +111,7 @@ export class ChapterScheduler {
             processed = true;
             await doQuizTask(null, document, context);
           } else {
+            clearExamAutoResumeState();
             store.addLog('当前页面未检测到任何作业或测验任务点', 'warning');
             store.updateProgress({
               title: '未检测到作业/测验',
@@ -122,18 +124,26 @@ export class ChapterScheduler {
         }
       }
     } catch (err) {
+      clearExamAutoResumeState();
       if ((err as Error)?.name !== 'AbortError') {
         store.addLog(`答题执行异常: ${String(err)}`, 'error');
       }
     } finally {
       store.setQuizRunning(false);
       if (processed && !signal.aborted) {
-        store.updateProgress({ status: 'finished' });
+        if (this.isStandaloneQuiz(document)) {
+          this.processedIframeDocs.add(document);
+        }
+        if (store.progress.status !== 'paused') {
+          store.updateProgress({ status: 'finished' });
+        }
       }
     }
   }
 
   public pauseQuiz() {
+    clearExamAutoResumeState();
+    this.isAutoResuming = false;
     store.addLog('已暂停答题', 'warning');
     this.watchdog.renew();
     store.setQuizRunning(false);
@@ -174,17 +184,39 @@ export class ChapterScheduler {
 
     // Step 0: Check if current top-level document is a standalone Homework / Exam page
     if (this.isStandaloneQuiz(document)) {
+      const resumeState = getExamAutoResumeState();
+      if (resumeState && resumeState.active) {
+        if (!this.processedIframeDocs.has(document) && !this.isAutoResuming) {
+          this.processedIframeDocs.add(document);
+          this.isAutoResuming = true;
+          store.addLog('检测到考试自动翻页续跑状态，正在继续下一题作答...', 'info');
+          window.setTimeout(() => {
+            this.isAutoResuming = false;
+            if (!store.isQuizRunning && getExamAutoResumeState()?.active) {
+              void this.triggerManualQuiz();
+            }
+          }, 50);
+        }
+        return;
+      }
+
       if (!this.processedIframeDocs.has(document)) {
         this.processedIframeDocs.add(document);
-        store.addLog('已检测到作业/测验页面，请点击右上角【开始答题】启动作答', 'info');
-        store.updateProgress({
-          title: '已检测到作业/测验，点击【开始答题】启动',
-          status: 'idle',
-          percent: 0,
-          currentTime: '未开始'
-        });
+        if (store.progress.status !== 'finished' && store.progress.status !== 'paused') {
+          store.addLog('已检测到作业/测验页面，请点击右上角【开始答题】启动作答', 'info');
+          store.updateProgress({
+            title: '已检测到作业/测验，点击【开始答题】启动',
+            status: 'idle',
+            percent: 0,
+            currentTime: '未开始'
+          });
+        }
       }
       return;
+    }
+
+    if (!store.isQuizRunning && getExamAutoResumeState()?.active) {
+      clearExamAutoResumeState();
     }
 
     // 1. Gather all iframes on page

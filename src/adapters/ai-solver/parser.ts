@@ -1,5 +1,42 @@
 import { QuestionType } from '../../types';
 
+const expandOptionTokens = (items: string[], questionType?: QuestionType): string[] => {
+  if (questionType === 'multiple') {
+    const result: string[] = [];
+    const addUnique = (val: string) => {
+      if (!result.includes(val)) result.push(val);
+    };
+    for (const rawItem of items) {
+      const item = String(rawItem).trim();
+      if (!item) continue;
+      if (/^[A-H]{2,8}$/.test(item)) {
+        for (const ch of item) {
+          addUnique(ch);
+        }
+        continue;
+      }
+      const parts = item
+        .split(/[,，、/\s;；|和与]+/)
+        .map((p) => p.trim())
+        .filter(Boolean);
+      if (parts.length >= 2 && parts.every((p) => /^[A-H]$/i.test(p))) {
+        for (const p of parts) {
+          addUnique(p.toUpperCase());
+        }
+        continue;
+      }
+      addUnique(/^[a-h]$/i.test(item) ? item.toUpperCase() : item);
+    }
+    return result;
+  }
+
+  const cleanItems = items.map((x) => String(x).trim()).filter(Boolean);
+  if (questionType === 'single' && cleanItems.length > 1 && cleanItems.every((x) => /^[A-H]$/i.test(x))) {
+    return [cleanItems[0].toUpperCase()];
+  }
+  return cleanItems;
+};
+
 /**
  * Extracts and sanitizes answer string array from raw AI completion output
  */
@@ -24,15 +61,12 @@ export const parseAiResponse = (rawText: string, questionType?: QuestionType): s
     if (Array.isArray(parsed)) {
       const items = parsed.map((item) => String(item).trim()).filter(Boolean);
       if (items.length > 0) {
-        if (questionType === 'single' && items.length > 1 && items.every((x) => /^[A-H]$/i.test(x))) {
-          return [items[0].toUpperCase()];
-        }
-        return items;
+        return expandOptionTokens(items, questionType);
       }
     }
     if (typeof parsed === 'string') {
       const trimmed = parsed.trim();
-      return trimmed ? [trimmed] : [];
+      return trimmed ? expandOptionTokens([trimmed], questionType) : [];
     }
   } catch {
     // Fallback to pattern extraction below
@@ -48,10 +82,7 @@ export const parseAiResponse = (rawText: string, questionType?: QuestionType): s
         if (Array.isArray(parsed)) {
           const items = parsed.map((item) => String(item).trim()).filter(Boolean);
           if (items.length > 0) {
-            if (questionType === 'single' && items.length > 1 && items.every((x) => /^[A-H]$/i.test(x))) {
-              return [items[0].toUpperCase()];
-            }
-            return items;
+            return expandOptionTokens(items, questionType);
           }
         }
       } catch {
@@ -67,10 +98,37 @@ export const parseAiResponse = (rawText: string, questionType?: QuestionType): s
     return [cleaned];
   }
 
+  // 4b. Tolerate single-quoted arrays (e.g. ['A', 'B', 'D'])
+  const singleQuoteArrayMatches = cleaned.match(/\[\s*(?:'(?:\\.|[^'\\])*'(?:\s*,\s*)?)+\]/g);
+  if (singleQuoteArrayMatches && singleQuoteArrayMatches.length > 0) {
+    for (let i = singleQuoteArrayMatches.length - 1; i >= 0; i--) {
+      const items = Array.from(singleQuoteArrayMatches[i].matchAll(/'((?:\\.|[^'\\])*)'/g))
+        .map((m) => m[1].replace(/\\'/g, "'").trim())
+        .filter(Boolean);
+      if (items.length > 0) {
+        return expandOptionTokens(items, questionType);
+      }
+    }
+  }
+
+  // 4c. Tolerate unquoted bare letter list arrays (e.g. [A, B, D] or [A、B、D]) without matching [答案: **D**, 解析: ...]
+  const bareLetterArrayMatches = cleaned.match(/\[\s*[A-H](?:\s*[,，、/]\s*[A-H])+\s*\]/gi);
+  if (bareLetterArrayMatches && bareLetterArrayMatches.length > 0) {
+    const lastBare = bareLetterArrayMatches[bareLetterArrayMatches.length - 1];
+    const items = lastBare
+      .slice(1, -1)
+      .split(/[,，、/]+/)
+      .map((s) => s.trim().toUpperCase())
+      .filter(Boolean);
+    if (items.length > 0) {
+      return expandOptionTokens(items, questionType);
+    }
+  }
+
   // 5. Semantic extraction for affirmative/negative judgment answers (checked BEFORE letter extraction
   // so words like "true" or "false" are never split into ['F','A','L','S','E'])
   const judgeRegex =
-    /(?:最终答案|正确答案|标准答案|参考答案|答案|故选|应选|因此选|所以选|选择|结论|判断)\s*(?:是|为)?\s*[:：]?\s*[\*\_`【\(\["'“\s]*\s*(正确|错误|对|错|true|false|√|×)(?![a-zA-Z])\s*[\*\_`】\)\]"'”\s]*/gi;
+    /(?:最终答案|正确答案|标准答案|参考答案|答案|故选|应选|因此选|所以选|选择|结论|判断)(?:[\s*_`]{0,6}(?:是|为))?(?:[\s*_`]{0,4}[:：])?[\s*_`【\(\["'“]{0,16}(正确|错误|对|错|true|false|√|×)(?![a-zA-Z])/gi;
   const judgeMatches = Array.from(cleaned.matchAll(judgeRegex));
   if (judgeMatches.length > 0) {
     const lastJudge = judgeMatches[judgeMatches.length - 1][1];
@@ -80,30 +138,77 @@ export const parseAiResponse = (rawText: string, questionType?: QuestionType): s
   }
 
   // 6. Semantic regular expression extraction with two-tier priority: Strong conclusions > Weak conclusions
+  const NEGATED_SEL = '(?<![不勿别误排错漏少未忌])(?<!不能|不应|切忌|不可|不宜|不要|严禁|禁止|错误)';
   const STRONG_PREFIX = '(?:最终答案|正确答案|标准答案|参考答案|答案|结论|本题选)';
-  const WEAK_PREFIX = '(?:故选|应选|因此选|所以选|选择|(?<![不勿别误排])选(?!项))';
+  const WEAK_PREFIX = `(?:故选|(?<![不勿别])应选|因此选|所以选|${NEGATED_SEL}选择|${NEGATED_SEL}选(?!项))`;
 
   const extractLetters = (prefixPattern: string): string[] | null => {
     // 严格限制选项字母 [A-H]：
     // 1. 严禁使用单纯的 \b 单词边界（因为汉字在 JS 正则中属于 \W，如 "B族" 之间的边界会被 \b 误判为词尾）
     // 2. 排除紧随其后的连字符与常见化学/药学/学术后缀汉字：(?![a-zA-Z\-型族环链层级])
-    const pattern = new RegExp(
-      `${prefixPattern}\\s*(?:是|为)?\\s*[:：]?\\s*([*_\\u0060【\\(\\[“"'\\s]*` +
-        `[A-H](?![a-zA-Z\\-型族环链层级])(?:(?:[\\.。．:：][^\\n,，；\\]】]+)|(?:[*_\\u0060】\\)\\]"'”\\s]*[,，、和与/\\s]+[*_\\u0060【\\(\\[“"'\\s]*` +
-        `[A-H](?![a-zA-Z\\-型族环链层级])(?:[\\.。．:：][^\\n,，；\\]】]+)?)*)[*_\\u0060】\\)\\]"'”\\s]*)`,
-      'gi'
-    );
-    const matches = Array.from(cleaned.matchAll(pattern));
-    if (!matches || matches.length === 0) return null;
+    const prefixSep =
+      '(?:[\\s*_\\u0060【】]{0,4}(?:是|为))?[*_\\u0060【】]{0,4}(?:[:：][\\s\\r\\n]{0,8}|[\\s\\r\\n]{1,8}|(?=[*_\\u0060【\\(\\[“"\'A-H]))';
+    const letterAtom = '[A-H](?![a-zA-Z\\-型族环链层级])';
+    const itemOpen = '[*_\\u0060【\\(\\[“"\']{0,6}';
+    const itemText =
+      '(?:[*_\\u0060]{0,4}[\\.．:：](?:[^\\n。!！?？,，;；\\]】]|[,，](?![ \\t]{0,4}[*_\\u0060【\\(\\[“"\']{0,4}[A-H](?![a-zA-Z\\-型族环链层级])[*_\\u0060]{0,4}[\\.．:：]))+|[ \\t]{0,3}项|[*_\\u0060]{0,4}[（\\(][^（）\\(\\)\\n。!！?？]{1,60}[）\\)])?';
+    const itemClose = '[*_\\u0060】\\)\\]"\'”]{0,6}';
+    const itemPattern = `${itemOpen}${letterAtom}${itemText}${itemClose}`;
+    const itemSep = '(?:[ \\t]{0,4}[,，、;；和与/][ \\t\\r\\n]{0,6}|[ \\t]{0,4}\\r?\\n[ \\t]{0,4}|[ \\t]{1,6})';
 
-    const lastCapture = matches[matches.length - 1][1];
+    const pattern = new RegExp(
+      `${prefixPattern}${prefixSep}(${itemPattern}(?:${itemSep}${itemPattern})*)`,
+      'g'
+    );
+    const singleMatches = Array.from(cleaned.matchAll(pattern));
+    const lastSingleMatch = singleMatches.length > 0 ? singleMatches[singleMatches.length - 1] : null;
+
+    // 多选题额外支持严格大写连续字母格式（如 "答案：ABD" / "**正确答案**：ABCD"），不加 'i' 标志以杜绝小写单词 "each"/"bad"/"head" 误伤
+    let lastCompactMatch: RegExpMatchArray | null = null;
+    if (questionType === 'multiple') {
+      const compactAtom = '[A-H]{2,8}(?![a-zA-Z\\-型族环链层级])';
+      const compactItem = `${itemOpen}${compactAtom}${itemClose}`;
+      const compactPattern = new RegExp(
+        `${prefixPattern}${prefixSep}(${compactItem}(?:${itemSep}${compactItem})*)`,
+        'g'
+      );
+      const compactMatches = Array.from(cleaned.matchAll(compactPattern));
+      if (compactMatches.length > 0) {
+        lastCompactMatch = compactMatches[compactMatches.length - 1];
+      }
+    }
+
+    const singleIdx = lastSingleMatch?.index ?? -1;
+    const compactIdx = lastCompactMatch?.index ?? -1;
+
+    if (compactIdx > singleIdx && lastCompactMatch?.[1]) {
+      const compactLetters: string[] = [];
+      const tokenMatches = Array.from(
+        lastCompactMatch[1].matchAll(/([A-H]{2,8})(?![a-zA-Z\-型族环链层级])/g)
+      );
+      for (const tm of tokenMatches) {
+        for (const ch of tm[1]) {
+          if (!compactLetters.includes(ch)) {
+            compactLetters.push(ch);
+          }
+        }
+      }
+      if (compactLetters.length > 0) {
+        return compactLetters;
+      }
+    }
+
+    if (!lastSingleMatch) return null;
+    const lastCapture = lastSingleMatch[1];
     if (!lastCapture) return null;
 
-    // 1. 若包含点号/顿号/冒号等选项标号格式（例如 "A."、"A、"、"A．"），提取紧跟合规选项分隔符的字母
-    const hasExplicitOptionMarker = /[\.。．:：]/.test(lastCapture);
+    // 1. 若包含点号/全角点号/冒号等选项标号格式（例如 "A."、"A．"、"A："），提取紧跟合规选项分隔符的字母（排除句末句号 "。" 误判）
+    const hasExplicitOptionMarker = /[\.．:：]/.test(lastCapture);
     if (hasExplicitOptionMarker) {
       const dotMatches = Array.from(
-        lastCapture.matchAll(/(?:^|[,，、和与/\s]+)[*_\u0060【\(\[“"'\s]*([A-H])(?![a-zA-Z\-型族环链层级])[\.。．:：]/gi)
+        lastCapture.matchAll(
+          /(?:^|[,，、;；和与/\s]+)[*_\u0060【\(\[“"'\s]*([A-H])(?![a-zA-Z\-型族环链层级])[*_\u0060]*[\.．:：]/g
+        )
       );
       if (dotMatches.length > 0) {
         const letters = Array.from(new Set(dotMatches.map((m) => m[1].toUpperCase())));
@@ -114,10 +219,10 @@ export const parseAiResponse = (rawText: string, questionType?: QuestionType): s
       }
     }
 
-    // 2. 提取被明确加粗/定界符/标点分隔的独立选项字母（例如 **A**、**C** 或 A, B 或 A）
+    // 2. 提取被明确加粗/定界符/标点分隔的独立选项字母（例如 **A**、**C** 或 A, B 或 A（...）、B（...）或 A 项、B 项）
     const standaloneMatches = Array.from(
       lastCapture.matchAll(
-        /(?:^|[,，、和与/\s*_\u0060【\(\[“"'])*([A-H])(?![a-zA-Z\-型族环链层级])(?=[*_\u0060】\)\]"'”，,、和与/\s]|$)/gi
+        /(?<=^|[,，、;；和与/\s*_\u0060【\(\[“"'])([A-H])(?![a-zA-Z\-型族环链层级])(?=[*_\u0060】\)\]"'”，,、;；和与/\s（\(项]|$)/g
       )
     );
     const validLetters = Array.from(

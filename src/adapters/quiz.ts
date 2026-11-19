@@ -483,8 +483,11 @@ export const cleanQuestionTitle = (raw: string): string => {
   const decrypted = decryptString(raw);
   return decrypted
     .replace(/^\s*\d{1,3}(?:[\.、．]\s*|\s+)/, '')
-    .replace(/【(单选题|多选题|判断题|填空题|简答题|论述题|名词解释|单选|多选|判断|填空)】/g, '')
-    .replace(/[\(（](单选题|多选题|判断题|填空题|简答题|论述题|名词解释|单选|多选|判断|填空)[\)）]/g, '')
+    .replace(/【(单选题|多选题|判断题|填空题|简答题|论述题|名词解释|单选|多选|判断|填空)(?:\s*[,，]\s*[0-9\.]+\s*分)?】/g, '')
+    .replace(
+      /[\(（\[](单选题|多选题|判断题|填空题|简答题|论述题|名词解释|单选|多选|判断|填空)(?:\s*[,，]\s*[0-9\.]+\s*分)?[\)）\]]/g,
+      ''
+    )
     .replace(/^\s*\d{1,3}(?:[\.、．]\s*|\s+)/, '')
     .replace(/[\(（\[][0-9\.]+\s*分[\)）\]]/g, '')
     .replace(/\s+/g, ' ')
@@ -588,7 +591,14 @@ export const detectQuestionType = (
   radioCount = 0,
   contextText = ''
 ): QuestionType => {
-  if (rawTitleText.includes('多选题') || rawTitleText.includes('【多选】') || rawTitleText.includes('（多选）') || rawTitleText.includes('(多选)')) {
+  if (
+    rawTitleText.includes('多选题') ||
+    rawTitleText.includes('多项选择') ||
+    rawTitleText.includes('【多选】') ||
+    rawTitleText.includes('（多选）') ||
+    rawTitleText.includes('(多选)') ||
+    /[\(（\[【]多选(?:题)?(?:\s*[,，]\s*[0-9\.]+\s*分)?[\)）\]】]/.test(rawTitleText)
+  ) {
     return 'multiple';
   }
   if (rawTitleText.includes('判断题') || rawTitleText.includes('【判断】') || rawTitleText.includes('（判断）') || rawTitleText.includes('(判断)')) {
@@ -626,8 +636,11 @@ export const extractExplicitOptionLetter = (ans: string): string | null => {
   if (!ans || typeof ans !== 'string') return null;
   const trimmed = ans.trim();
   if (!trimmed) return null;
+  // 排除拉丁学名/生物缩写（如 "E. coli", "S. aureus"）与化学构型前缀（如 "D-构型"）
+  if (/^[A-Za-z]\.\s*[a-z]{2,}(?:\s|$)/.test(trimmed)) return null;
+  if (/^[A-Za-z]-(?!\s)[^\s]/.test(trimmed)) return null;
   const letterMatch = trimmed.match(
-    /^(?:[【\(\[]\s*([A-Za-z])\s*[】\)\]]|([A-Za-z])(?:[\.、．\-_:：]\s*|\s+(?=[^a-zA-Z])|$))/
+    /^(?:[【\(\[]\s*([A-Za-z])\s*[】\)\]]|([A-Za-z])(?:[\.、．_:：]\s*|(?:\s+-|-\s+)\s*|$))/
   );
   return letterMatch ? (letterMatch[1] || letterMatch[2]).toUpperCase() : null;
 };
@@ -713,6 +726,39 @@ export const selectBestOptions = <T extends { letter: string; cleanText: string;
 ): T[] => {
   if (!parsedOptions.length || !answers.length) return [];
 
+  const normalizedAnswers: string[] = [];
+  if (qType === 'multiple') {
+    for (const raw of answers) {
+      if (!raw || typeof raw !== 'string') continue;
+      const trimmed = raw.trim();
+      if (!trimmed) continue;
+      if (/^[A-H]{2,8}$/.test(trimmed)) {
+        for (const ch of trimmed) {
+          if (!normalizedAnswers.includes(ch)) normalizedAnswers.push(ch);
+        }
+        continue;
+      }
+      const parts = trimmed
+        .split(/[,，、/\s;；|和与]+/)
+        .map((p) => p.trim())
+        .filter(Boolean);
+      if (parts.length >= 2 && parts.every((p) => /^[A-H]$/i.test(p))) {
+        for (const p of parts) {
+          const up = p.toUpperCase();
+          if (!normalizedAnswers.includes(up)) normalizedAnswers.push(up);
+        }
+        continue;
+      }
+      normalizedAnswers.push(trimmed);
+    }
+  } else {
+    for (const raw of answers) {
+      if (raw && typeof raw === 'string' && raw.trim()) {
+        normalizedAnswers.push(raw.trim());
+      }
+    }
+  }
+
   const matchedOptions: T[] = [];
   const addUnique = (opt: T) => {
     if (!matchedOptions.includes(opt)) {
@@ -720,7 +766,7 @@ export const selectBestOptions = <T extends { letter: string; cleanText: string;
     }
   };
 
-  for (const ans of answers) {
+  for (const ans of normalizedAnswers) {
     if (!ans || typeof ans !== 'string' || !ans.trim()) continue;
     const trimmedAns = ans.trim();
 
@@ -885,6 +931,281 @@ export const isQuestionAnswered = (timuEl: HTMLElement, _quizDoc?: Document): bo
   return false;
 };
 
+export interface ExamAutoResumeState {
+  active: boolean;
+  startedAt: number;
+  examScope: string;
+  cancelAutoSubmit: boolean;
+  solvedCount: number;
+  lastPageSig?: string;
+  recentSigs?: string[];
+  pageTurnCount?: number;
+}
+
+const EXAM_AUTORESUME_KEY = 'kasa_exam_autoresume_v1';
+const EXAM_AUTORESUME_TTL_MS = 10 * 60 * 1000;
+const MAX_RECENT_SIGS = 250;
+const VOLATILE_EXAM_PARAMS = new Set([
+  'questionid',
+  'start',
+  'sequence',
+  'index',
+  'pagenum',
+  'page',
+  'qid',
+  'num',
+  'offset'
+]);
+
+/**
+ * Checks whether an element or any of its up to 20 ancestor elements is hidden
+ */
+export const isElementOrAncestorHidden = (el: HTMLElement, doc: Document): boolean => {
+  const win = doc?.defaultView;
+  let cur: HTMLElement | null = el;
+  let depth = 0;
+  while (cur && depth < 20) {
+    if (
+      (cur as any).hidden === true ||
+      cur.style?.display === 'none' ||
+      cur.style?.visibility === 'hidden'
+    ) {
+      return true;
+    }
+    if (win && typeof win.getComputedStyle === 'function') {
+      try {
+        const cs = win.getComputedStyle(cur);
+        if (cs && (cs.display === 'none' || cs.visibility === 'hidden')) {
+          return true;
+        }
+      } catch {}
+    }
+    cur = cur.parentElement ?? null;
+    depth++;
+  }
+  return false;
+};
+
+/**
+ * Computes a stable exam scope identifier from pathname + non-volatile query parameters
+ */
+export const getExamScope = (): string => {
+  try {
+    if (typeof window === 'undefined' || !window.location) return '';
+    const pathname = String(window.location.pathname || '');
+    const search = String(window.location.search || '');
+    if (!search || typeof URLSearchParams === 'undefined') return pathname;
+
+    const params = new URLSearchParams(search);
+    const stableEntries: [string, string][] = [];
+    params.forEach((value, key) => {
+      if (!VOLATILE_EXAM_PARAMS.has(key.toLowerCase())) {
+        stableEntries.push([key, value]);
+      }
+    });
+    stableEntries.sort((a, b) => a[0].localeCompare(b[0]) || a[1].localeCompare(b[1]));
+    const stableQuery = stableEntries
+      .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
+      .join('&');
+    return stableQuery ? `${pathname}?${stableQuery}` : pathname;
+  } catch {
+    return '';
+  }
+};
+
+/**
+ * Reads cross-reload exam auto-resume state safely (returns null if missing, expired, or mismatched scope)
+ */
+export const getExamAutoResumeState = (): ExamAutoResumeState | null => {
+  if (typeof sessionStorage === 'undefined') return null;
+  try {
+    const raw = sessionStorage.getItem(EXAM_AUTORESUME_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || parsed.active !== true || typeof parsed.startedAt !== 'number') {
+      return null;
+    }
+    if (Date.now() - parsed.startedAt > EXAM_AUTORESUME_TTL_MS) {
+      clearExamAutoResumeState();
+      return null;
+    }
+    const currentScope = getExamScope();
+    if (String(parsed.examScope || '') !== currentScope) {
+      return null;
+    }
+    const recentSigs: string[] | undefined = Array.isArray(parsed.recentSigs)
+      ? Array.from(
+          new Set<string>(
+            (parsed.recentSigs as unknown[]).filter(
+              (s): s is string => typeof s === 'string' && s.length > 0
+            )
+          )
+        ).slice(-MAX_RECENT_SIGS)
+      : undefined;
+    const lastPageSig =
+      typeof parsed.lastPageSig === 'string' && parsed.lastPageSig.length > 0
+        ? parsed.lastPageSig
+        : undefined;
+    const pageTurnCount =
+      typeof parsed.pageTurnCount === 'number' && parsed.pageTurnCount >= 0
+        ? Math.floor(parsed.pageTurnCount)
+        : 0;
+    return {
+      active: true,
+      startedAt: parsed.startedAt,
+      examScope: currentScope,
+      cancelAutoSubmit: Boolean(parsed.cancelAutoSubmit),
+      solvedCount: Number(parsed.solvedCount) || 0,
+      ...(lastPageSig !== undefined ? { lastPageSig } : {}),
+      ...(recentSigs !== undefined ? { recentSigs } : {}),
+      pageTurnCount
+    };
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * Writes/updates cross-reload exam auto-resume state, preserving prior cancelAutoSubmit (OR semantics)
+ */
+export const setExamAutoResumeState = (
+  patch: Partial<
+    Pick<
+      ExamAutoResumeState,
+      'cancelAutoSubmit' | 'solvedCount' | 'startedAt' | 'lastPageSig' | 'recentSigs' | 'pageTurnCount'
+    >
+  > = {}
+): void => {
+  if (typeof sessionStorage === 'undefined') return;
+  try {
+    const prev = getExamAutoResumeState();
+    const mergedSigs = Array.from(
+      new Set(
+        [
+          ...(Array.isArray(prev?.recentSigs) ? prev!.recentSigs : []),
+          ...(Array.isArray(patch.recentSigs) ? patch.recentSigs : []),
+          ...(typeof patch.lastPageSig === 'string' && patch.lastPageSig ? [patch.lastPageSig] : [])
+        ].filter((s): s is string => typeof s === 'string' && s.length > 0)
+      )
+    ).slice(-MAX_RECENT_SIGS);
+    const lastPageSig =
+      patch.lastPageSig !== undefined ? patch.lastPageSig : prev?.lastPageSig;
+    const pageTurnCount =
+      typeof patch.pageTurnCount === 'number' && patch.pageTurnCount >= 0
+        ? Math.floor(patch.pageTurnCount)
+        : prev?.pageTurnCount ?? 0;
+
+    const state: ExamAutoResumeState = {
+      active: true,
+      startedAt: patch.startedAt ?? prev?.startedAt ?? Date.now(),
+      examScope: getExamScope(),
+      cancelAutoSubmit: Boolean(prev?.cancelAutoSubmit || patch.cancelAutoSubmit),
+      solvedCount: typeof patch.solvedCount === 'number' ? patch.solvedCount : prev?.solvedCount || 0,
+      ...(lastPageSig !== undefined ? { lastPageSig } : {}),
+      ...(mergedSigs.length > 0 ? { recentSigs: mergedSigs } : {}),
+      pageTurnCount
+    };
+    sessionStorage.setItem(EXAM_AUTORESUME_KEY, JSON.stringify(state));
+  } catch {}
+};
+
+/**
+ * Clears cross-reload exam auto-resume state
+ */
+export const clearExamAutoResumeState = (): void => {
+  if (typeof sessionStorage === 'undefined') return;
+  try {
+    sessionStorage.removeItem(EXAM_AUTORESUME_KEY);
+  } catch {}
+};
+
+/**
+ * Locates the "Next Question" button in Chaoxing single-question exam/quiz mode
+ */
+export const findNextQuestionBtn = (quizDoc: Document): HTMLElement | null => {
+  if (!quizDoc || typeof quizDoc.querySelectorAll !== 'function') return null;
+
+  const selectorGroups = [
+    '.nextDiv a, .nextDiv button, a.nextBtn, #nextBtn, .nextQuestion, a[onclick*="getTheNextQuestion"], button[onclick*="getTheNextQuestion"]',
+    'a, button, input[type="button"], input[type="submit"], span[onclick], div[onclick]'
+  ];
+
+  const seen = new Set<HTMLElement>();
+
+  for (const groupSel of selectorGroups) {
+    let candidates: HTMLElement[] = [];
+    try {
+      candidates = Array.from(quizDoc.querySelectorAll<HTMLElement>(groupSel));
+    } catch {
+      candidates = [];
+    }
+
+    for (const el of candidates) {
+      if (!el || seen.has(el)) continue;
+      seen.add(el);
+
+      // Exclude floating helper panel itself and chapter navigation
+      if (typeof el.closest === 'function') {
+        if (el.closest('kasa-helper-panel, .kasa-card')) continue;
+        if (el.closest('.nextChapter')) continue;
+      }
+      if (el.classList?.contains('nextChapter')) continue;
+
+      // Exclude disabled controls
+      if (
+        (el as HTMLButtonElement).disabled === true ||
+        (typeof el.hasAttribute === 'function' && el.hasAttribute('disabled')) ||
+        el.classList?.contains('disabled') ||
+        (typeof el.getAttribute === 'function' && el.getAttribute('aria-disabled') === 'true')
+      ) {
+        continue;
+      }
+
+      // Exclude hidden controls (including hidden ancestors)
+      if (isElementOrAncestorHidden(el, quizDoc)) continue;
+
+      const tagName = (el.tagName || '').toUpperCase();
+      const rawText =
+        tagName === 'INPUT'
+          ? String((el as HTMLInputElement).value ?? el.getAttribute?.('value') ?? '')
+          : String(el.innerText || el.textContent || '');
+      const compactText = rawText.replace(/\s+/g, '');
+      const onclickAttr = String(el.getAttribute?.('onclick') || '');
+
+      // Strictly exclude previous question / chapter navigation / submit buttons
+      if (
+        compactText.includes('上一题') ||
+        compactText.includes('上一页') ||
+        compactText.includes('章节') ||
+        compactText.includes('下一节') ||
+        compactText.includes('下一章') ||
+        compactText.includes('交卷') ||
+        compactText.includes('提交') ||
+        compactText.includes('结束考试')
+      ) {
+        continue;
+      }
+      const hasNegativeNextArg = /getTheNextQuestion\s*\([^)]*[(,]\s*['"]?-\s*\d+/i.test(onclickAttr);
+      if (hasNegativeNextArg) {
+        continue;
+      }
+
+      const matchesText =
+        compactText === '下一题' ||
+        compactText === '保存并下一题' ||
+        compactText === '确认并下一题' ||
+        compactText.includes('下一题');
+      const matchesOnclick = onclickAttr.includes('getTheNextQuestion(') && !hasNegativeNextArg;
+
+      if (matchesText || matchesOnclick) {
+        return el;
+      }
+    }
+  }
+
+  return null;
+};
+
 /**
  * Handles Chaoxing Chapter Quiz / Homework automation pipeline
  */
@@ -898,6 +1219,9 @@ export async function doQuizTask(
   // 1. Locate the true inner document containing questions
   const quizDoc = await locateQuizDocument(workIframe, workDoc, signal);
   if (!quizDoc || !isCurrent() || signal.aborted) {
+    if (!quizDoc) {
+      clearExamAutoResumeState();
+    }
     store.addLog('未在作业模块中检测到题目文档或任务已中断', 'warning');
     return;
   }
@@ -911,78 +1235,13 @@ export async function doQuizTask(
     duration: ''
   });
 
-  // 2. Decode font-cxsecret obfuscated webfont if present
-  try {
-    const fontMap = decodeChaoxingFont(quizDoc);
-    const mapSize = Object.keys(fontMap).length;
-    if (mapSize > 0) {
-      store.addLog(`已成功解密超星动态混淆字体 (识别 ${mapSize} 个字符)`, 'success');
-      if (quizDoc.body) {
-        decryptDomElement(quizDoc.body, fontMap);
-      }
-      // Clear global map immediately after in-place DOM decryption to prevent double-decryption or AI answer corruption
-      clearChaoxingFontMap();
-    }
-  } catch (err) {
-    console.warn('[Quiz] Font decoding warning:', err);
-  }
-
   // Check if already finished or submitted
   if (workIframe && (isFinishedTask(workIframe) || isFinishedTask(workIframe.parentElement))) {
+    clearExamAutoResumeState();
     store.addLog('该作业任务点已标记完成，跳过作答', 'success');
     store.updateProgress({ percent: 100, status: 'finished', currentTime: '已完成' });
     return;
   }
-
-  // 3. Discover all question DOM elements
-  const rawCandidates = Array.from(
-    quizDoc.querySelectorAll<HTMLElement>(
-      '.questionLi, .TiMu.newTiMu, .TiMu, div[data-id], .singleQues, div[id^="question"], div[id^="q_"]'
-    )
-  );
-
-  // Filter elements that have options or inputs, and exclude multi-question section wrappers
-  const validNodes = rawCandidates.filter((node) => {
-    // Must contain options or inputs
-    const hasInputs = !!node.querySelector(
-      'li, .num_option, input, textarea, .before-after, .answerBg, [onclick*="addChoice"], [onclick*="choose"]'
-    );
-    if (!hasInputs) return false;
-
-    // Must not contain multiple option groups (which indicates a multi-question section wrapper)
-    const optionLists = node.querySelectorAll('ul.Zy_ulTop, ul.Zy_ulBottom, ul.options, ul.mark_letter, .stem_answer');
-    if (optionLists.length > 1) return false;
-
-    return true;
-  });
-
-  // Leaf-node deduplication: if node A contains node B (both in validNodes),
-  // exclude A (the outer wrapper) and keep B (the specific leaf question container)
-  const timuNodes: HTMLElement[] = [];
-  for (const node of validNodes) {
-    const containsOtherCandidate = validNodes.some((other) => other !== node && node.contains(other));
-    if (!containsOtherCandidate && !timuNodes.includes(node)) {
-      timuNodes.push(node);
-    }
-  }
-
-  // Fallback: If deduplication resulted in empty list, fallback to unique .TiMu / .questionLi
-  if (timuNodes.length === 0) {
-    const fallbackTiMu = Array.from(quizDoc.querySelectorAll<HTMLElement>('.TiMu, .questionLi'));
-    for (const node of fallbackTiMu) {
-      if (!timuNodes.includes(node)) {
-        timuNodes.push(node);
-      }
-    }
-  }
-
-  if (timuNodes.length === 0) {
-    store.addLog('当前作业页面未发现题目元素（可能已提交或暂无作业）', 'info');
-    store.updateProgress({ percent: 100, status: 'finished', currentTime: '无题目' });
-    return;
-  }
-
-  store.addLog(`检测到 ${timuNodes.length} 道题目，开始逐题解析与作答`, 'info');
 
   // Helper to extract clean question title element without accidentally matching option rows (.clearfix) or inline spans (.font-cx)
   const extractRawTitleFromTimu = (timuEl: HTMLElement): string => {
@@ -1016,412 +1275,554 @@ export async function doQuizTask(
     }
   };
 
-  // Pre-build paper context from page heading & sample question stems for domain/subject alignment
-  const pageHeaderTitle = (
-    quizDoc.querySelector<HTMLElement>('.mark_title, .ceyan_name, h2, title')?.textContent ||
-    document.title ||
-    ''
-  ).trim();
-  const sampleStems = timuNodes
-    .slice(0, 6)
-    .map((node, i) => `${i + 1}. ${cleanQuestionTitle(extractRawTitleFromTimu(node)).slice(0, 35)}`)
-    .filter((s) => s.length > 4);
-  const paperContext = [
-    pageHeaderTitle ? `测验名称：${pageHeaderTitle}` : '',
-    sampleStems.length > 1 ? `同卷关联题目摘录：${sampleStems.join('；')}` : ''
-  ]
-    .filter(Boolean)
-    .join(' | ');
+  // Helper to check if a DOM node (or its ancestor) is explicitly hidden
+  const isNodeHidden = (el: HTMLElement): boolean => isElementOrAncestorHidden(el, quizDoc);
 
-  const questionList: Question[] = [];
-  let cancelAutoSubmit = false;
-
-  // 4. Process and solve each question
-  for (let idx = 0; idx < timuNodes.length; idx++) {
-    if (!isCurrent() || signal.aborted) return;
-
-    const timuEl = timuNodes[idx];
-
-    // Extract title text safely
-    const rawTitleText = extractRawTitleFromTimu(timuEl);
-    const cleanTitle = cleanQuestionTitle(rawTitleText);
-
-    // Identify question type
-    const qType: QuestionType = detectQuestionType(
-      rawTitleText,
-      !!timuEl.querySelector('input[type="checkbox"]'),
-      timuEl.querySelectorAll('input[type="radio"]').length,
-      timuEl.innerText || ''
+  // Helper to discover leaf question DOM elements in current view
+  const discoverTimuNodes = (doc: Document): HTMLElement[] => {
+    const rawCandidates = Array.from(
+      doc.querySelectorAll<HTMLElement>(
+        '.questionLi, .TiMu.newTiMu, .TiMu, div[data-id], .singleQues, div[id^="question"], div[id^="q_"]'
+      )
     );
 
-    // Check if the current question type is enabled in user settings
-    const enabledTypes = store.config.enabledQuestionTypes;
-    if (enabledTypes) {
-      const typeKey = qType === 'unknown' ? 'single' : (qType as keyof typeof enabledTypes);
-      if (enabledTypes[typeKey] === false) {
-        const typeNames: Record<string, string> = {
-          single: '单选题',
-          multiple: '多选题',
-          judge: '判断题',
-          fill: '填空题',
-          essay: '简答题'
-        };
+    const isExcludedArea = (node: HTMLElement): boolean =>
+      typeof node.closest === 'function' &&
+      !!node.closest(
+        'kasa-helper-panel, .kasa-card, .topicNumber, .topicNumber_list, .answerSheet, .right_card, .card_list'
+      );
+
+    const validNodes = rawCandidates.filter((node) => {
+      if (isExcludedArea(node)) return false;
+
+      const hasInputs = !!node.querySelector(
+        'li, .num_option, input, textarea, .before-after, .answerBg, [onclick*="addChoice"], [onclick*="choose"]'
+      );
+      if (!hasInputs) return false;
+
+      const optionLists = node.querySelectorAll('ul.Zy_ulTop, ul.Zy_ulBottom, ul.options, ul.mark_letter, .stem_answer');
+      if (optionLists.length > 1) return false;
+
+      return true;
+    });
+
+    const leafNodes: HTMLElement[] = [];
+    for (const node of validNodes) {
+      const containsOtherCandidate = validNodes.some((other) => other !== node && node.contains(other));
+      if (!containsOtherCandidate && !leafNodes.includes(node)) {
+        leafNodes.push(node);
+      }
+    }
+
+    if (leafNodes.length === 0) {
+      const fallbackTiMu = Array.from(doc.querySelectorAll<HTMLElement>('.TiMu, .questionLi'));
+      for (const node of fallbackTiMu) {
+        if (!isExcludedArea(node) && !leafNodes.includes(node)) {
+          leafNodes.push(node);
+        }
+      }
+    }
+
+    const visibleLeafNodes = leafNodes.filter((node) => !isNodeHidden(node));
+    if (visibleLeafNodes.length > 0 && visibleLeafNodes.length < leafNodes.length) {
+      return visibleLeafNodes;
+    }
+
+    return leafNodes;
+  };
+
+  const getPageSignature = (nodes: HTMLElement[]): string =>
+    nodes
+      .map((node, i) => {
+        const qid =
+          node.getAttribute?.('data-id') ||
+          node.getAttribute?.('data') ||
+          node.getAttribute?.('qid') ||
+          node.getAttribute?.('id') ||
+          `idx:${i}`;
+        const titleHead = cleanQuestionTitle(extractRawTitleFromTimu(node)).slice(0, 40);
+        return `${qid}::${titleHead}`;
+      })
+      .join('||');
+
+  const resumeState = getExamAutoResumeState();
+  const initialResumeOffset = resumeState?.solvedCount || 0;
+  let cumulativeSeenCount = initialResumeOffset;
+  const questionList: Question[] = [];
+  let cancelAutoSubmit = Boolean(resumeState?.cancelAutoSubmit);
+  const seenPageSignatures = new Set<string>(
+    [
+      ...(Array.isArray(resumeState?.recentSigs) ? resumeState!.recentSigs : []),
+      ...(resumeState?.lastPageSig ? [resumeState.lastPageSig] : [])
+    ].filter(Boolean)
+  );
+  const MAX_PAGE_TURNS = 200;
+  let pageTurnCount = resumeState?.pageTurnCount ?? 0;
+  let isFirstResumedIteration = Boolean(resumeState?.active);
+  let stoppedOnStuckPagination = false;
+  const targetWin = (quizDoc.defaultView as any) || (typeof window !== 'undefined' ? window : {});
+
+  while (isCurrent() && !signal.aborted) {
+    // 2. Decode font-cxsecret obfuscated webfont if present
+    try {
+      const fontMap = decodeChaoxingFont(quizDoc);
+      const mapSize = Object.keys(fontMap).length;
+      if (mapSize > 0) {
+        store.addLog(`已成功解密超星动态混淆字体 (识别 ${mapSize} 个字符)`, 'success');
+        if (quizDoc.body) {
+          decryptDomElement(quizDoc.body, fontMap);
+        }
+        clearChaoxingFontMap();
+      }
+    } catch (err) {
+      console.warn('[Quiz] Font decoding warning:', err);
+    }
+
+    // 3. Discover all question DOM elements in current page
+    const timuNodes = discoverTimuNodes(quizDoc);
+
+    if (timuNodes.length === 0) {
+      if (pageTurnCount === 0 && initialResumeOffset === 0) {
+        clearExamAutoResumeState();
+        store.addLog('当前作业页面未发现题目元素（可能已提交或暂无作业）', 'info');
+        store.updateProgress({ percent: 100, status: 'finished', currentTime: '无题目' });
+        return;
+      }
+      clearExamAutoResumeState();
+      break;
+    }
+
+    const currentSig = getPageSignature(timuNodes);
+    if (pageTurnCount >= MAX_PAGE_TURNS) {
+      clearExamAutoResumeState();
+      store.addLog(`已达到最大翻页上限 (${MAX_PAGE_TURNS})，停止自动翻页`, 'warning');
+      stoppedOnStuckPagination = true;
+      break;
+    }
+
+    if (
+      isFirstResumedIteration &&
+      resumeState &&
+      currentSig &&
+      (currentSig === resumeState.lastPageSig || Boolean(resumeState.recentSigs?.includes(currentSig)))
+    ) {
+      clearExamAutoResumeState();
+      store.addLog('检测到跨页重载后题目页面未推进或已回绕，已停止自动翻页以防死循环', 'warning');
+      stoppedOnStuckPagination = true;
+      break;
+    }
+
+    if (!isFirstResumedIteration && currentSig && seenPageSignatures.has(currentSig)) {
+      store.addLog('检测到题目页面内容未变化，已停止自动翻页以防循环作答', 'warning');
+      clearExamAutoResumeState();
+      stoppedOnStuckPagination = true;
+      break;
+    }
+
+    const isInitialBatchLog = pageTurnCount === 0 || isFirstResumedIteration;
+    isFirstResumedIteration = false;
+    if (currentSig) {
+      seenPageSignatures.add(currentSig);
+    }
+
+    if (isInitialBatchLog) {
+      store.addLog(`检测到 ${timuNodes.length} 道题目，开始逐题解析与作答`, 'info');
+    }
+
+    // Pre-build paper context from page heading & sample question stems for domain/subject alignment
+    const pageHeaderTitle = (
+      quizDoc.querySelector<HTMLElement>('.mark_title, .ceyan_name, h2, title')?.textContent ||
+      document.title ||
+      ''
+    ).trim();
+    const sampleStems = timuNodes
+      .slice(0, 6)
+      .map((node, i) => `${i + 1}. ${cleanQuestionTitle(extractRawTitleFromTimu(node)).slice(0, 35)}`)
+      .filter((s) => s.length > 4);
+    const paperContext = [
+      pageHeaderTitle ? `测验名称：${pageHeaderTitle}` : '',
+      sampleStems.length > 1 ? `同卷关联题目摘录：${sampleStems.join('；')}` : ''
+    ]
+      .filter(Boolean)
+      .join(' | ');
+
+    // 4. Process and solve each question on current view
+    for (let idx = 0; idx < timuNodes.length; idx++) {
+      if (!isCurrent() || signal.aborted) return;
+
+      const timuEl = timuNodes[idx];
+      cumulativeSeenCount++;
+
+      const isFirstPageBatch = pageTurnCount === 0 && initialResumeOffset === 0;
+      const displayIndex = isFirstPageBatch ? idx + 1 : cumulativeSeenCount;
+      const questionLabel = isFirstPageBatch
+        ? `第 ${idx + 1}/${timuNodes.length} 题`
+        : timuNodes.length === 1
+          ? `第 ${displayIndex} 题`
+          : `第 ${displayIndex} 题 (${idx + 1}/${timuNodes.length})`;
+      const shortLabel = `第 ${displayIndex} 题`;
+      const progressText = isFirstPageBatch ? `${idx + 1}/${timuNodes.length} 题` : `第 ${displayIndex} 题`;
+
+      // Extract title text safely
+      const rawTitleText = extractRawTitleFromTimu(timuEl);
+      const cleanTitle = cleanQuestionTitle(rawTitleText);
+
+      // Identify question type
+      const qType: QuestionType = detectQuestionType(
+        rawTitleText,
+        !!timuEl.querySelector('input[type="checkbox"]'),
+        timuEl.querySelectorAll('input[type="radio"]').length,
+        timuEl.innerText || ''
+      );
+
+      // Check if the current question type is enabled in user settings
+      const enabledTypes = store.config.enabledQuestionTypes;
+      if (enabledTypes) {
+        const typeKey = qType === 'unknown' ? 'single' : (qType as keyof typeof enabledTypes);
+        if (enabledTypes[typeKey] === false) {
+          const typeNames: Record<string, string> = {
+            single: '单选题',
+            multiple: '多选题',
+            judge: '判断题',
+            fill: '填空题',
+            essay: '简答题'
+          };
+          store.addLog(
+            `${questionLabel}为 [${typeNames[qType] || qType}]，设置中已取消勾选此题型，自动跳过`,
+            'info'
+          );
+          store.updateProgress({
+            percent: Math.round(((idx + 1) / timuNodes.length) * 100),
+            status: 'playing',
+            currentTime: isFirstPageBatch ? questionLabel : progressText
+          });
+          continue;
+        }
+      }
+
+      // Skip already answered questions
+      if (isQuestionAnswered(timuEl, quizDoc)) {
         store.addLog(
-          `第 ${idx + 1}/${timuNodes.length} 题为 [${typeNames[qType] || qType}]，设置中已取消勾选此题型，自动跳过`,
+          `${questionLabel}已作答，自动跳过: "${cleanTitle.slice(0, 20)}..."`,
           'info'
         );
+        const questionObj: Question = {
+          id: timuEl.getAttribute('data-id') || `timu-${displayIndex}`,
+          index: displayIndex,
+          type: qType,
+          title: cleanTitle,
+          options: [],
+          status: 'success'
+        };
+        questionList.push(questionObj);
+        store.setQuestions([...questionList]);
         store.updateProgress({
           percent: Math.round(((idx + 1) / timuNodes.length) * 100),
           status: 'playing',
-          currentTime: `第 ${idx + 1}/${timuNodes.length} 题`
+          currentTime: isFirstPageBatch ? questionLabel : progressText
         });
         continue;
       }
-    }
 
-    // Skip already answered questions
-    if (isQuestionAnswered(timuEl, quizDoc)) {
-      store.addLog(
-        `第 ${idx + 1}/${timuNodes.length} 题已作答，自动跳过: "${cleanTitle.slice(0, 20)}..."`,
-        'info'
+      // Extract options by tiered priority and deduplicate nested elements
+      const optionTierSelectors = [
+        'ul.Zy_ulTop > li, ul.Zy_ulBottom > li, ul.mark_letter > li, ul.options > li',
+        '.stem_answer > .answerBg, .answerBg',
+        'li.before-after, .option-item, li.mar4',
+        'li'
+      ];
+      let candidateOptionEls: HTMLElement[] = [];
+      for (const sel of optionTierSelectors) {
+        const found = Array.from(timuEl.querySelectorAll<HTMLElement>(sel));
+        if (found.length > 0) {
+          candidateOptionEls = found;
+          break;
+        }
+      }
+      const rawOptionEls = candidateOptionEls.filter(
+        (node, i, arr) =>
+          !arr.some((other, j) => i !== j && node.contains(other))
       );
+
+      const parsedOptions: ParsedOptionItem[] = [];
+      const optionsTextList: string[] = [];
+
+      for (let optIdx = 0; optIdx < rawOptionEls.length; optIdx++) {
+        const optEl = rawOptionEls[optIdx];
+        const numOptionEl = optEl.querySelector<HTMLElement>(
+          '.num_option, .num_option_dx, .option-num, i.num_option, span.num_option'
+        );
+        const rawDataAttr =
+          numOptionEl?.getAttribute('data')?.trim() ||
+          optEl.querySelector<HTMLInputElement>('input[type="radio"], input[type="checkbox"]')?.value?.trim() ||
+          '';
+
+        // Extract option text from dedicated option content container (.answer_p for mooc2, a.after for classic)
+        const afterTextEl = optEl.querySelector<HTMLElement>(
+          '.answer_p, a.after, .option-txt, span.after'
+        );
+        let optText = (afterTextEl?.innerText || afterTextEl?.textContent || optEl.innerText || optEl.textContent || '').trim();
+
+        // Determine normalized single-letter A, B, C, D...
+        let letter = '';
+        if (/^[A-Z]$/i.test(rawDataAttr)) {
+          letter = rawDataAttr.toUpperCase();
+        } else {
+          const badgeText = (numOptionEl?.innerText || numOptionEl?.textContent || '').trim();
+          const badgeMatch = badgeText.match(/^([A-Z])$/i);
+          if (badgeMatch) {
+            letter = badgeMatch[1].toUpperCase();
+          } else {
+            letter = String.fromCharCode(65 + parsedOptions.length);
+          }
+        }
+
+        // Remove leading option letter badge ONLY if it matches this option's letter or standard "A. " prefix
+        if (!afterTextEl) {
+          optText = optText.replace(new RegExp(`^${letter}[\\.、．\\s\\-_:：]*`, 'i'), '').trim();
+        } else {
+          optText = optText.replace(new RegExp(`^${letter}[\\.、．:：]+\\s*`, 'i'), '').trim();
+        }
+
+        // For Judge questions where option text is empty or icon-only and data is "true"/"false"
+        if (qType === 'judge') {
+          if (/^true$/i.test(rawDataAttr) && (!optText || /^(a|true|1)$/i.test(optText))) {
+            optText = '对';
+          } else if (/^false$/i.test(rawDataAttr) && (!optText || /^(b|false|0)$/i.test(optText))) {
+            optText = '错';
+          }
+        }
+
+        if (!optText && !optEl.querySelector('input') && !rawDataAttr) continue;
+
+        const clickableEl =
+          optEl.querySelector<HTMLElement>(
+            'input[type="radio"], input[type="checkbox"], .num_option, a.after, .answer_p, a, label'
+          ) || optEl;
+
+        parsedOptions.push({
+          el: optEl,
+          clickableEl,
+          rawText: optText,
+          cleanText: normalizeText(optText),
+          letter,
+          dataValue: rawDataAttr || undefined
+        });
+        optionsTextList.push(optText);
+      }
+
+      const subType = detectQuestionSubType(rawTitleText);
+      const images = await extractQuestionImages(timuEl, signal);
+
       const questionObj: Question = {
-        id: timuEl.getAttribute('data-id') || `timu-${idx + 1}`,
-        index: idx + 1,
+        id: timuEl.getAttribute('data-id') || `timu-${displayIndex}`,
+        index: displayIndex,
         type: qType,
+        subType,
         title: cleanTitle,
-        options: [],
-        status: 'success'
+        options: optionsTextList,
+        images,
+        status: 'searching'
       };
       questionList.push(questionObj);
       store.setQuestions([...questionList]);
-      store.updateProgress({
-        percent: Math.round(((idx + 1) / timuNodes.length) * 100),
-        status: 'playing',
-        currentTime: `第 ${idx + 1}/${timuNodes.length} 题`
-      });
-      continue;
-    }
 
-    // Extract options by tiered priority and deduplicate nested elements
-    const optionTierSelectors = [
-      'ul.Zy_ulTop > li, ul.Zy_ulBottom > li, ul.mark_letter > li, ul.options > li',
-      '.stem_answer > .answerBg, .answerBg',
-      'li.before-after, .option-item, li.mar4',
-      'li'
-    ];
-    let candidateOptionEls: HTMLElement[] = [];
-    for (const sel of optionTierSelectors) {
-      const found = Array.from(timuEl.querySelectorAll<HTMLElement>(sel));
-      if (found.length > 0) {
-        candidateOptionEls = found;
-        break;
-      }
-    }
-    const rawOptionEls = candidateOptionEls.filter(
-      (node, i, arr) =>
-        !arr.some((other, j) => i !== j && node.contains(other))
-    );
-
-    const parsedOptions: ParsedOptionItem[] = [];
-    const optionsTextList: string[] = [];
-
-    for (let optIdx = 0; optIdx < rawOptionEls.length; optIdx++) {
-      const optEl = rawOptionEls[optIdx];
-      const numOptionEl = optEl.querySelector<HTMLElement>(
-        '.num_option, .num_option_dx, .option-num, i.num_option, span.num_option'
-      );
-      const rawDataAttr =
-        numOptionEl?.getAttribute('data')?.trim() ||
-        optEl.querySelector<HTMLInputElement>('input[type="radio"], input[type="checkbox"]')?.value?.trim() ||
-        '';
-
-      // Extract option text from dedicated option content container (.answer_p for mooc2, a.after for classic)
-      const afterTextEl = optEl.querySelector<HTMLElement>(
-        '.answer_p, a.after, .option-txt, span.after'
-      );
-      let optText = (afterTextEl?.innerText || afterTextEl?.textContent || optEl.innerText || optEl.textContent || '').trim();
-
-      // Determine normalized single-letter A, B, C, D...
-      let letter = '';
-      if (/^[A-Z]$/i.test(rawDataAttr)) {
-        letter = rawDataAttr.toUpperCase();
-      } else {
-        const badgeText = (numOptionEl?.innerText || numOptionEl?.textContent || '').trim();
-        const badgeMatch = badgeText.match(/^([A-Z])$/i);
-        if (badgeMatch) {
-          letter = badgeMatch[1].toUpperCase();
-        } else {
-          letter = String.fromCharCode(65 + parsedOptions.length);
-        }
-      }
-
-      // Remove leading option letter badge ONLY if it matches this option's letter or standard "A. " prefix
-      if (!afterTextEl) {
-        optText = optText.replace(new RegExp(`^${letter}[\\.、．\\s\\-_:：]*`, 'i'), '').trim();
-      } else {
-        optText = optText.replace(new RegExp(`^${letter}[\\.、．:：]+\\s*`, 'i'), '').trim();
-      }
-
-      // For Judge questions where option text is empty or icon-only and data is "true"/"false"
-      if (qType === 'judge') {
-        if (/^true$/i.test(rawDataAttr) && (!optText || /^(a|true|1)$/i.test(optText))) {
-          optText = '对';
-        } else if (/^false$/i.test(rawDataAttr) && (!optText || /^(b|false|0)$/i.test(optText))) {
-          optText = '错';
-        }
-      }
-
-      if (!optText && !optEl.querySelector('input') && !rawDataAttr) continue;
-
-      const clickableEl =
-        optEl.querySelector<HTMLElement>(
-          'input[type="radio"], input[type="checkbox"], .num_option, a.after, .answer_p, a, label'
-        ) || optEl;
-
-      parsedOptions.push({
-        el: optEl,
-        clickableEl,
-        rawText: optText,
-        cleanText: normalizeText(optText),
-        letter,
-        dataValue: rawDataAttr || undefined
-      });
-      optionsTextList.push(optText);
-    }
-
-    const subType = detectQuestionSubType(rawTitleText);
-    const images = await extractQuestionImages(timuEl, signal);
-
-    const questionObj: Question = {
-      id: timuEl.getAttribute('data-id') || `timu-${idx + 1}`,
-      index: idx + 1,
-      type: qType,
-      subType,
-      title: cleanTitle,
-      options: optionsTextList,
-      images,
-      status: 'searching'
-    };
-    questionList.push(questionObj);
-    store.setQuestions([...questionList]);
-
-    const imgTag = images.length > 0 ? `（含 ${images.length} 张图片）` : '';
-    store.addLog(
-      `第 ${idx + 1}/${timuNodes.length} 题 [${qType}]: "${cleanTitle.slice(0, 24)}..." ${imgTag}正在查询答案`,
-      'info'
-    );
-
-    // 4. Query AI answer with paper context and abort signal
-    let answers = await queryAiAnswer(questionObj, paperContext, signal);
-    if (!isCurrent() || signal.aborted) return;
-
-    // Built-in test course / offline fallback with index-based font obfuscation defense
-    if (!answers || answers.length === 0) {
-      answers = matchFallbackAnswer(cleanTitle, optionsTextList, idx + 1);
-      if (answers.length > 0) {
-        store.addLog(`第 ${idx + 1} 题启用保底题库匹配: [${answers.join(', ')}]`, 'success');
-      }
-    }
-
-    // 兜底提示：若题目含图片但模型回答明确提示缺少图片或无法识别结构式
-    if (
-      questionObj.images &&
-      questionObj.images.length > 0 &&
-      answers.some((ans) => /无法(?:唯一)?确定答案|没有(?:给出|提供).*?(?:结构式|图片)/.test(ans))
-    ) {
+      const imgTag = images.length > 0 ? `（含 ${images.length} 张图片）` : '';
       store.addLog(
-        `第 ${idx + 1} 题模型提示无法完整识别图片内容，请在交卷前重点人工核对该题！`,
-        'error'
-      );
-    }
-
-    questionObj.answer = answers;
-    questionObj.status = answers.length > 0 ? 'success' : 'failed';
-    store.setQuestions([...questionList]);
-
-    // 5. Simulate human choice selection using 3-tier ranked option matching
-    if (parsedOptions.length > 0) {
-      const matchedOptions = selectBestOptions(parsedOptions, answers, qType);
-
-      // Final fallback: if no option matched, select the first option to prevent getting stuck
-      if (matchedOptions.length === 0) {
-        matchedOptions.push(parsedOptions[0]);
-        store.addLog(`第 ${idx + 1} 题未找到精准答案匹配，保底选择第 1 项 [${parsedOptions[0].letter}]`, 'warning');
-      }
-
-      const selectedLetters = matchedOptions.map((o) => o.letter || 'A');
-      store.addLog(
-        `第 ${idx + 1} 题 AI 给出: [${answers.join(', ')}] -> 匹配选中: [${selectedLetters.join(', ')}]`,
+        `${questionLabel} [${qType}]: "${cleanTitle.slice(0, 24)}..." ${imgTag}正在查询答案`,
         'info'
       );
 
-      // Execute clean, non-toggling clicks with human jitter
-      const quizWin = quizDoc.defaultView as any;
-      const isOptionSelected = (el: HTMLElement): boolean => {
-        if (
-          el.classList.contains('check_answer') ||
-          el.classList.contains('check_answer_dx') ||
-          el.classList.contains('cur') ||
-          el.getAttribute('aria-checked') === 'true'
-        ) {
-          return true;
-        }
-        return !!el.querySelector(
-          '.check_answer, .check_answer_dx, input[type="radio"]:checked, input[type="checkbox"]:checked'
-        );
-      };
+      // 4. Query AI answer with paper context and abort signal
+      let answers = await queryAiAnswer(questionObj, paperContext, signal);
+      if (!isCurrent() || signal.aborted) return;
 
-      for (const optItem of matchedOptions) {
-        if (!isCurrent() || signal.aborted) return;
-
-        const target = optItem.clickableEl;
-        try {
-          optItem.el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        } catch {}
-
-        // Avoid redundant clicks that could toggle off a checkbox
-        if (!isOptionSelected(optItem.el)) {
-          optItem.el.click();
-        }
-        if (!isOptionSelected(optItem.el) && target !== optItem.el) {
-          target.click();
-        }
-        if (!isOptionSelected(optItem.el) && typeof quizWin?.addChoice === 'function') {
-          try {
-            quizWin.addChoice(optItem.el);
-          } catch {}
-        }
-
-        const input = optItem.el.querySelector<HTMLInputElement>('input[type="radio"], input[type="checkbox"]');
-        if (input && !input.checked) {
-          input.checked = true;
-          input.dispatchEvent(new Event('change', { bubbles: true }));
-        }
-
-        // Direct DOM enhancement: mark check_answer
-        const numOption = optItem.el.querySelector('.num_option, .num_option_dx');
-        if (numOption) {
-          numOption.classList.add(qType === 'multiple' ? 'check_answer_dx' : 'check_answer');
-        }
-        optItem.el.setAttribute('aria-checked', 'true');
-
-        // Random jitter delay: 400ms ~ 800ms
-        const delay = Math.random() * 400 + 400;
-        await sleep(delay, signal);
-      }
-
-      // Sync hidden answer input ONLY if ChaoXing's native click handler did not already populate it
-      const qid =
-        timuEl.getAttribute('data-id') ||
-        timuEl.getAttribute('data') ||
-        timuEl.getAttribute('qid') ||
-        matchedOptions[0]?.el.getAttribute('qid') ||
-        timuEl.querySelector<HTMLInputElement>('input[name^="answer"]')?.name?.replace(/^answer/, '');
-      if (qid) {
-        const hiddenInput = quizDoc.querySelector<HTMLInputElement>(
-          `input#answer${qid}, input[name="answer${qid}"]`
-        );
-        if (hiddenInput && !hiddenInput.value) {
-          if (qType === 'judge') {
-            const firstOpt = matchedOptions[0];
-            hiddenInput.value =
-              firstOpt.dataValue && /^(true|false)$/i.test(firstOpt.dataValue)
-                ? firstOpt.dataValue.toLowerCase()
-                : firstOpt.letter === 'A'
-                  ? 'true'
-                  : 'false';
-          } else {
-            hiddenInput.value = selectedLetters.join('');
+      // Built-in test course / offline fallback with index-based font obfuscation defense
+      if (!answers || answers.length === 0) {
+        answers = matchFallbackAnswer(cleanTitle, optionsTextList, displayIndex);
+        if (answers.length > 0) {
+          store.addLog(`${shortLabel}启用保底题库匹配: [${answers.join(', ')}]`, 'success');
+          if (store.config.aiApiKey.trim()) {
+            cancelAutoSubmit = true;
           }
-          hiddenInput.dispatchEvent(new Event('change', { bubbles: true }));
+        } else {
+          cancelAutoSubmit = true;
         }
       }
 
-      // Step completion log with explicit feedback
-      store.addLog(
-        `第 ${idx + 1}/${timuNodes.length} 题作答完成：已选 [${selectedLetters.join(', ')}]`,
-        'success'
-      );
-    } else {
-      // Fill-in-the-blank or essay question inputs (filtering out hidden/system metadata fields + supporting UEditor)
-      const hasRefusal = answers.some((ans) => isAiRefusalOrApology(ans));
-      if (hasRefusal) {
-        questionObj.status = 'failed';
-        store.setQuestions([...questionList]);
+      // 兜底提示：若题目含图片但模型回答明确提示缺少图片或无法识别结构式
+      if (
+        questionObj.images &&
+        questionObj.images.length > 0 &&
+        answers.some((ans) => /无法(?:唯一)?确定答案|没有(?:给出|提供).*?(?:结构式|图片)/.test(ans))
+      ) {
+        cancelAutoSubmit = true;
         store.addLog(
-          `第 ${idx + 1} 题 AI 反映缺少关键图片或数据，已放弃自动填入并保留空白，请人工核对！`,
+          `${shortLabel}模型提示无法完整识别图片内容，请在交卷前重点人工核对该题！`,
           'error'
         );
-        if (store.config.autoSubmitWork) {
+      }
+
+      questionObj.answer = answers;
+      questionObj.status = answers.length > 0 ? 'success' : 'failed';
+      store.setQuestions([...questionList]);
+
+      // 5. Simulate human choice selection using 3-tier ranked option matching
+      if (parsedOptions.length > 0) {
+        const matchedOptions = selectBestOptions(parsedOptions, answers, qType);
+
+        // Final fallback: if no option matched, select the first option to prevent getting stuck
+        if (matchedOptions.length === 0) {
+          matchedOptions.push(parsedOptions[0]);
+          cancelAutoSubmit = true;
+          store.addLog(`${shortLabel}未找到精准答案匹配，保底选择第 1 项 [${parsedOptions[0].letter}]`, 'warning');
+        }
+
+        const selectedLetters = matchedOptions.map((o) => o.letter || 'A');
+        store.addLog(
+          `${shortLabel} AI 给出: [${answers.join(', ')}] -> 匹配选中: [${selectedLetters.join(', ')}]`,
+          'info'
+        );
+
+        // Execute clean, non-toggling clicks with human jitter
+        const quizWin = quizDoc.defaultView as any;
+        const isOptionSelected = (el: HTMLElement): boolean => {
+          if (
+            el.classList.contains('check_answer') ||
+            el.classList.contains('check_answer_dx') ||
+            el.classList.contains('cur') ||
+            el.classList.contains('active') ||
+            el.classList.contains('selected') ||
+            el.getAttribute('aria-checked') === 'true'
+          ) {
+            return true;
+          }
+          return !!el.querySelector(
+            '.check_answer, .check_answer_dx, .active, .selected, input[type="radio"]:checked, input[type="checkbox"]:checked'
+          );
+        };
+
+        for (const optItem of matchedOptions) {
+          if (!isCurrent() || signal.aborted) return;
+
+          const target = optItem.clickableEl;
+          try {
+            optItem.el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          } catch {}
+
+          // Avoid redundant clicks that could toggle off a checkbox
+          if (!isOptionSelected(optItem.el)) {
+            optItem.el.click();
+          }
+          if (!isOptionSelected(optItem.el) && target !== optItem.el) {
+            target.click();
+          }
+          if (!isOptionSelected(optItem.el) && typeof quizWin?.addChoice === 'function') {
+            try {
+              quizWin.addChoice(optItem.el);
+            } catch {}
+          }
+
+          const input = optItem.el.querySelector<HTMLInputElement>('input[type="radio"], input[type="checkbox"]');
+          if (input && !input.checked) {
+            input.checked = true;
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+          }
+
+          // Direct DOM enhancement: mark check_answer
+          const numOption = optItem.el.querySelector('.num_option, .num_option_dx');
+          if (numOption) {
+            numOption.classList.add(qType === 'multiple' ? 'check_answer_dx' : 'check_answer');
+          }
+          optItem.el.setAttribute('aria-checked', 'true');
+
+          // Random jitter delay: 400ms ~ 800ms
+          const delay = Math.random() * 400 + 400;
+          await sleep(delay, signal);
+        }
+
+        // Sync hidden answer input ONLY if ChaoXing's native click handler did not already populate it
+        const qid =
+          timuEl.getAttribute('data-id') ||
+          timuEl.getAttribute('data') ||
+          timuEl.getAttribute('qid') ||
+          matchedOptions[0]?.el.getAttribute('qid') ||
+          timuEl
+            .querySelector<HTMLInputElement>('input[name^="answer"]:not([name^="answertype"])')
+            ?.name?.replace(/^answer/, '');
+        if (qid) {
+          const hiddenInput =
+            quizDoc.querySelector<HTMLInputElement>(
+              `input[type="hidden"]#answer${qid}, input[type="hidden"][name="answer${qid}"]`
+            ) ||
+            quizDoc.querySelector<HTMLInputElement>(
+              `input#answer${qid}:not([type="radio"]):not([type="checkbox"]), input[name="answer${qid}"]:not([type="radio"]):not([type="checkbox"])`
+            );
+          if (hiddenInput && !hiddenInput.value) {
+            if (qType === 'judge') {
+              const firstOpt = matchedOptions[0];
+              hiddenInput.value =
+                firstOpt.dataValue && /^(true|false)$/i.test(firstOpt.dataValue)
+                  ? firstOpt.dataValue.toLowerCase()
+                  : firstOpt.letter === 'A'
+                    ? 'true'
+                    : 'false';
+            } else {
+              hiddenInput.value = selectedLetters.join('');
+            }
+            hiddenInput.dispatchEvent(new Event('change', { bubbles: true }));
+          }
+        }
+
+        // Step completion log with explicit feedback
+        store.addLog(
+          `${questionLabel}作答完成：已选 [${selectedLetters.join(', ')}]`,
+          'success'
+        );
+      } else {
+        // Fill-in-the-blank or essay question inputs (filtering out hidden/system metadata fields + supporting UEditor)
+        const hasRefusal = answers.some((ans) => isAiRefusalOrApology(ans));
+        if (hasRefusal) {
+          questionObj.status = 'failed';
+          store.setQuestions([...questionList]);
           cancelAutoSubmit = true;
           store.addLog(
-            `检测到第 ${idx + 1} 题未成功获得有效作答，为防学业事故，已自动取消自动提交，请人工复核后手动提交！`,
+            `${shortLabel} AI 反映缺少关键图片或数据，已放弃自动填入并保留空白，请人工核对！`,
             'error'
           );
-        }
-      } else {
-        const rawInputs = Array.from(
-          timuEl.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>(
-            'textarea.answerText, textarea, input.answerInput, input.newAnswerInput, input[type="text"]'
-          )
-        );
-        const textInputs = rawInputs.filter((input) => {
-          if ((input as HTMLInputElement).type === 'hidden') return false;
-          const meta = `${input.name || ''} ${input.id || ''} ${input.className || ''}`.toLowerCase();
-          if (meta.includes('type') || meta.includes('score')) return false;
-          return true;
-        });
-        const ueditorFrames = Array.from(
-          timuEl.querySelectorAll<HTMLIFrameElement>('iframe[id^="ueditor_"], .edui-editor-iframeholder iframe')
-        );
-        const quizWin = quizDoc.defaultView as any;
+          if (store.config.autoSubmitWork) {
+            store.addLog(
+              `检测到${shortLabel}未成功获得有效作答，为防学业事故，已自动取消自动提交，请人工复核后手动提交！`,
+              'error'
+            );
+          }
+        } else {
+          const rawInputs = Array.from(
+            timuEl.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>(
+              'textarea.answerText, textarea, input.answerInput, input.newAnswerInput, input[type="text"]'
+            )
+          );
+          const textInputs = rawInputs.filter((input) => {
+            if ((input as HTMLInputElement).type === 'hidden') return false;
+            const meta = `${input.name || ''} ${input.id || ''} ${input.className || ''}`.toLowerCase();
+            if (meta.includes('type') || meta.includes('score')) return false;
+            return true;
+          });
+          const ueditorFrames = Array.from(
+            timuEl.querySelectorAll<HTMLIFrameElement>('iframe[id^="ueditor_"], .edui-editor-iframeholder iframe')
+          );
+          const quizWin = quizDoc.defaultView as any;
 
-        if ((textInputs.length > 0 || ueditorFrames.length > 0) && answers.length > 0) {
-          const slotCount = Math.max(textInputs.length, ueditorFrames.length);
-          if (slotCount === 1) {
-            // 主观简答 / 单空：合并全部段落并净化，生成标准 UEditor 段落
-            const cleanFullText = answers.map((a) => cleanRichTextAnswer(a)).filter(Boolean).join('\n');
-            const paragraphsHtml = formatToUEditorParagraphs(answers);
+          if ((textInputs.length > 0 || ueditorFrames.length > 0) && answers.length > 0) {
+            const slotCount = Math.max(textInputs.length, ueditorFrames.length);
+            if (slotCount === 1) {
+              // 主观简答 / 单空：合并全部段落并净化，生成标准 UEditor 段落
+              const cleanFullText = answers.map((a) => cleanRichTextAnswer(a)).filter(Boolean).join('\n');
+              const paragraphsHtml = formatToUEditorParagraphs(answers);
 
-            const inputEl = textInputs[0];
-            if (inputEl) {
-              inputEl.value = cleanFullText;
-              inputEl.dispatchEvent(new Event('input', { bubbles: true }));
-              inputEl.dispatchEvent(new Event('change', { bubbles: true }));
-              inputEl.dispatchEvent(new Event('blur', { bubbles: true }));
-              const editorId = inputEl.id || inputEl.name;
-              if (editorId && typeof quizWin?.UE?.getEditor === 'function') {
-                try {
-                  const ueInstance = quizWin.UE.getEditor(editorId);
-                  if (ueInstance && typeof ueInstance.setContent === 'function') {
-                    ueInstance.setContent(paragraphsHtml);
-                  }
-                } catch {}
-              }
-            }
-            const uFrame = ueditorFrames[0];
-            if (uFrame) {
-              try {
-                const uDoc = uFrame.contentDocument;
-                if (uDoc?.body) {
-                  uDoc.body.innerHTML = paragraphsHtml;
-                  uDoc.body.dispatchEvent(new Event('input', { bubbles: true }));
-                  uDoc.body.dispatchEvent(new Event('keyup', { bubbles: true }));
-                  uDoc.body.dispatchEvent(new Event('blur', { bubbles: true }));
-                }
-              } catch {}
-            }
-          } else {
-            // 多空填空题：按槽位分配清洗后的文本
-            for (let i = 0; i < slotCount; i++) {
-              const rawVal = answers[i] ?? answers[0] ?? '';
-              const cleanVal = cleanRichTextAnswer(rawVal);
-              const paragraphHtml = formatToUEditorParagraphs(cleanVal);
-
-              const inputEl = textInputs[i];
+              const inputEl = textInputs[0];
               if (inputEl) {
-                inputEl.value = cleanVal;
+                inputEl.value = cleanFullText;
                 inputEl.dispatchEvent(new Event('input', { bubbles: true }));
                 inputEl.dispatchEvent(new Event('change', { bubbles: true }));
                 inputEl.dispatchEvent(new Event('blur', { bubbles: true }));
@@ -1430,57 +1831,196 @@ export async function doQuizTask(
                   try {
                     const ueInstance = quizWin.UE.getEditor(editorId);
                     if (ueInstance && typeof ueInstance.setContent === 'function') {
-                      ueInstance.setContent(paragraphHtml);
+                      ueInstance.setContent(paragraphsHtml);
                     }
                   } catch {}
                 }
               }
-              const uFrame = ueditorFrames[i];
+              const uFrame = ueditorFrames[0];
               if (uFrame) {
                 try {
                   const uDoc = uFrame.contentDocument;
                   if (uDoc?.body) {
-                    uDoc.body.innerHTML = paragraphHtml;
+                    uDoc.body.innerHTML = paragraphsHtml;
                     uDoc.body.dispatchEvent(new Event('input', { bubbles: true }));
                     uDoc.body.dispatchEvent(new Event('keyup', { bubbles: true }));
                     uDoc.body.dispatchEvent(new Event('blur', { bubbles: true }));
                   }
                 } catch {}
               }
+            } else {
+              // 多空填空题：按槽位分配清洗后的文本
+              for (let i = 0; i < slotCount; i++) {
+                const rawVal = answers[i] ?? answers[0] ?? '';
+                const cleanVal = cleanRichTextAnswer(rawVal);
+                const paragraphHtml = formatToUEditorParagraphs(cleanVal);
+
+                const inputEl = textInputs[i];
+                if (inputEl) {
+                  inputEl.value = cleanVal;
+                  inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+                  inputEl.dispatchEvent(new Event('change', { bubbles: true }));
+                  inputEl.dispatchEvent(new Event('blur', { bubbles: true }));
+                  const editorId = inputEl.id || inputEl.name;
+                  if (editorId && typeof quizWin?.UE?.getEditor === 'function') {
+                    try {
+                      const ueInstance = quizWin.UE.getEditor(editorId);
+                      if (ueInstance && typeof ueInstance.setContent === 'function') {
+                        ueInstance.setContent(paragraphHtml);
+                      }
+                    } catch {}
+                  }
+                }
+                const uFrame = ueditorFrames[i];
+                if (uFrame) {
+                  try {
+                    const uDoc = uFrame.contentDocument;
+                    if (uDoc?.body) {
+                      uDoc.body.innerHTML = paragraphHtml;
+                      uDoc.body.dispatchEvent(new Event('input', { bubbles: true }));
+                      uDoc.body.dispatchEvent(new Event('keyup', { bubbles: true }));
+                      uDoc.body.dispatchEvent(new Event('blur', { bubbles: true }));
+                    }
+                  } catch {}
+                }
+              }
             }
-          }
-          store.addLog(`第 ${idx + 1}/${timuNodes.length} 题作答完成：已填入文本`, 'success');
-        } else {
-          questionObj.status = 'failed';
-          store.setQuestions([...questionList]);
-          if (store.config.autoSubmitWork) {
-            cancelAutoSubmit = true;
-          }
-          if (answers.length === 0) {
-            store.addLog(`第 ${idx + 1} 题未获取到有效答案，已保留空白，请人工核对！`, 'error');
+            store.addLog(`${questionLabel}作答完成：已填入文本`, 'success');
           } else {
-            store.addLog(`第 ${idx + 1} 题未检测到可填入的输入框，请人工检查填入！`, 'error');
+            questionObj.status = 'failed';
+            store.setQuestions([...questionList]);
+            cancelAutoSubmit = true;
+            if (answers.length === 0) {
+              store.addLog(`${shortLabel}未获取到有效答案，已保留空白，请人工核对！`, 'error');
+            } else {
+              store.addLog(`${shortLabel}未检测到可填入的输入框，请人工检查填入！`, 'error');
+            }
           }
         }
       }
+
+      const currentPct = Math.round(((idx + 1) / timuNodes.length) * 100);
+      store.updateProgress({
+        percent: currentPct,
+        currentTime: progressText,
+        status: 'playing'
+      });
+
+      // Humanized pause between questions: 1.5s
+      await sleep(1500, signal);
     }
 
-    const currentPct = Math.round(((idx + 1) / timuNodes.length) * 100);
-    store.updateProgress({
-      percent: currentPct,
-      currentTime: `${idx + 1}/${timuNodes.length} 题`,
-      status: 'playing'
-    });
+    if (!isCurrent() || signal.aborted) return;
 
-    // Humanized pause between questions: 1.5s
-    await sleep(1500, signal);
+    // 5b. Check if single-question mode has a "Next Question" button
+    const nextBtn = findNextQuestionBtn(quizDoc);
+    if (!nextBtn) {
+      clearExamAutoResumeState();
+      break;
+    }
+
+    if (pageTurnCount >= MAX_PAGE_TURNS) {
+      clearExamAutoResumeState();
+      store.addLog(`已达到最大翻页上限 (${MAX_PAGE_TURNS})，停止自动翻页`, 'warning');
+      stoppedOnStuckPagination = true;
+      break;
+    }
+
+    const isExamOrStandalone =
+      !workIframe ||
+      /exam|test|work/i.test((typeof window !== 'undefined' && window.location?.href) || '');
+    if (isExamOrStandalone) {
+      setExamAutoResumeState({
+        cancelAutoSubmit,
+        solvedCount: cumulativeSeenCount,
+        lastPageSig: currentSig,
+        recentSigs: Array.from(seenPageSignatures),
+        pageTurnCount: pageTurnCount + 1
+      });
+    }
+
+    // Humanized pause before clicking "Next Question" (600ms ~ 1200ms)
+    await sleep(600 + Math.random() * 600, signal);
+    if (!isCurrent() || signal.aborted) return;
+
+    const prevSig = currentSig;
+    let isUnloading = false;
+    const onUnload = () => {
+      isUnloading = true;
+    };
+
+    let switched = false;
+    let clickFailed = false;
+    try {
+      try {
+        targetWin?.addEventListener?.('beforeunload', onUnload, { once: true });
+        targetWin?.addEventListener?.('pagehide', onUnload, { once: true });
+      } catch {}
+
+      store.addLog('正在自动进入下一题...', 'info');
+      try {
+        nextBtn.click();
+      } catch (err) {
+        clearExamAutoResumeState();
+        store.addLog(`点击【下一题】失败: ${String(err)}`, 'warning');
+        stoppedOnStuckPagination = true;
+        clickFailed = true;
+      }
+
+      if (!clickFailed) {
+        for (let elapsed = 0; elapsed < 4000; elapsed += 200) {
+          await sleep(200, signal);
+          if (!isCurrent() || signal.aborted) {
+            return;
+          }
+
+          const nextNodes = discoverTimuNodes(quizDoc);
+          const newSig = nextNodes.length > 0 ? getPageSignature(nextNodes) : '';
+          if (newSig && newSig !== prevSig && !seenPageSignatures.has(newSig)) {
+            switched = true;
+            break;
+          }
+        }
+      }
+    } finally {
+      try {
+        targetWin?.removeEventListener?.('beforeunload', onUnload);
+        targetWin?.removeEventListener?.('pagehide', onUnload);
+      } catch {}
+    }
+
+    if (clickFailed) {
+      break;
+    }
+
+    if (switched) {
+      pageTurnCount++;
+      store.addLog('已切换至下一题，继续作答', 'info');
+      continue;
+    }
+
+    store.addLog('点击【下一题】后页面未切换，已停止自动翻页（若已跳转将自动继续）', 'warning');
+    if (!isUnloading) {
+      clearExamAutoResumeState();
+    }
+    stoppedOnStuckPagination = true;
+    break;
+  }
+
+  if (!isCurrent() || signal.aborted) return;
+
+  if (stoppedOnStuckPagination) {
+    store.updateProgress({
+      status: 'paused',
+      currentTime: '翻页未切换已停止'
+    });
+    return;
   }
 
   store.addLog('所有题目已作答完毕，准备保存或提交', 'success');
 
   // 6. Temporary save or Auto Submit
   const { autoSubmitWork } = store.config;
-  const targetWin = (quizDoc.defaultView as any) || window;
 
   // Anti-modal override
   try {
