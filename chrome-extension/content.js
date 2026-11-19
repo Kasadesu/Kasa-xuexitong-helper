@@ -25715,7 +25715,25 @@ input:checked + .toggle-slider:before {
 		return false;
 	};
 	var EXAM_AUTORESUME_KEY = "kasa_exam_autoresume_v1";
+	var EXAM_AUTORESUME_BRIDGE_KEY = "kasa_exam_autoresume_bridge_v1";
 	var EXAM_AUTORESUME_TTL_MS = 6e5;
+	var EXAM_AUTORESUME_BRIDGE_TTL_MS = 2e4;
+	var STABLE_EXAM_ID_PARAMS = new Set([
+		"courseid",
+		"classid",
+		"clazzid",
+		"examid",
+		"testid",
+		"tid",
+		"paperid",
+		"testpaperid",
+		"testuserrelationid",
+		"examrelationid",
+		"workid",
+		"knowledgeid",
+		"chapterid",
+		"cpi"
+	]);
 	var VOLATILE_EXAM_PARAMS = new Set([
 		"questionid",
 		"start",
@@ -25725,7 +25743,20 @@ input:checked + .toggle-slider:before {
 		"page",
 		"qid",
 		"num",
-		"offset"
+		"offset",
+		"enc",
+		"utenc",
+		"remaintimeparam",
+		"relationanswerlastupdatetime",
+		"t",
+		"time",
+		"_t",
+		"timestamp",
+		"cur",
+		"isfirst",
+		"random",
+		"r",
+		"v"
 	]);
 	var isElementOrAncestorHidden = (el, doc) => {
 		const win = doc?.defaultView;
@@ -25749,22 +25780,53 @@ input:checked + .toggle-slider:before {
 			const search = String(window.location.search || "");
 			if (!search || typeof URLSearchParams === "undefined") return pathname;
 			const params = new URLSearchParams(search);
-			const stableEntries = [];
+			const stableIdEntries = [];
+			const nonVolatileEntries = [];
 			params.forEach((value, key) => {
-				if (!VOLATILE_EXAM_PARAMS.has(key.toLowerCase())) stableEntries.push([key, value]);
+				const lower = key.toLowerCase();
+				if (STABLE_EXAM_ID_PARAMS.has(lower)) stableIdEntries.push([key, value]);
+				if (!VOLATILE_EXAM_PARAMS.has(lower)) nonVolatileEntries.push([key, value]);
 			});
-			stableEntries.sort((a, b) => a[0].localeCompare(b[0]) || a[1].localeCompare(b[1]));
-			const stableQuery = stableEntries.map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join("&");
+			const chosenEntries = stableIdEntries.length > 0 ? stableIdEntries : nonVolatileEntries;
+			chosenEntries.sort((a, b) => a[0].localeCompare(b[0]) || a[1].localeCompare(b[1]));
+			const stableQuery = chosenEntries.map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join("&");
 			return stableQuery ? `${pathname}?${stableQuery}` : pathname;
 		} catch {
 			return "";
 		}
 	};
+	var readBridgeState = () => {
+		try {
+			if (typeof GM_getValue === "function") {
+				const val = GM_getValue(EXAM_AUTORESUME_BRIDGE_KEY, "");
+				if (typeof val === "string" && val.length > 0) return val;
+			}
+		} catch {}
+		return null;
+	};
+	var clearBridgeState = () => {
+		try {
+			if (typeof GM_setValue === "function") GM_setValue(EXAM_AUTORESUME_BRIDGE_KEY, "");
+		} catch {}
+	};
 	var getExamAutoResumeState = () => {
 		if (typeof sessionStorage === "undefined") return null;
 		try {
-			const raw = sessionStorage.getItem(EXAM_AUTORESUME_KEY);
-			if (!raw) return null;
+			let raw = sessionStorage.getItem(EXAM_AUTORESUME_KEY);
+			if (!raw) {
+				const bridgeRaw = readBridgeState();
+				if (!bridgeRaw) return null;
+				clearBridgeState();
+				try {
+					const bridged = JSON.parse(bridgeRaw);
+					if (bridged && typeof bridged.pendingBridgeUntil === "number" && bridged.pendingBridgeUntil >= Date.now()) {
+						raw = JSON.stringify(bridged);
+						sessionStorage.setItem(EXAM_AUTORESUME_KEY, raw);
+					} else return null;
+				} catch {
+					return null;
+				}
+			}
 			const parsed = JSON.parse(raw);
 			if (!parsed || parsed.active !== true || typeof parsed.startedAt !== "number") return null;
 			if (Date.now() - parsed.startedAt > EXAM_AUTORESUME_TTL_MS) {
@@ -25809,16 +25871,21 @@ input:checked + .toggle-slider:before {
 				solvedCount: typeof patch.solvedCount === "number" ? patch.solvedCount : prev?.solvedCount || 0,
 				...lastPageSig !== void 0 ? { lastPageSig } : {},
 				...mergedSigs.length > 0 ? { recentSigs: mergedSigs } : {},
-				pageTurnCount
+				pageTurnCount,
+				pendingBridgeUntil: Date.now() + EXAM_AUTORESUME_BRIDGE_TTL_MS
 			};
-			sessionStorage.setItem(EXAM_AUTORESUME_KEY, JSON.stringify(state));
+			const serialized = JSON.stringify(state);
+			sessionStorage.setItem(EXAM_AUTORESUME_KEY, serialized);
+			if (typeof GM_setValue === "function") try {
+				GM_setValue(EXAM_AUTORESUME_BRIDGE_KEY, serialized);
+			} catch {}
 		} catch {}
 	};
 	var clearExamAutoResumeState = () => {
-		if (typeof sessionStorage === "undefined") return;
 		try {
-			sessionStorage.removeItem(EXAM_AUTORESUME_KEY);
+			if (typeof sessionStorage !== "undefined") sessionStorage.removeItem(EXAM_AUTORESUME_KEY);
 		} catch {}
+		clearBridgeState();
 	};
 	var findNextQuestionBtn = (quizDoc) => {
 		if (!quizDoc || typeof quizDoc.querySelectorAll !== "function") return null;
@@ -25926,7 +25993,7 @@ input:checked + .toggle-slider:before {
 			return leafNodes;
 		};
 		const getPageSignature = (nodes) => nodes.map((node, i) => {
-			return `${node.getAttribute?.("data-id") || node.getAttribute?.("data") || node.getAttribute?.("qid") || node.getAttribute?.("id") || `idx:${i}`}::${cleanQuestionTitle(extractRawTitleFromTimu(node)).slice(0, 40)}`;
+			return `${node.getAttribute?.("data-id") || node.getAttribute?.("data") || node.getAttribute?.("qid") || node.getAttribute?.("id") || `idx:${i}`}::${cleanQuestionTitle(extractRawTitleFromTimu(node)).slice(0, 80)}`;
 		}).join("||");
 		const resumeState = getExamAutoResumeState();
 		const initialResumeOffset = resumeState?.solvedCount || 0;
@@ -26284,10 +26351,13 @@ input:checked + .toggle-slider:before {
 			};
 			let switched = false;
 			let clickFailed = false;
+			const topWin = typeof window !== "undefined" && window !== targetWin ? window : null;
 			try {
 				try {
 					targetWin?.addEventListener?.("beforeunload", onUnload, { once: true });
 					targetWin?.addEventListener?.("pagehide", onUnload, { once: true });
+					topWin?.addEventListener?.("beforeunload", onUnload, { once: true });
+					topWin?.addEventListener?.("pagehide", onUnload, { once: true });
 				} catch {}
 				store.addLog("正在自动进入下一题...", "info");
 				try {
@@ -26312,6 +26382,8 @@ input:checked + .toggle-slider:before {
 				try {
 					targetWin?.removeEventListener?.("beforeunload", onUnload);
 					targetWin?.removeEventListener?.("pagehide", onUnload);
+					topWin?.removeEventListener?.("beforeunload", onUnload);
+					topWin?.removeEventListener?.("pagehide", onUnload);
 				} catch {}
 			}
 			if (clickFailed) break;
@@ -26473,10 +26545,15 @@ input:checked + .toggle-slider:before {
 					for (const iframe of allIframes) {
 						if (!isCurrent() || signal.aborted) break;
 						if (isInternalChildOfTask(iframe)) continue;
+						const src = iframe.src || "";
+						const looksLikeQuizFrame = src.includes("work") || src.includes("quiz") || src.includes("exam") || iframe.classList.contains("ans-work-module") || iframe.parentElement?.classList.contains("ans-work-module");
+						if (looksLikeQuizFrame && !iframe.contentDocument) {
+							await waitIframeLoaded(iframe, signal);
+							if (!isCurrent() || signal.aborted) break;
+						}
 						const iframeDoc = iframe.contentDocument;
 						if (!iframeDoc) continue;
-						const src = iframe.src || "";
-						if (src.includes("work") || src.includes("quiz") || iframe.classList.contains("ans-work-module") || iframe.parentElement?.classList.contains("ans-work-module") || this.isStandaloneQuiz(iframeDoc)) {
+						if (looksLikeQuizFrame || this.isStandaloneQuiz(iframeDoc)) {
 							found = true;
 							processed = true;
 							await doQuizTask(iframe, iframeDoc, context);
@@ -26518,11 +26595,15 @@ input:checked + .toggle-slider:before {
 			store.setQuizRunning(false);
 			store.updateProgress({ status: "paused" });
 		}
+		isQuizPageUrl(url) {
+			const loc = typeof window !== "undefined" ? window.location : void 0;
+			const targetUrl = url ?? (loc?.href || `${loc?.pathname || ""}${loc?.search || ""}`);
+			return /work\/|exam\/|quiz|dowork|doHomeWork|reVersionTest|reVersionPaper|doExam|examId=/i.test(targetUrl);
+		}
 		isStandaloneQuiz(doc) {
 			const hasQuestions = !!doc.querySelector(".questionLi, .TiMu.newTiMu, .TiMu, div[data-id], .singleQues, div[id^=\"question\"], div[id^=\"q_\"]");
 			const hasOptions = !!doc.querySelector("ul.Zy_ulTop, li.before-after, .num_option, input[type=\"radio\"], input[type=\"checkbox\"], textarea, .answerBg");
-			const isQuizUrl = /work\/|exam\/|quiz|dowork|doHomeWork|reVersionTest/i.test(window.location.href);
-			return hasQuestions && hasOptions || isQuizUrl && hasQuestions;
+			return hasQuestions && hasOptions || this.isQuizPageUrl() && hasQuestions;
 		}
 		async triggerScan() {
 			if (this.isProcessing || store.isQuizRunning) return;
@@ -26567,9 +26648,14 @@ input:checked + .toggle-slider:before {
 				}
 				return;
 			}
-			if (!store.isQuizRunning && getExamAutoResumeState()?.active) clearExamAutoResumeState();
+			const clearStaleExamResumeIfSafe = () => {
+				if ((typeof document === "undefined" || document.readyState === void 0 || document.readyState === "complete") && !this.isQuizPageUrl() && !store.isQuizRunning && getExamAutoResumeState()?.active) clearExamAutoResumeState();
+			};
 			const allIframes = getAllNestedIframes(document.documentElement);
-			if (!allIframes.length) return;
+			if (!allIframes.length) {
+				clearStaleExamResumeIfSafe();
+				return;
+			}
 			let pendingTasksCount = 0;
 			let hasUnfinishedQuiz = false;
 			for (const iframe of allIframes) {
@@ -26584,9 +26670,22 @@ input:checked + .toggle-slider:before {
 				if (!iframeDoc || !iframeWin) continue;
 				if (isInternalChildOfTask(iframe)) continue;
 				if (isFinishedTask(iframe)) continue;
-				if (!(iframe.parentElement?.querySelector(".ans-job-icon") || src.includes("video") || src.includes("audio") || src.includes("work") || src.includes("quiz") || src.includes("modules/") || iframe.classList.contains("ans-work-module") || iframe.parentElement?.classList.contains("ans-work-module"))) continue;
-				if (src.includes("work") || src.includes("quiz") || iframe.classList.contains("ans-work-module") || iframe.parentElement?.classList.contains("ans-work-module")) {
+				if (!(iframe.parentElement?.querySelector(".ans-job-icon") || src.includes("video") || src.includes("audio") || src.includes("work") || src.includes("quiz") || src.includes("exam") || src.includes("modules/") || iframe.classList.contains("ans-work-module") || iframe.parentElement?.classList.contains("ans-work-module") || this.isStandaloneQuiz(iframeDoc))) continue;
+				if (src.includes("work") || src.includes("quiz") || src.includes("exam") || iframe.classList.contains("ans-work-module") || iframe.parentElement?.classList.contains("ans-work-module") || this.isStandaloneQuiz(iframeDoc)) {
 					hasUnfinishedQuiz = true;
+					const resumeState = getExamAutoResumeState();
+					if (resumeState && resumeState.active) {
+						if (!this.processedIframeDocs.has(iframeDoc) && !this.isAutoResuming) {
+							this.processedIframeDocs.add(iframeDoc);
+							this.isAutoResuming = true;
+							store.addLog("检测到考试自动翻页续跑状态，正在继续下一题作答...", "info");
+							window.setTimeout(() => {
+								this.isAutoResuming = false;
+								if (!store.isQuizRunning && getExamAutoResumeState()?.active) this.triggerManualQuiz();
+							}, 50);
+						}
+						continue;
+					}
 					if (!this.processedIframeDocs.has(iframeDoc)) {
 						store.addLog("已检测到章节测验任务点，请点击右上角【开始答题】启动作答", "info");
 						store.updateProgress({
@@ -26616,12 +26715,13 @@ input:checked + .toggle-slider:before {
 				].some((t) => src.includes("modules/" + t))) await readDocumentTask(iframeWin, context);
 				this.processedIframeDocs.add(iframeDoc);
 			}
+			if (!hasUnfinishedQuiz) clearStaleExamResumeIfSafe();
 			if (pendingTasksCount > 0 && !hasUnfinishedQuiz && isCurrent() && !signal.aborted) {
 				if (!allIframes.some((ifr) => {
 					if (isInternalChildOfTask(ifr)) return false;
 					const ifrSrc = ifr.src || "";
 					const hasJob = ifr.parentElement?.querySelector(".ans-job-icon");
-					const isQuiz = ifrSrc.includes("work") || ifrSrc.includes("quiz") || ifr.classList.contains("ans-work-module") || ifr.parentElement?.classList.contains("ans-work-module");
+					const isQuiz = ifrSrc.includes("work") || ifrSrc.includes("quiz") || ifrSrc.includes("exam") || ifr.classList.contains("ans-work-module") || ifr.parentElement?.classList.contains("ans-work-module");
 					return (hasJob || isQuiz) && !isFinishedTask(ifr);
 				})) {
 					this.watchdog.renew();

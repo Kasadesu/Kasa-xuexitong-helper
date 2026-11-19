@@ -4542,5 +4542,185 @@ C 是温迪（风神巴巴托斯）
       assert.equal(pickedEcoli.length, 1);
       assert.equal(pickedEcoli[0].letter, 'F', '必须命中文本 F 而非把 E. coli 误判为选项 E');
     });
+
+    it('24.16 考试动态参数 scope 稳定、延迟挂载防误清、iframe 自动续跑与 GM 跨子域桥接', async () => {
+      const prevWin = (globalThis as any).window;
+      const prevDoc = (globalThis as any).document;
+      const prevSession = (globalThis as any).sessionStorage;
+      const prevGmGet = (globalThis as any).GM_getValue;
+      const prevGmSet = (globalThis as any).GM_setValue;
+
+      const sMap = new Map<string, string>();
+      const gmMap = new Map<string, any>();
+
+      (globalThis as any).sessionStorage = {
+        getItem: (k: string) => sMap.get(k) ?? null,
+        setItem: (k: string, v: string) => sMap.set(k, String(v)),
+        removeItem: (k: string) => sMap.delete(k),
+        clear: () => sMap.clear()
+      };
+      (globalThis as any).GM_getValue = (k: string, def: any) => (gmMap.has(k) ? gmMap.get(k) : def);
+      (globalThis as any).GM_setValue = (k: string, v: any) => {
+        gmMap.set(k, v);
+      };
+
+      const setMockUrl = (fullUrl: string) => {
+        const parsed = new URL(fullUrl);
+        (globalThis as any).window = {
+          location: {
+            href: parsed.href,
+            pathname: parsed.pathname,
+            search: parsed.search
+          },
+          setTimeout,
+          clearTimeout,
+          setInterval,
+          clearInterval,
+          addEventListener: () => {},
+          removeEventListener: () => {}
+        };
+      };
+
+      try {
+        // 1. Chaoxing 动态防重放/计时参数变化时 getExamScope 必须保持一致；不同课程/试卷仍须隔离
+        setMockUrl(
+          'https://mooc1.chaoxing.com/exam-ans/exam/test/reVersionTestStartNew?courseId=241111&classId=8888&testPaperId=5555&testUserRelationId=777&questionId=1001&start=0&enc=aaa111&utenc=uuu1&remainTimeParam=3500&relationAnswerLastUpdateTime=1700000001&t=100&isFirst=1'
+        );
+        const scope1 = getExamScope();
+
+        setMockUrl(
+          'https://mooc1.chaoxing.com/exam-ans/exam/test/reVersionTestStartNew?courseId=241111&classId=8888&testPaperId=5555&testUserRelationId=777&questionId=1002&start=1&enc=bbb222&utenc=uuu2&remainTimeParam=3420&relationAnswerLastUpdateTime=1700000080&t=200&isFirst=0'
+        );
+        const scope2 = getExamScope();
+        assert.equal(scope1, scope2, '超星动态 token/计时/题号参数变化时 examScope 必须稳定匹配');
+
+        setMockUrl(
+          'https://mooc1.chaoxing.com/exam-ans/exam/test/reVersionTestStartNew?courseId=999999&classId=8888&testPaperId=5555&start=1'
+        );
+        assert.notEqual(getExamScope(), scope1, '不同 courseId 必须隔离');
+
+        setMockUrl(
+          'https://mooc1.chaoxing.com/exam-ans/exam/test/reVersionTestStartNew?courseId=241111&classId=8888&testPaperId=6666&start=1'
+        );
+        assert.notEqual(getExamScope(), scope1, '不同 testPaperId 必须隔离');
+
+        // 2. 考试 URL 下题目 DOM 延迟渲染时，初始 runPipeline 绝不能误清续跑状态；DOM 出现后应自动触发续跑
+        const examUrl =
+          'https://mooc1.chaoxing.com/exam-ans/exam/test/reVersionTestStartNew?courseId=241111&classId=8888&testPaperId=5555&start=1&enc=bbb222';
+        setMockUrl(examUrl);
+        sMap.clear();
+        gmMap.clear();
+        setExamAutoResumeState({ solvedCount: 1, lastPageSig: 'q1::题一' });
+
+        let questionMounted = false;
+        (globalThis as any).document = {
+          readyState: 'complete',
+          title: '考试作答页',
+          documentElement: { querySelectorAll: () => [] },
+          querySelector: (sel: string) => {
+            if (!questionMounted) return null;
+            if (sel.includes('.questionLi') || sel.includes('.TiMu')) return { id: 'q2' };
+            if (sel.includes('radio') || sel.includes('Zy_ulTop')) return { type: 'radio' };
+            return null;
+          },
+          querySelectorAll: () => []
+        };
+
+        const schedAsync = new ChapterScheduler();
+        let asyncResumeCalls = 0;
+        (schedAsync as any).triggerManualQuiz = async () => {
+          asyncResumeCalls++;
+          store.setQuizRunning(false);
+        };
+
+        await (schedAsync as any).runPipeline();
+        assert.ok(
+          getExamAutoResumeState()?.active,
+          '考试 URL 下题目尚未异步挂载时绝不能清理 ExamAutoResumeState'
+        );
+        assert.equal(asyncResumeCalls, 0);
+
+        questionMounted = true;
+        await (schedAsync as any).runPipeline();
+        await new Promise((r) => setTimeout(r, 100));
+        assert.equal(asyncResumeCalls, 1, '题目异步渲染后必须自动触发 triggerManualQuiz 续跑');
+
+        // 3. 题目托管在子 iframe 中时也应自动触发 ExamAutoResumeState 续跑
+        sMap.clear();
+        gmMap.clear();
+        setMockUrl('https://mooc1.chaoxing.com/exam-ans/exam/test/reVersionTestStartNew?courseId=241111&testPaperId=5555');
+        setExamAutoResumeState({ solvedCount: 2, lastPageSig: 'q2::题二' });
+
+        const iframeDoc: any = {
+          readyState: 'complete',
+          URL: 'https://mooc1.chaoxing.com/exam-ans/exam/test/doExam?courseId=241111&testPaperId=5555',
+          documentElement: { querySelectorAll: () => [] },
+          querySelector: (sel: string) => {
+            if (sel.includes('.questionLi') || sel.includes('.TiMu')) return { id: 'q3' };
+            if (sel.includes('radio') || sel.includes('Zy_ulTop')) return { type: 'radio' };
+            return null;
+          },
+          querySelectorAll: () => []
+        };
+        const childIframe: any = {
+          isConnected: true,
+          src: 'https://mooc1.chaoxing.com/exam-ans/exam/test/doExam?courseId=241111&testPaperId=5555',
+          className: '',
+          classList: { contains: () => false },
+          parentElement: null,
+          ownerDocument: null,
+          contentDocument: iframeDoc,
+          contentWindow: {}
+        };
+        (globalThis as any).document = {
+          readyState: 'complete',
+          title: '考试外壳页',
+          documentElement: {
+            querySelectorAll: (sel: string) => (sel === 'iframe' ? [childIframe] : [])
+          },
+          querySelector: () => null,
+          querySelectorAll: (sel: string) => (sel === 'iframe' ? [childIframe] : [])
+        };
+
+        const schedIframe = new ChapterScheduler();
+        let iframeResumeCalls = 0;
+        (schedIframe as any).triggerManualQuiz = async () => {
+          iframeResumeCalls++;
+          store.setQuizRunning(false);
+        };
+
+        await (schedIframe as any).runPipeline();
+        await new Promise((r) => setTimeout(r, 100));
+        assert.equal(iframeResumeCalls, 1, '子 iframe 中的考试页面也必须支持自动续跑');
+
+        // 4. sessionStorage 跨子域清空后，GM_getValue/GM_setValue 桥接可恢复一次并在消费后立即清理桥接键
+        sMap.clear();
+        gmMap.clear();
+        setMockUrl('https://mooc1.chaoxing.com/exam-ans/exam/test/reVersionTestStartNew?courseId=241111&testPaperId=5555&enc=first');
+        setExamAutoResumeState({ solvedCount: 5, lastPageSig: 'q5::题五', cancelAutoSubmit: true });
+        assert.ok(gmMap.get('kasa_exam_autoresume_bridge_v1'), '写入续跑状态时必须同步写入 GM 桥接键');
+
+        // 模拟跨子域跳转后新 origin 的空 sessionStorage
+        sMap.clear();
+        setMockUrl('https://mooc2-ans.chaoxing.com/exam-ans/exam/test/reVersionTestStartNew?courseId=241111&testPaperId=5555&enc=second');
+        const restored = getExamAutoResumeState();
+        assert.ok(restored, '跨子域 sessionStorage 为空时必须从 GM 桥接恢复状态');
+        assert.equal(restored?.solvedCount, 5);
+        assert.equal(restored?.cancelAutoSubmit, true);
+        assert.equal(gmMap.get('kasa_exam_autoresume_bridge_v1'), '', 'GM 桥接消费后必须立刻清空防误触发');
+        assert.ok(sMap.get('kasa_exam_autoresume_v1'), '桥接恢复后必须回写当前 origin 的 sessionStorage');
+
+        // 若再次丢失 sessionStorage 且桥接已清空，不应重复消费旧桥接
+        sMap.clear();
+        assert.equal(getExamAutoResumeState(), null, '已消费清空的桥接状态不可再次触发');
+      } finally {
+        clearExamAutoResumeState();
+        (globalThis as any).window = prevWin;
+        (globalThis as any).document = prevDoc;
+        (globalThis as any).sessionStorage = prevSession;
+        (globalThis as any).GM_getValue = prevGmGet;
+        (globalThis as any).GM_setValue = prevGmSet;
+      }
+    });
   });
 });

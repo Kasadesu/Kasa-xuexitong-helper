@@ -11,6 +11,9 @@ import {
   clearChaoxingFontMap
 } from './font-decoder';
 
+declare function GM_getValue<T>(key: string, defaultValue: T): T;
+declare function GM_setValue<T>(key: string, value: T): void;
+
 export interface ParsedOptionItem {
   el: HTMLElement;
   clickableEl: HTMLElement;
@@ -940,11 +943,30 @@ export interface ExamAutoResumeState {
   lastPageSig?: string;
   recentSigs?: string[];
   pageTurnCount?: number;
+  pendingBridgeUntil?: number;
 }
 
 const EXAM_AUTORESUME_KEY = 'kasa_exam_autoresume_v1';
+const EXAM_AUTORESUME_BRIDGE_KEY = 'kasa_exam_autoresume_bridge_v1';
 const EXAM_AUTORESUME_TTL_MS = 10 * 60 * 1000;
+const EXAM_AUTORESUME_BRIDGE_TTL_MS = 20 * 1000;
 const MAX_RECENT_SIGS = 250;
+const STABLE_EXAM_ID_PARAMS = new Set([
+  'courseid',
+  'classid',
+  'clazzid',
+  'examid',
+  'testid',
+  'tid',
+  'paperid',
+  'testpaperid',
+  'testuserrelationid',
+  'examrelationid',
+  'workid',
+  'knowledgeid',
+  'chapterid',
+  'cpi'
+]);
 const VOLATILE_EXAM_PARAMS = new Set([
   'questionid',
   'start',
@@ -954,7 +976,20 @@ const VOLATILE_EXAM_PARAMS = new Set([
   'page',
   'qid',
   'num',
-  'offset'
+  'offset',
+  'enc',
+  'utenc',
+  'remaintimeparam',
+  'relationanswerlastupdatetime',
+  't',
+  'time',
+  '_t',
+  'timestamp',
+  'cur',
+  'isfirst',
+  'random',
+  'r',
+  'v'
 ]);
 
 /**
@@ -997,14 +1032,20 @@ export const getExamScope = (): string => {
     if (!search || typeof URLSearchParams === 'undefined') return pathname;
 
     const params = new URLSearchParams(search);
-    const stableEntries: [string, string][] = [];
+    const stableIdEntries: [string, string][] = [];
+    const nonVolatileEntries: [string, string][] = [];
     params.forEach((value, key) => {
-      if (!VOLATILE_EXAM_PARAMS.has(key.toLowerCase())) {
-        stableEntries.push([key, value]);
+      const lower = key.toLowerCase();
+      if (STABLE_EXAM_ID_PARAMS.has(lower)) {
+        stableIdEntries.push([key, value]);
+      }
+      if (!VOLATILE_EXAM_PARAMS.has(lower)) {
+        nonVolatileEntries.push([key, value]);
       }
     });
-    stableEntries.sort((a, b) => a[0].localeCompare(b[0]) || a[1].localeCompare(b[1]));
-    const stableQuery = stableEntries
+    const chosenEntries = stableIdEntries.length > 0 ? stableIdEntries : nonVolatileEntries;
+    chosenEntries.sort((a, b) => a[0].localeCompare(b[0]) || a[1].localeCompare(b[1]));
+    const stableQuery = chosenEntries
       .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
       .join('&');
     return stableQuery ? `${pathname}?${stableQuery}` : pathname;
@@ -1013,14 +1054,53 @@ export const getExamScope = (): string => {
   }
 };
 
+const readBridgeState = (): string | null => {
+  try {
+    if (typeof GM_getValue === 'function') {
+      const val = GM_getValue<unknown>(EXAM_AUTORESUME_BRIDGE_KEY, '');
+      if (typeof val === 'string' && val.length > 0) {
+        return val;
+      }
+    }
+  } catch {}
+  return null;
+};
+
+const clearBridgeState = (): void => {
+  try {
+    if (typeof GM_setValue === 'function') {
+      GM_setValue(EXAM_AUTORESUME_BRIDGE_KEY, '');
+    }
+  } catch {}
+};
+
 /**
  * Reads cross-reload exam auto-resume state safely (returns null if missing, expired, or mismatched scope)
  */
 export const getExamAutoResumeState = (): ExamAutoResumeState | null => {
   if (typeof sessionStorage === 'undefined') return null;
   try {
-    const raw = sessionStorage.getItem(EXAM_AUTORESUME_KEY);
-    if (!raw) return null;
+    let raw = sessionStorage.getItem(EXAM_AUTORESUME_KEY);
+    if (!raw) {
+      const bridgeRaw = readBridgeState();
+      if (!bridgeRaw) return null;
+      clearBridgeState();
+      try {
+        const bridged = JSON.parse(bridgeRaw);
+        if (
+          bridged &&
+          typeof bridged.pendingBridgeUntil === 'number' &&
+          bridged.pendingBridgeUntil >= Date.now()
+        ) {
+          raw = JSON.stringify(bridged);
+          sessionStorage.setItem(EXAM_AUTORESUME_KEY, raw);
+        } else {
+          return null;
+        }
+      } catch {
+        return null;
+      }
+    }
     const parsed = JSON.parse(raw);
     if (!parsed || parsed.active !== true || typeof parsed.startedAt !== 'number') {
       return null;
@@ -1103,9 +1183,16 @@ export const setExamAutoResumeState = (
       solvedCount: typeof patch.solvedCount === 'number' ? patch.solvedCount : prev?.solvedCount || 0,
       ...(lastPageSig !== undefined ? { lastPageSig } : {}),
       ...(mergedSigs.length > 0 ? { recentSigs: mergedSigs } : {}),
-      pageTurnCount
+      pageTurnCount,
+      pendingBridgeUntil: Date.now() + EXAM_AUTORESUME_BRIDGE_TTL_MS
     };
-    sessionStorage.setItem(EXAM_AUTORESUME_KEY, JSON.stringify(state));
+    const serialized = JSON.stringify(state);
+    sessionStorage.setItem(EXAM_AUTORESUME_KEY, serialized);
+    if (typeof GM_setValue === 'function') {
+      try {
+        GM_setValue(EXAM_AUTORESUME_BRIDGE_KEY, serialized);
+      } catch {}
+    }
   } catch {}
 };
 
@@ -1113,10 +1200,12 @@ export const setExamAutoResumeState = (
  * Clears cross-reload exam auto-resume state
  */
 export const clearExamAutoResumeState = (): void => {
-  if (typeof sessionStorage === 'undefined') return;
   try {
-    sessionStorage.removeItem(EXAM_AUTORESUME_KEY);
+    if (typeof sessionStorage !== 'undefined') {
+      sessionStorage.removeItem(EXAM_AUTORESUME_KEY);
+    }
   } catch {}
+  clearBridgeState();
 };
 
 /**
@@ -1340,7 +1429,7 @@ export async function doQuizTask(
           node.getAttribute?.('qid') ||
           node.getAttribute?.('id') ||
           `idx:${i}`;
-        const titleHead = cleanQuestionTitle(extractRawTitleFromTimu(node)).slice(0, 40);
+        const titleHead = cleanQuestionTitle(extractRawTitleFromTimu(node)).slice(0, 80);
         return `${qid}::${titleHead}`;
       })
       .join('||');
@@ -1951,10 +2040,13 @@ export async function doQuizTask(
 
     let switched = false;
     let clickFailed = false;
+    const topWin = typeof window !== 'undefined' && window !== targetWin ? (window as any) : null;
     try {
       try {
         targetWin?.addEventListener?.('beforeunload', onUnload, { once: true });
         targetWin?.addEventListener?.('pagehide', onUnload, { once: true });
+        topWin?.addEventListener?.('beforeunload', onUnload, { once: true });
+        topWin?.addEventListener?.('pagehide', onUnload, { once: true });
       } catch {}
 
       store.addLog('正在自动进入下一题...', 'info');
@@ -1986,6 +2078,8 @@ export async function doQuizTask(
       try {
         targetWin?.removeEventListener?.('beforeunload', onUnload);
         targetWin?.removeEventListener?.('pagehide', onUnload);
+        topWin?.removeEventListener?.('beforeunload', onUnload);
+        topWin?.removeEventListener?.('pagehide', onUnload);
       } catch {}
     }
 

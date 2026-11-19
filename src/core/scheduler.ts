@@ -88,15 +88,20 @@ export class ChapterScheduler {
         for (const iframe of allIframes) {
           if (!isCurrent() || signal.aborted) break;
           if (isInternalChildOfTask(iframe)) continue;
-          const iframeDoc = iframe.contentDocument;
-          if (!iframeDoc) continue;
           const src = iframe.src || '';
-          const isQuiz =
+          const looksLikeQuizFrame =
             src.includes('work') ||
             src.includes('quiz') ||
+            src.includes('exam') ||
             iframe.classList.contains('ans-work-module') ||
-            iframe.parentElement?.classList.contains('ans-work-module') ||
-            this.isStandaloneQuiz(iframeDoc);
+            iframe.parentElement?.classList.contains('ans-work-module');
+          if (looksLikeQuizFrame && !iframe.contentDocument) {
+            await waitIframeLoaded(iframe, signal);
+            if (!isCurrent() || signal.aborted) break;
+          }
+          const iframeDoc = iframe.contentDocument;
+          if (!iframeDoc) continue;
+          const isQuiz = looksLikeQuizFrame || this.isStandaloneQuiz(iframeDoc);
           if (isQuiz) {
             found = true;
             processed = true;
@@ -150,6 +155,14 @@ export class ChapterScheduler {
     store.updateProgress({ status: 'paused' });
   }
 
+  private isQuizPageUrl(url?: string): boolean {
+    const loc = typeof window !== 'undefined' ? window.location : undefined;
+    const targetUrl = url ?? (loc?.href || `${loc?.pathname || ''}${loc?.search || ''}`);
+    return /work\/|exam\/|quiz|dowork|doHomeWork|reVersionTest|reVersionPaper|doExam|examId=/i.test(
+      targetUrl
+    );
+  }
+
   private isStandaloneQuiz(doc: Document): boolean {
     const hasQuestions = !!doc.querySelector(
       '.questionLi, .TiMu.newTiMu, .TiMu, div[data-id], .singleQues, div[id^="question"], div[id^="q_"]'
@@ -157,8 +170,7 @@ export class ChapterScheduler {
     const hasOptions = !!doc.querySelector(
       'ul.Zy_ulTop, li.before-after, .num_option, input[type="radio"], input[type="checkbox"], textarea, .answerBg'
     );
-    const isQuizUrl = /work\/|exam\/|quiz|dowork|doHomeWork|reVersionTest/i.test(window.location.href);
-    return (hasQuestions && hasOptions) || (isQuizUrl && hasQuestions);
+    return (hasQuestions && hasOptions) || (this.isQuizPageUrl() && hasQuestions);
   }
 
   private async triggerScan() {
@@ -215,13 +227,27 @@ export class ChapterScheduler {
       return;
     }
 
-    if (!store.isQuizRunning && getExamAutoResumeState()?.active) {
-      clearExamAutoResumeState();
-    }
+    const clearStaleExamResumeIfSafe = () => {
+      const isDocComplete =
+        typeof document === 'undefined' ||
+        document.readyState === undefined ||
+        document.readyState === 'complete';
+      if (
+        isDocComplete &&
+        !this.isQuizPageUrl() &&
+        !store.isQuizRunning &&
+        getExamAutoResumeState()?.active
+      ) {
+        clearExamAutoResumeState();
+      }
+    };
 
     // 1. Gather all iframes on page
     const allIframes = getAllNestedIframes(document.documentElement);
-    if (!allIframes.length) return;
+    if (!allIframes.length) {
+      clearStaleExamResumeIfSafe();
+      return;
+    }
 
     let pendingTasksCount = 0;
     let hasUnfinishedQuiz = false;
@@ -259,9 +285,11 @@ export class ChapterScheduler {
         src.includes('audio') ||
         src.includes('work') ||
         src.includes('quiz') ||
+        src.includes('exam') ||
         src.includes('modules/') ||
         iframe.classList.contains('ans-work-module') ||
-        iframe.parentElement?.classList.contains('ans-work-module');
+        iframe.parentElement?.classList.contains('ans-work-module') ||
+        this.isStandaloneQuiz(iframeDoc);
 
       if (!isRecognizedTask) {
         continue;
@@ -270,11 +298,28 @@ export class ChapterScheduler {
       const isQuizIframe =
         src.includes('work') ||
         src.includes('quiz') ||
+        src.includes('exam') ||
         iframe.classList.contains('ans-work-module') ||
-        iframe.parentElement?.classList.contains('ans-work-module');
+        iframe.parentElement?.classList.contains('ans-work-module') ||
+        this.isStandaloneQuiz(iframeDoc);
 
       if (isQuizIframe) {
         hasUnfinishedQuiz = true;
+        const resumeState = getExamAutoResumeState();
+        if (resumeState && resumeState.active) {
+          if (!this.processedIframeDocs.has(iframeDoc) && !this.isAutoResuming) {
+            this.processedIframeDocs.add(iframeDoc);
+            this.isAutoResuming = true;
+            store.addLog('检测到考试自动翻页续跑状态，正在继续下一题作答...', 'info');
+            window.setTimeout(() => {
+              this.isAutoResuming = false;
+              if (!store.isQuizRunning && getExamAutoResumeState()?.active) {
+                void this.triggerManualQuiz();
+              }
+            }, 50);
+          }
+          continue;
+        }
         if (!this.processedIframeDocs.has(iframeDoc)) {
           store.addLog('已检测到章节测验任务点，请点击右上角【开始答题】启动作答', 'info');
           store.updateProgress({
@@ -309,6 +354,10 @@ export class ChapterScheduler {
       this.processedIframeDocs.add(iframeDoc);
     }
 
+    if (!hasUnfinishedQuiz) {
+      clearStaleExamResumeIfSafe();
+    }
+
     // 3. When all tasks in current chapter are finished, navigate to next chapter!
     if (pendingTasksCount > 0 && !hasUnfinishedQuiz && isCurrent() && !signal.aborted) {
       // Re-verify that all visible jobs and quizzes now have ans-job-finished
@@ -319,6 +368,7 @@ export class ChapterScheduler {
         const isQuiz =
           ifrSrc.includes('work') ||
           ifrSrc.includes('quiz') ||
+          ifrSrc.includes('exam') ||
           ifr.classList.contains('ans-work-module') ||
           ifr.parentElement?.classList.contains('ans-work-module');
         return (hasJob || isQuiz) && !isFinishedTask(ifr);
