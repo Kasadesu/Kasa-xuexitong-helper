@@ -2501,8 +2501,11 @@ C 是温迪（风神巴巴托斯）
     });
 
     it('23.10 PANEL_STYLES 规范契约：Tokens 规范、focus-visible、prefers-reduced-motion、.kasa-card 及无 💯 / 一 图标', () => {
-      // 1. CSS Tokens 规范检查
-      assert.ok(PANEL_STYLES.includes('--kasa-bg: #FFFFFF;'), '必须定义 --kasa-bg');
+      // 1. CSS Tokens 规范检查（暖白 W1 主题）
+      assert.ok(PANEL_STYLES.includes('--kasa-bg: #FAF6F0;'), '必须定义 --kasa-bg');
+      assert.ok(PANEL_STYLES.includes('--kasa-surface: #FFFDF9;'), '必须定义 --kasa-surface');
+      assert.ok(PANEL_STYLES.includes('--kasa-header-bg: #F3ECE1;'), '必须定义 --kasa-header-bg');
+      assert.ok(PANEL_STYLES.includes('--kasa-border-outer: #B8AEA0;'), '必须定义 --kasa-border-outer');
       assert.ok(PANEL_STYLES.includes('--kasa-primary: #2563EB;'), '必须定义 --kasa-primary');
       assert.ok(PANEL_STYLES.includes('--kasa-danger: #DC2626;'), '必须定义 --kasa-danger');
       assert.ok(PANEL_STYLES.includes('--kasa-radius-lg: 12px;'), '必须定义 --kasa-radius-lg');

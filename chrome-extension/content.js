@@ -238,15 +238,18 @@
 	var store = new Store();
 	var PANEL_STYLES = `
 :host {
-  --kasa-bg: #FFFFFF;
-  --kasa-surface: #FFFFFF;
-  --kasa-surface-muted: #F1F5F9;
-  --kasa-surface-subtle: #F8FAFC;
-  --kasa-border: #E2E8F0;
-  --kasa-border-strong: #CBD5E1;
-  --kasa-text: #0F172A;
-  --kasa-text-secondary: #475569;
-  --kasa-text-muted: #64748B;
+  --kasa-bg: #FAF6F0;
+  --kasa-surface: #FFFDF9;
+  --kasa-header-bg: #F3ECE1;
+  --kasa-surface-muted: #EDE5D8;
+  --kasa-surface-subtle: #F5EFE6;
+  --kasa-border: #E2D9CA;
+  --kasa-border-strong: #D6CCBE;
+  --kasa-border-outer: #B8AEA0;
+  --kasa-well-border: #DFD7CA;
+  --kasa-text: #1C1917;
+  --kasa-text-secondary: #57534E;
+  --kasa-text-muted: #78716C;
   --kasa-primary: #2563EB;
   --kasa-primary-hover: #1D4ED8;
   --kasa-primary-subtle: #EFF6FF;
@@ -260,9 +263,9 @@
   --kasa-radius-sm: 4px;
   --kasa-radius-md: 8px;
   --kasa-radius-lg: 12px;
-  --kasa-shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
-  --kasa-shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.07), 0 2px 4px -2px rgba(0, 0, 0, 0.05);
-  --kasa-shadow-lg: 0 10px 25px -3px rgba(15, 23, 42, 0.1), 0 4px 10px -4px rgba(15, 23, 42, 0.05);
+  --kasa-shadow-sm: 0 1px 2px 0 rgba(41, 37, 36, 0.06);
+  --kasa-shadow-md: 0 4px 8px -1px rgba(41, 37, 36, 0.12), 0 2px 4px -2px rgba(41, 37, 36, 0.07);
+  --kasa-shadow-lg: 0 14px 32px -4px rgba(41, 37, 36, 0.18), 0 4px 10px -2px rgba(41, 37, 36, 0.08);
 
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   font-size: 13px;
@@ -289,7 +292,7 @@ select:focus-visible {
 .kasa-card {
   width: 340px;
   background: var(--kasa-bg);
-  border: 1px solid var(--kasa-border);
+  border: 1.5px solid var(--kasa-border-outer);
   border-radius: var(--kasa-radius-lg);
   box-shadow: var(--kasa-shadow-lg);
   overflow: hidden;
@@ -297,13 +300,13 @@ select:focus-visible {
 }
 
 .kasa-card:hover {
-  box-shadow: 0 16px 30px -5px rgba(15, 23, 42, 0.14), 0 6px 12px -4px rgba(15, 23, 42, 0.06);
+  box-shadow: 0 18px 36px -5px rgba(41, 37, 36, 0.22), 0 6px 12px -4px rgba(41, 37, 36, 0.1);
 }
 
 /* Header */
 .kasa-header {
   padding: 10px 14px;
-  background: #FFFFFF;
+  background: var(--kasa-header-bg);
   border-bottom: 1px solid var(--kasa-border);
   color: var(--kasa-text);
   display: flex;
@@ -326,9 +329,9 @@ select:focus-visible {
 .kasa-badge {
   font-size: 11px;
   padding: 1px 6px;
-  background: var(--kasa-surface-muted);
+  background: var(--kasa-surface);
   color: var(--kasa-text-secondary);
-  border: 1px solid var(--kasa-border);
+  border: 1px solid var(--kasa-border-strong);
   border-radius: var(--kasa-radius-sm);
   font-weight: 600;
   letter-spacing: 0.3px;
@@ -482,7 +485,7 @@ select:focus-visible {
 .kasa-progress-track {
   width: 100%;
   height: 5px;
-  background: var(--kasa-border);
+  background: var(--kasa-well-border);
   border-radius: 9999px;
   overflow: hidden;
   margin-bottom: 4px;
@@ -509,6 +512,7 @@ select:focus-visible {
 .kasa-tabs {
   display: flex;
   background: var(--kasa-surface-muted);
+  border: 1px solid var(--kasa-border);
   padding: 3px;
   border-radius: var(--kasa-radius-md);
   margin: 8px 12px 0;
@@ -524,6 +528,7 @@ select:focus-visible {
   color: var(--kasa-text-secondary);
   cursor: pointer;
   border-radius: var(--kasa-radius-sm);
+  border: 1px solid transparent;
   transition: all 0.15s ease;
   display: flex;
   align-items: center;
@@ -539,7 +544,8 @@ select:focus-visible {
 .kasa-tab.active {
   color: var(--kasa-primary);
   font-weight: 600;
-  background: #FFFFFF;
+  background: var(--kasa-surface);
+  border-color: var(--kasa-border);
   box-shadow: var(--kasa-shadow-sm);
 }
 
@@ -560,7 +566,11 @@ select:focus-visible {
 
 /* Body */
 .kasa-body {
-  padding: 10px 12px;
+  margin: 10px 12px 12px;
+  padding: 10px;
+  background: var(--kasa-surface);
+  border: 1px solid var(--kasa-well-border);
+  border-radius: var(--kasa-radius-md);
   max-height: 380px;
   overflow-y: auto;
 }
@@ -753,7 +763,7 @@ select:focus-visible {
   font-size: 12px;
   color: var(--kasa-text);
   outline: none;
-  background: #FFFFFF;
+  background: var(--kasa-surface);
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
@@ -837,7 +847,7 @@ input:checked + .toggle-slider:before {
   font-size: 10px;
   font-weight: 700;
   border-radius: 9999px;
-  border: 2px solid #FFFFFF;
+  border: 2px solid var(--kasa-surface);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -866,8 +876,8 @@ input:checked + .toggle-slider:before {
 }
 
 .kasa-btn-fetch:hover:not(:disabled) {
-  background: #E2E8F0;
-  border-color: #94A3B8;
+  background: #E2D9CA;
+  border-color: #B8AEA0;
 }
 
 .kasa-btn-fetch:disabled {
