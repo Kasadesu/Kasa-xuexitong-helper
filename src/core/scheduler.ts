@@ -4,6 +4,15 @@ import { LifecycleWatchdog } from './lifecycle';
 import { playMediaTask } from '../adapters/video';
 import { readDocumentTask } from '../adapters/document';
 import { doQuizTask, getExamAutoResumeState, clearExamAutoResumeState } from '../adapters/quiz';
+import {
+  isZhihuishuHost,
+  isZhihuishuVideoPage,
+  playZhihuishuVideoTask,
+  getZhihuishuLessonKey,
+  getZhihuishuSwitchCooldownUntil,
+  getLastCompletedZhihuishuLessonKey,
+  clearZhihuishuCompletionSuppression
+} from '../adapters/zhihuishu-video';
 import { tryNavigateNextChapter } from './navigator';
 import { IframeContext } from '../types';
 
@@ -11,6 +20,7 @@ export class ChapterScheduler {
   private watchdog = new LifecycleWatchdog();
   private isProcessing = false;
   private isAutoResuming = false;
+  private isZhihuishuVideoRunning = false;
   private processedIframeDocs = new WeakSet<Document>();
   private scanDebounceTimer: number | null = null;
 
@@ -110,7 +120,7 @@ export class ChapterScheduler {
         }
         if (!found) {
           const hasAnyQuestions = !!document.querySelector(
-            '.questionLi, .TiMu.newTiMu, .TiMu, div[data-id], .singleQues, div[id^="question"], .Zy_TItle'
+            '.questionLi, .TiMu.newTiMu, .TiMu, div[data-id], .singleQues, div[id^="question"], .Zy_TItle, .examPaper_subject, .questionBox, .subject_item, .examQuestion_item'
           );
           if (hasAnyQuestions) {
             processed = true;
@@ -134,13 +144,15 @@ export class ChapterScheduler {
         store.addLog(`答题执行异常: ${String(err)}`, 'error');
       }
     } finally {
-      store.setQuizRunning(false);
-      if (processed && !signal.aborted) {
-        if (this.isStandaloneQuiz(document)) {
-          this.processedIframeDocs.add(document);
-        }
-        if (store.progress.status !== 'paused') {
-          store.updateProgress({ status: 'finished' });
+      if (isCurrent()) {
+        store.setQuizRunning(false);
+        if (processed && !signal.aborted) {
+          if (this.isStandaloneQuiz(document)) {
+            this.processedIframeDocs.add(document);
+          }
+          if (store.progress.status !== 'paused') {
+            store.updateProgress({ status: 'finished' });
+          }
         }
       }
     }
@@ -158,18 +170,46 @@ export class ChapterScheduler {
   private isQuizPageUrl(url?: string): boolean {
     const loc = typeof window !== 'undefined' ? window.location : undefined;
     const targetUrl = url ?? (loc?.href || `${loc?.pathname || ''}${loc?.search || ''}`);
-    return /work\/|exam\/|quiz|dowork|doHomeWork|reVersionTest|reVersionPaper|doExam|examId=/i.test(
+    return /work\/|exam\/|quiz|dowork|doHomeWork|reVersionTest|reVersionPaper|doExam|examId=|onlineexamh5new|stuExamWeb|examPaper|doHomework/i.test(
       targetUrl
     );
   }
 
   private isStandaloneQuiz(doc: Document): boolean {
-    const hasQuestions = !!doc.querySelector(
-      '.questionLi, .TiMu.newTiMu, .TiMu, div[data-id], .singleQues, div[id^="question"], div[id^="q_"]'
-    );
-    const hasOptions = !!doc.querySelector(
-      'ul.Zy_ulTop, li.before-after, .num_option, input[type="radio"], input[type="checkbox"], textarea, .answerBg'
-    );
+    if (isZhihuishuHost() && isZhihuishuVideoPage(doc)) {
+      return false;
+    }
+
+    const questionSel =
+      '.questionLi, .TiMu.newTiMu, .TiMu, div[data-id], .singleQues, div[id^="question"], div[id^="q_"], .examPaper_subject, .questionBox, .subject_item, .examQuestion_item';
+    const optionSel =
+      'ul.Zy_ulTop, li.before-after, .num_option, input[type="radio"], input[type="checkbox"], textarea, .answerBg, .subject_node, .nodeLab, .el-radio, .el-checkbox, .el-textarea__inner';
+
+    const isOutsidePopup = (el: Element | null): boolean =>
+      !!el &&
+      !(
+        typeof (el as HTMLElement).closest === 'function' &&
+        (el as HTMLElement).closest('.dialog-test, .el-dialog__wrapper')
+      );
+
+    const rawQuestions =
+      typeof doc.querySelectorAll === 'function'
+        ? Array.from(doc.querySelectorAll<HTMLElement>(questionSel))
+        : [];
+    const hasQuestions =
+      rawQuestions.length > 0
+        ? rawQuestions.some((el) => isOutsidePopup(el))
+        : typeof doc.querySelector === 'function' && isOutsidePopup(doc.querySelector(questionSel));
+
+    const rawOptions =
+      typeof doc.querySelectorAll === 'function'
+        ? Array.from(doc.querySelectorAll<HTMLElement>(optionSel))
+        : [];
+    const hasOptions =
+      rawOptions.length > 0
+        ? rawOptions.some((el) => isOutsidePopup(el))
+        : typeof doc.querySelector === 'function' && isOutsidePopup(doc.querySelector(optionSel));
+
     return (hasQuestions && hasOptions) || (this.isQuizPageUrl() && hasQuestions);
   }
 
@@ -241,6 +281,31 @@ export class ChapterScheduler {
         clearExamAutoResumeState();
       }
     };
+
+    // Step 0.5: Handle Zhihuishu H5 video learning pages directly (strict 1.0x muted playback & popup quiz handling)
+    if (isZhihuishuVideoPage(document)) {
+      clearStaleExamResumeIfSafe();
+      if (Date.now() < getZhihuishuSwitchCooldownUntil()) {
+        return;
+      }
+      const completedKey = getLastCompletedZhihuishuLessonKey();
+      if (completedKey) {
+        const currentKey = getZhihuishuLessonKey(document);
+        if (currentKey === completedKey) {
+          return;
+        }
+        clearZhihuishuCompletionSuppression();
+      }
+      if (!this.isZhihuishuVideoRunning) {
+        this.isZhihuishuVideoRunning = true;
+        try {
+          await playZhihuishuVideoTask(document, { signal, isCurrent });
+        } finally {
+          this.isZhihuishuVideoRunning = false;
+        }
+      }
+      return;
+    }
 
     // 1. Gather all iframes on page
     const allIframes = getAllNestedIframes(document.documentElement);

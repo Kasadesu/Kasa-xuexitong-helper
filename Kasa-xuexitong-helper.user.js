@@ -1,15 +1,16 @@
 // ==UserScript==
 // @name         Kasa-xuexitong-helper
 // @namespace    kasa.ai
-// @version      1.3.1
+// @version      1.4.0
 // @author       Kasa
-// @description  超星学习通辅助脚本：支持视频自动播放、章节连播与作业测验作答。
+// @description  超星学习通与知到智慧树双平台辅助脚本：支持视频自动播放、章节连播、随堂弹题过关与作业测验作答。
 // @icon         data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext x='50' y='54' text-anchor='middle' dominant-baseline='central' font-size='82' font-family='Apple Color Emoji,Segoe UI Emoji,Noto Color Emoji,sans-serif'%3E%F0%9F%92%AF%3C/text%3E%3C/svg%3E
 // @match        *://*.chaoxing.com/*
 // @match        *://*.edu.cn/*
 // @match        *://*.nbdlib.cn/*
 // @match        *://*.hnsyu.net/*
 // @match        *://*.gdhkmooc.com/*
+// @match        *://*.zhihuishu.com/*
 // @connect      *
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -1776,7 +1777,7 @@ input:checked + .toggle-slider:before {
         <div class="kasa-card">
           <div class="kasa-header" id="drag-handle">
             <div class="kasa-title-group">
-              <span class="kasa-badge">v1.3.1</span>
+              <span class="kasa-badge">v1.4.0</span>
               <span class="kasa-title">Kasa 学习通助手</span>
             </div>
             <div class="kasa-actions">
@@ -2088,11 +2089,12 @@ input:checked + .toggle-slider:before {
 			return `
       <div style="font-size:12px;color:var(--kasa-text-secondary);line-height:1.7;">
         <div style="font-weight:600;margin-bottom:6px;color:var(--kasa-text);">使用说明</div>
-        <p style="margin:4px 0;">• <strong>课程学习</strong>：进入章节后自动原速播放音视频、浏览课件，完成后自动跳转下一节。</p>
-        <p style="margin:4px 0;">• <strong>作业与测验</strong>：在「AI 设置」中填好 API Key 与模型，点击右上角「开始答题」即可自动作答。</p>
+        <p style="margin:4px 0;">• <strong>超星学习通</strong>：进入章节后自动 1.0x 原速静音播放音视频、浏览课件，完成后自动跳转下一节。</p>
+        <p style="margin:4px 0;">• <strong>知到智慧树</strong>：支持 H5 视频 1.0x 原速播放、自动过随堂弹题与章节连播。</p>
+        <p style="margin:4px 0;">• <strong>作业与测验</strong>：在「AI 设置」中填好 API Key 与模型，进入超星或智慧树作业/考试页点击右上角「开始答题」即可自动作答。</p>
         <p style="margin:4px 0;">• <strong>数据安全</strong>：配置与 Key 仅保存在当前浏览器本地，直接请求服务商接口。</p>
         <div style="margin-top:12px;padding-top:8px;border-top:1px solid var(--kasa-border);color:var(--kasa-text-muted);font-size:11px;">
-          提示：遇到遮挡可点击右上角最小化面板 · v1.3.1
+          提示：遇到遮挡可点击右上角最小化面板 · v1.4.0
         </div>
       </div>
     `;
@@ -25684,7 +25686,7 @@ input:checked + .toggle-slider:before {
 		return matchedOptions;
 	};
 	var locateQuizDocument = async (_rootIframe, rootDoc, signal) => {
-		const isTargetDoc = (doc) => !!doc.querySelector(".questionLi, .TiMu.newTiMu, .TiMu, div[data-id], .singleQues, div[id^=\"question\"], .Zy_TItle");
+		const isTargetDoc = (doc) => !!doc.querySelector(".questionLi, .TiMu.newTiMu, .TiMu, div[data-id], .singleQues, div[id^=\"question\"], .Zy_TItle, .examPaper_subject, .questionBox, .subject_item, .examQuestion_item");
 		if (isTargetDoc(rootDoc)) return rootDoc;
 		const maxAttempts = 24;
 		for (let i = 0; i < maxAttempts; i++) {
@@ -25710,8 +25712,8 @@ input:checked + .toggle-slider:before {
 	};
 	var isQuestionAnswered = (timuEl, _quizDoc) => {
 		if (timuEl.querySelector("input[type=\"radio\"]:checked, input[type=\"checkbox\"]:checked")) return true;
-		if (timuEl.querySelector(".check_answer, .check_answer_dx, .num_option.check_answer, li.check_answer, li.check_answer_dx, [aria-checked=\"true\"], .answerBg.cur")) return true;
-		const answerInputs = Array.from(timuEl.querySelectorAll("textarea.answerText, textarea, input.answerInput, input.newAnswerInput"));
+		if (timuEl.querySelector(".check_answer, .check_answer_dx, .num_option.check_answer, li.check_answer, li.check_answer_dx, [aria-checked=\"true\"], .answerBg.cur, .el-radio.is-checked, .el-checkbox.is-checked, .nodeLab.active, .nodeLab.is-checked, .subject_node .is-checked, .topic-item.active")) return true;
+		const answerInputs = Array.from(timuEl.querySelectorAll("textarea.answerText, textarea, input.answerInput, input.newAnswerInput, .el-textarea__inner, .el-input__inner"));
 		for (const input of answerInputs) {
 			if (input.type === "hidden") continue;
 			const nameOrIdOrClass = `${input.name || ""} ${input.id || ""} ${input.className || ""}`.toLowerCase();
@@ -25742,7 +25744,10 @@ input:checked + .toggle-slider:before {
 		"workid",
 		"knowledgeid",
 		"chapterid",
-		"cpi"
+		"cpi",
+		"recruitid",
+		"homeworkid",
+		"studentexamid"
 	]);
 	var VOLATILE_EXAM_PARAMS = new Set([
 		"questionid",
@@ -25897,9 +25902,22 @@ input:checked + .toggle-slider:before {
 		} catch {}
 		clearBridgeState();
 	};
+	var setNativeInputValue = (inputEl, val) => {
+		try {
+			const tag = (inputEl.tagName || "").toUpperCase();
+			const ownerWin = inputEl.ownerDocument?.defaultView || null;
+			const proto = tag === "TEXTAREA" ? ownerWin?.HTMLTextAreaElement?.prototype || (typeof HTMLTextAreaElement !== "undefined" ? HTMLTextAreaElement.prototype : null) : ownerWin?.HTMLInputElement?.prototype || (typeof HTMLInputElement !== "undefined" ? HTMLInputElement.prototype : null);
+			const descriptor = proto ? Object.getOwnPropertyDescriptor(proto, "value") : void 0;
+			if (descriptor && typeof descriptor.set === "function") {
+				descriptor.set.call(inputEl, val);
+				return;
+			}
+		} catch {}
+		inputEl.value = val;
+	};
 	var findNextQuestionBtn = (quizDoc) => {
 		if (!quizDoc || typeof quizDoc.querySelectorAll !== "function") return null;
-		const selectorGroups = [".nextDiv a, .nextDiv button, a.nextBtn, #nextBtn, .nextQuestion, a[onclick*=\"getTheNextQuestion\"], button[onclick*=\"getTheNextQuestion\"]", "a, button, input[type=\"button\"], input[type=\"submit\"], span[onclick], div[onclick]"];
+		const selectorGroups = [".nextDiv a, .nextDiv button, a.nextBtn, #nextBtn, .nextQuestion, a[onclick*=\"getTheNextQuestion\"], button[onclick*=\"getTheNextQuestion\"], .switch-btn-box .el-button, .next-topic, .next-btn", "a, button, input[type=\"button\"], input[type=\"submit\"], span[onclick], div[onclick]"];
 		const seen = new Set();
 		for (const groupSel of selectorGroups) {
 			let candidates = [];
@@ -25957,6 +25975,13 @@ input:checked + .toggle-slider:before {
 			return;
 		}
 		const extractRawTitleFromTimu = (timuEl) => {
+			const typeBadgeEl = timuEl.querySelector(".subject_type, .type-title, .question-type");
+			const typeBadgeText = (typeBadgeEl?.innerText || typeBadgeEl?.textContent || "").trim();
+			const withTypePrefix = (titleText) => {
+				if (!titleText) return titleText;
+				if (typeBadgeText && !titleText.includes(typeBadgeText)) return `${typeBadgeText} ${titleText}`.trim();
+				return titleText;
+			};
 			for (const sel of [
 				"h3.mark_name",
 				".mark_name",
@@ -25966,36 +25991,46 @@ input:checked + .toggle-slider:before {
 				".Cy_TItle",
 				".TiMu_head",
 				".timu-title",
-				".fontLabel"
+				".fontLabel",
+				".subject_describe",
+				".smallStem_describe",
+				".question-title",
+				".subject_title",
+				".stem-describe"
 			]) {
 				const found = timuEl.querySelector(sel);
 				if (found) {
 					const text = (found.innerText || found.textContent || "").trim();
-					if (text) return text;
+					if (text) return withTypePrefix(text);
 				}
 			}
 			try {
 				const clone = timuEl.cloneNode(true);
-				clone.querySelectorAll("ul, .stem_answer, .answerBg, .mark_letter, .option-item").forEach((el) => el.remove());
-				return (clone.innerText || clone.textContent || "").trim();
+				clone.querySelectorAll("ul, .stem_answer, .answerBg, .mark_letter, .option-item, .subject_node, .ul-Lists, .el-radio-group, .el-checkbox-group").forEach((el) => el.remove());
+				return withTypePrefix((clone.innerText || clone.textContent || "").trim());
 			} catch {
-				return (timuEl.innerText || timuEl.textContent || "").trim();
+				return withTypePrefix((timuEl.innerText || timuEl.textContent || "").trim());
 			}
 		};
 		const isNodeHidden = (el) => isElementOrAncestorHidden(el, quizDoc);
 		const discoverTimuNodes = (doc) => {
-			const rawCandidates = Array.from(doc.querySelectorAll(".questionLi, .TiMu.newTiMu, .TiMu, div[data-id], .singleQues, div[id^=\"question\"], div[id^=\"q_\"]"));
-			const isExcludedArea = (node) => typeof node.closest === "function" && !!node.closest("kasa-helper-panel, .kasa-card, .topicNumber, .topicNumber_list, .answerSheet, .right_card, .card_list");
+			const rawCandidates = Array.from(doc.querySelectorAll(".questionLi, .TiMu.newTiMu, .TiMu, div[data-id], .singleQues, div[id^=\"question\"], div[id^=\"q_\"], .examPaper_subject, .questionBox, .subject_item, .examQuestion_item"));
+			const isExcludedArea = (node) => typeof node.closest === "function" && !!node.closest("kasa-helper-panel, .kasa-card, .topicNumber, .topicNumber_list, .answerSheet, .right_card, .card_list, .exam-card, .answerCard, .question-card, .topic-card");
 			const validNodes = rawCandidates.filter((node) => {
 				if (isExcludedArea(node)) return false;
-				if (!!!node.querySelector("li, .num_option, input, textarea, .before-after, .answerBg, [onclick*=\"addChoice\"], [onclick*=\"choose\"]")) return false;
-				if (node.querySelectorAll("ul.Zy_ulTop, ul.Zy_ulBottom, ul.options, ul.mark_letter, .stem_answer").length > 1) return false;
+				if (!!!node.querySelector("li, .num_option, input, textarea, .before-after, .answerBg, [onclick*=\"addChoice\"], [onclick*=\"choose\"], .subject_node, .nodeLab, .el-radio, .el-checkbox, .el-textarea__inner, .el-input__inner")) return false;
+				if (Array.from(node.querySelectorAll("ul.Zy_ulTop, ul.Zy_ulBottom, ul.options, ul.mark_letter, .stem_answer, .ul-Lists, .el-radio-group, .el-checkbox-group, .subject_node_list")).filter((listEl, i, arr) => !arr.some((other, j) => i !== j && typeof other.contains === "function" && other.contains(listEl))).length > 1) return false;
 				return true;
 			});
+			const hasOwnStem = (el) => !!el.querySelector("h3.mark_name, .mark_name, .Zy_TItle, .Cy_TItle, .TiMu_head, .timu-title, .subject_describe, .smallStem_describe, .question-title, .subject_title, .stem-describe");
+			const prunedNodes = validNodes.filter((node) => {
+				if (hasOwnStem(node)) return true;
+				return !validNodes.some((parent) => parent !== node && typeof parent.contains === "function" && parent.contains(node) && hasOwnStem(parent));
+			});
 			const leafNodes = [];
-			for (const node of validNodes) if (!validNodes.some((other) => other !== node && node.contains(other)) && !leafNodes.includes(node)) leafNodes.push(node);
+			for (const node of prunedNodes) if (!prunedNodes.some((other) => other !== node && typeof node.contains === "function" && node.contains(other)) && !leafNodes.includes(node)) leafNodes.push(node);
 			if (leafNodes.length === 0) {
-				const fallbackTiMu = Array.from(doc.querySelectorAll(".TiMu, .questionLi"));
+				const fallbackTiMu = Array.from(doc.querySelectorAll(".TiMu, .questionLi, .examPaper_subject, .questionBox"));
 				for (const node of fallbackTiMu) if (!isExcludedArea(node) && !leafNodes.includes(node)) leafNodes.push(node);
 			}
 			const visibleLeafNodes = leafNodes.filter((node) => !isNodeHidden(node));
@@ -26080,10 +26115,11 @@ input:checked + .toggle-slider:before {
 				const progressText = isFirstPageBatch ? `${idx + 1}/${timuNodes.length} 题` : `第 ${displayIndex} 题`;
 				const rawTitleText = extractRawTitleFromTimu(timuEl);
 				const cleanTitle = cleanQuestionTitle(rawTitleText);
-				const qType = detectQuestionType(rawTitleText, !!timuEl.querySelector("input[type=\"checkbox\"]"), timuEl.querySelectorAll("input[type=\"radio\"]").length, timuEl.innerText || "");
+				const qType = detectQuestionType(rawTitleText, !!timuEl.querySelector("input[type=\"checkbox\"], .el-checkbox"), timuEl.querySelectorAll("input[type=\"radio\"], .el-radio").length, timuEl.innerText || "");
 				const enabledTypes = store.config.enabledQuestionTypes;
 				if (enabledTypes) {
 					if (enabledTypes[qType === "unknown" ? "single" : qType] === false) {
+						cancelAutoSubmit = true;
 						store.addLog(`${questionLabel}为 [${{
 							single: "单选题",
 							multiple: "多选题",
@@ -26122,6 +26158,8 @@ input:checked + .toggle-slider:before {
 					"ul.Zy_ulTop > li, ul.Zy_ulBottom > li, ul.mark_letter > li, ul.options > li",
 					".stem_answer > .answerBg, .answerBg",
 					"li.before-after, .option-item, li.mar4",
+					".subject_node",
+					".subject_node .nodeLab, .el-radio-group .el-radio, .el-checkbox-group .el-checkbox, ul.ul-Lists > li",
 					"li"
 				];
 				let candidateOptionEls = [];
@@ -26137,14 +26175,14 @@ input:checked + .toggle-slider:before {
 				const optionsTextList = [];
 				for (let optIdx = 0; optIdx < rawOptionEls.length; optIdx++) {
 					const optEl = rawOptionEls[optIdx];
-					const numOptionEl = optEl.querySelector(".num_option, .num_option_dx, .option-num, i.num_option, span.num_option");
+					const numOptionEl = optEl.querySelector(".num_option, .num_option_dx, .option-num, i.num_option, span.num_option, .node_Lab, .option-letter");
 					const rawDataAttr = numOptionEl?.getAttribute("data")?.trim() || optEl.querySelector("input[type=\"radio\"], input[type=\"checkbox\"]")?.value?.trim() || "";
-					const afterTextEl = optEl.querySelector(".answer_p, a.after, .option-txt, span.after");
+					const afterTextEl = optEl.querySelector(".answer_p, a.after, .option-txt, span.after, .node_detail, .el-radio__label, .el-checkbox__label, .option-detail");
 					let optText = (afterTextEl?.innerText || afterTextEl?.textContent || optEl.innerText || optEl.textContent || "").trim();
 					let letter = "";
 					if (/^[A-Z]$/i.test(rawDataAttr)) letter = rawDataAttr.toUpperCase();
 					else {
-						const badgeMatch = (numOptionEl?.innerText || numOptionEl?.textContent || "").trim().match(/^([A-Z])$/i);
+						const badgeMatch = (numOptionEl?.innerText || numOptionEl?.textContent || "").trim().match(/^([A-Z])[\.、．]?$/i);
 						if (badgeMatch) letter = badgeMatch[1].toUpperCase();
 						else letter = String.fromCharCode(65 + parsedOptions.length);
 					}
@@ -26155,7 +26193,7 @@ input:checked + .toggle-slider:before {
 						else if (/^false$/i.test(rawDataAttr) && (!optText || /^(b|false|0)$/i.test(optText))) optText = "错";
 					}
 					if (!optText && !optEl.querySelector("input") && !rawDataAttr) continue;
-					const clickableEl = optEl.querySelector("input[type=\"radio\"], input[type=\"checkbox\"], .num_option, a.after, .answer_p, a, label") || optEl;
+					const clickableEl = optEl.querySelector("input[type=\"radio\"], input[type=\"checkbox\"], .el-radio__input, .el-checkbox__input, .nodeLab, .el-radio, .el-checkbox, .num_option, a.after, .answer_p, a, label") || optEl;
 					parsedOptions.push({
 						el: optEl,
 						clickableEl,
@@ -26209,8 +26247,8 @@ input:checked + .toggle-slider:before {
 					store.addLog(`${shortLabel} AI 给出: [${answers.join(", ")}] -> 匹配选中: [${selectedLetters.join(", ")}]`, "info");
 					const quizWin = quizDoc.defaultView;
 					const isOptionSelected = (el) => {
-						if (el.classList.contains("check_answer") || el.classList.contains("check_answer_dx") || el.classList.contains("cur") || el.classList.contains("active") || el.classList.contains("selected") || el.getAttribute("aria-checked") === "true") return true;
-						return !!el.querySelector(".check_answer, .check_answer_dx, .active, .selected, input[type=\"radio\"]:checked, input[type=\"checkbox\"]:checked");
+						if (el.classList.contains("check_answer") || el.classList.contains("check_answer_dx") || el.classList.contains("cur") || el.classList.contains("active") || el.classList.contains("selected") || el.classList.contains("is-checked") || el.getAttribute("aria-checked") === "true") return true;
+						return !!el.querySelector(".check_answer, .check_answer_dx, .active, .selected, .is-checked, .el-radio.is-checked, .el-checkbox.is-checked, input[type=\"radio\"]:checked, input[type=\"checkbox\"]:checked");
 					};
 					for (const optItem of matchedOptions) {
 						if (!isCurrent() || signal.aborted) return;
@@ -26221,15 +26259,36 @@ input:checked + .toggle-slider:before {
 								block: "center"
 							});
 						} catch {}
-						if (!isOptionSelected(optItem.el)) optItem.el.click();
-						if (!isOptionSelected(optItem.el) && target !== optItem.el) target.click();
+						const isElementUiOption = optItem.el.classList?.contains("el-radio") || optItem.el.classList?.contains("el-checkbox") || !!optItem.el.querySelector?.(".el-radio, .el-checkbox") || optItem.el.classList?.contains("nodeLab") || optItem.el.classList?.contains("topic-item") || !!optItem.el.querySelector?.(".nodeLab");
+						if (!isOptionSelected(optItem.el)) {
+							if (isElementUiOption) {
+								const primaryClickTarget = optItem.el.matches?.("label.el-radio, label.el-checkbox, .el-radio, .el-checkbox, .nodeLab, .topic-item") || typeof optItem.el.matches !== "function" ? optItem.el : optItem.el.querySelector("label.el-radio, label.el-checkbox, .el-radio, .el-checkbox, .nodeLab, .el-radio__input, .el-checkbox__input") || optItem.el;
+								primaryClickTarget.click();
+								await sleep(50, signal);
+								if (!isCurrent() || signal.aborted) return;
+								if (!isOptionSelected(optItem.el) && target !== primaryClickTarget) {
+									target.click();
+									await sleep(50, signal);
+									if (!isCurrent() || signal.aborted) return;
+								}
+							} else {
+								optItem.el.click();
+								await Promise.resolve();
+								if (!isOptionSelected(optItem.el) && target !== optItem.el) {
+									target.click();
+									await Promise.resolve();
+								}
+							}
+						}
 						if (!isOptionSelected(optItem.el) && typeof quizWin?.addChoice === "function") try {
 							quizWin.addChoice(optItem.el);
 						} catch {}
-						const input = optItem.el.querySelector("input[type=\"radio\"], input[type=\"checkbox\"]");
-						if (input && !input.checked) {
-							input.checked = true;
-							input.dispatchEvent(new Event("change", { bubbles: true }));
+						if (!isElementUiOption || !isOptionSelected(optItem.el)) {
+							const input = optItem.el.querySelector("input[type=\"radio\"], input[type=\"checkbox\"]");
+							if (input && !input.checked) {
+								input.checked = true;
+								input.dispatchEvent(new Event("change", { bubbles: true }));
+							}
 						}
 						const numOption = optItem.el.querySelector(".num_option, .num_option_dx");
 						if (numOption) numOption.classList.add(qType === "multiple" ? "check_answer_dx" : "check_answer");
@@ -26255,7 +26314,7 @@ input:checked + .toggle-slider:before {
 					store.addLog(`${shortLabel} AI 反映缺少关键图片或数据，已放弃自动填入并保留空白，请人工核对！`, "error");
 					if (store.config.autoSubmitWork) store.addLog(`检测到${shortLabel}未成功获得有效作答，为防学业事故，已自动取消自动提交，请人工复核后手动提交！`, "error");
 				} else {
-					const textInputs = Array.from(timuEl.querySelectorAll("textarea.answerText, textarea, input.answerInput, input.newAnswerInput, input[type=\"text\"]")).filter((input) => {
+					const textInputs = Array.from(timuEl.querySelectorAll("textarea.answerText, textarea, input.answerInput, input.newAnswerInput, input[type=\"text\"], .el-textarea__inner, .el-input__inner")).filter((input) => {
 						if (input.type === "hidden") return false;
 						const meta = `${input.name || ""} ${input.id || ""} ${input.className || ""}`.toLowerCase();
 						if (meta.includes("type") || meta.includes("score")) return false;
@@ -26270,7 +26329,7 @@ input:checked + .toggle-slider:before {
 							const paragraphsHtml = formatToUEditorParagraphs(answers);
 							const inputEl = textInputs[0];
 							if (inputEl) {
-								inputEl.value = cleanFullText;
+								setNativeInputValue(inputEl, cleanFullText);
 								inputEl.dispatchEvent(new Event("input", { bubbles: true }));
 								inputEl.dispatchEvent(new Event("change", { bubbles: true }));
 								inputEl.dispatchEvent(new Event("blur", { bubbles: true }));
@@ -26295,7 +26354,7 @@ input:checked + .toggle-slider:before {
 							const paragraphHtml = formatToUEditorParagraphs(cleanVal);
 							const inputEl = textInputs[i];
 							if (inputEl) {
-								inputEl.value = cleanVal;
+								setNativeInputValue(inputEl, cleanVal);
 								inputEl.dispatchEvent(new Event("input", { bubbles: true }));
 								inputEl.dispatchEvent(new Event("change", { bubbles: true }));
 								inputEl.dispatchEvent(new Event("blur", { bubbles: true }));
@@ -26417,35 +26476,54 @@ input:checked + .toggle-slider:before {
 		}
 		store.addLog("所有题目已作答完毕，准备保存或提交", "success");
 		const { autoSubmitWork } = store.config;
-		try {
-			targetWin.confirm = () => true;
-			targetWin.alert = () => true;
-			if (typeof unsafeWindow !== "undefined") {
-				unsafeWindow.confirm = () => true;
-				unsafeWindow.alert = () => true;
-			}
-		} catch {}
 		if (autoSubmitWork && !cancelAutoSubmit) {
-			store.addLog("已开启自动提交模式，正在定位提交按钮", "info");
-			if (typeof targetWin?.btnBlueSubmit === "function") try {
-				targetWin.btnBlueSubmit();
-				store.addLog("已触发超星原生 btnBlueSubmit 提交方法", "success");
-			} catch (e) {}
-			const submitBtn = quizDoc.querySelector("a.btnSubmit.workBtnIndex, a.btnSubmit, #submitBtn, a.btn-ok, .btn-submit, a[onclick*=\"submit\"], a[onclick*=\"Submit\"], input[value*=\"提交\"], button[type=\"submit\"], .submitBtn");
-			if (submitBtn) {
-				submitBtn.click();
-				store.addLog("已点击提交按钮，正在确认提交弹窗", "success");
-				await sleep(600, signal);
-				const confirmBtns = Array.from(quizDoc.querySelectorAll(".layui-layer-btn0, .layui-layer-btn a, .dialog-ok, .blue-btn, a.okBtn"));
-				for (const btn of confirmBtns) {
-					const text = btn.innerText || btn.textContent || "";
-					if (text.includes("确") || text.includes("是") || btn.classList.contains("layui-layer-btn0")) {
-						btn.click();
-						break;
+			const origTargetConfirm = targetWin?.confirm;
+			const origTargetAlert = targetWin?.alert;
+			const hasUnsafeWin = typeof unsafeWindow !== "undefined";
+			const origUnsafeConfirm = hasUnsafeWin ? unsafeWindow.confirm : void 0;
+			const origUnsafeAlert = hasUnsafeWin ? unsafeWindow.alert : void 0;
+			try {
+				try {
+					targetWin.confirm = () => true;
+					targetWin.alert = () => true;
+					if (hasUnsafeWin) {
+						unsafeWindow.confirm = () => true;
+						unsafeWindow.alert = () => true;
 					}
-				}
-				store.addLog("作业已成功自动提交！", "success");
-			} else store.addLog("未找到明确的提交按钮，作业已保持作答状态", "warning");
+				} catch {}
+				store.addLog("已开启自动提交模式，正在定位提交按钮", "info");
+				if (typeof targetWin?.btnBlueSubmit === "function") try {
+					targetWin.btnBlueSubmit();
+					store.addLog("已触发超星原生 btnBlueSubmit 提交方法", "success");
+				} catch (e) {}
+				const submitBtn = quizDoc.querySelector("a.btnSubmit.workBtnIndex, a.btnSubmit, #submitBtn, a.btn-ok, .btn-submit, a[onclick*=\"submit\"], a[onclick*=\"Submit\"], input[value*=\"提交\"], button[type=\"submit\"], .submitBtn, .submit-btn, .exam-submit-btn");
+				if (submitBtn) {
+					submitBtn.click();
+					store.addLog("已点击提交按钮，正在确认提交弹窗", "success");
+					await sleep(600, signal);
+					const confirmBtns = Array.from(quizDoc.querySelectorAll(".layui-layer-btn0, .layui-layer-btn a, .dialog-ok, .blue-btn, a.okBtn, .el-message-box__btns .el-button--primary, .el-dialog__footer .el-button--primary"));
+					for (const btn of confirmBtns) {
+						if (isElementOrAncestorHidden(btn, quizDoc)) continue;
+						const text = btn.innerText || btn.textContent || "";
+						if (text.includes("确") || text.includes("是") || text.includes("提交") || btn.classList.contains("layui-layer-btn0") || btn.classList.contains("el-button--primary")) {
+							btn.click();
+							break;
+						}
+					}
+					store.addLog("作业已成功自动提交！", "success");
+				} else store.addLog("未找到明确的提交按钮，作业已保持作答状态", "warning");
+			} finally {
+				try {
+					if (targetWin) {
+						targetWin.confirm = origTargetConfirm;
+						targetWin.alert = origTargetAlert;
+					}
+					if (hasUnsafeWin) {
+						unsafeWindow.confirm = origUnsafeConfirm;
+						unsafeWindow.alert = origUnsafeAlert;
+					}
+				} catch {}
+			}
 		} else {
 			if (autoSubmitWork && cancelAutoSubmit) store.addLog("因存在未成功有效作答的题目，为防学业事故已自动取消自动提交，转为暂存模式，请人工复核后手动提交！", "error");
 			else store.addLog("当前为自动暂存模式，正在定位暂存按钮", "info");
@@ -26453,7 +26531,7 @@ input:checked + .toggle-slider:before {
 				targetWin.noSubmit();
 				store.addLog("已触发超星原生 noSubmit 暂存方法", "success");
 			} catch (e) {}
-			const saveBtn = quizDoc.querySelector("a.btnSave.workBtnIndex, a.btnSave, #saveBtn, a.btn-save, a[onclick*=\"save\"], a[onclick*=\"Save\"], input[value*=\"暂存\"], button.save, .saveBtn");
+			const saveBtn = quizDoc.querySelector("a.btnSave.workBtnIndex, a.btnSave, #saveBtn, a.btn-save, a[onclick*=\"save\"], a[onclick*=\"Save\"], input[value*=\"暂存\"], button.save, .saveBtn, .save-btn, .temporary-save, .btn-temp-save");
 			if (saveBtn) {
 				saveBtn.click();
 				store.addLog("已自动点击暂存按钮，答案已成功保存！", "success");
@@ -26468,6 +26546,575 @@ input:checked + .toggle-slider:before {
 		});
 		await sleep(1e3, signal);
 	}
+	var zhihuishuSwitchCooldownUntil = 0;
+	var lastCompletedLessonKey = null;
+	var getZhihuishuSwitchCooldownUntil = () => zhihuishuSwitchCooldownUntil;
+	var getLastCompletedZhihuishuLessonKey = () => lastCompletedLessonKey;
+	var clearZhihuishuCompletionSuppression = () => {
+		lastCompletedLessonKey = null;
+		zhihuishuSwitchCooldownUntil = 0;
+	};
+	var getZhihuishuLessonKey = (doc, videoEl) => {
+		const currentPlayEl = typeof doc?.querySelector === "function" ? doc.querySelector(".current_play, .currentPlay, .active.video") : null;
+		const titleEl = typeof doc?.querySelector === "function" ? doc.querySelector(".current_play .catalogue_title, #lessonOrder, .source-name, .video-title") : null;
+		const labelText = (titleEl?.innerText || titleEl?.textContent || currentPlayEl?.innerText || currentPlayEl?.textContent || "").trim();
+		const vid = videoEl ?? (typeof doc?.querySelector === "function" ? doc.querySelector("#vjs_container_html5_api, video.vjs-tech, .videoArea video, video") : null);
+		const src = vid?.currentSrc || vid?.src || "";
+		return `${doc?.location?.href ?? (typeof window !== "undefined" ? window.location?.href || "" : "")}::${labelText}::${src}`;
+	};
+	var isZhihuishuHost = (urlOrHost) => {
+		const raw = urlOrHost ?? (typeof window !== "undefined" ? window.location?.hostname || window.location?.href || "" : "");
+		if (!raw || typeof raw !== "string") return false;
+		const trimmed = raw.trim();
+		if (!trimmed) return false;
+		try {
+			if (/^https?:\/\//i.test(trimmed)) {
+				const host = new URL(trimmed).hostname.toLowerCase();
+				return host === "zhihuishu.com" || host.endsWith(".zhihuishu.com");
+			}
+		} catch {}
+		const hostOnly = trimmed.split("/")[0].split(":")[0].toLowerCase();
+		return hostOnly === "zhihuishu.com" || hostOnly.endsWith(".zhihuishu.com");
+	};
+	var isZhihuishuExamPage = (doc, url) => {
+		const targetUrl = url ?? doc?.location?.href ?? (typeof window !== "undefined" ? window.location?.href || "" : "");
+		if (!isZhihuishuHost(targetUrl)) return false;
+		if (/(?:onlineexamh5new|stuExamWeb|examPaper|doHomework|doExam|homework)/i.test(targetUrl)) return true;
+		const targetDoc = doc ?? (typeof document !== "undefined" ? document : void 0);
+		if (!targetDoc) return false;
+		const examSel = ".examPaper_subject, .questionBox, .subject_item, .examQuestion_item";
+		const isRealExamNode = (el) => {
+			if (!el) return false;
+			if (typeof el.closest === "function" && el.closest(".dialog-test, .el-dialog__wrapper")) return false;
+			if (isElementOrAncestorHidden(el, targetDoc)) return false;
+			return true;
+		};
+		if (typeof targetDoc.querySelectorAll === "function") {
+			const matches = Array.from(targetDoc.querySelectorAll(examSel));
+			if (matches.length > 0) return matches.some((el) => isRealExamNode(el));
+		}
+		if (typeof targetDoc.querySelector === "function") return isRealExamNode(targetDoc.querySelector(examSel));
+		return false;
+	};
+	var isZhihuishuVideoPage = (doc, url) => {
+		const targetUrl = url ?? doc?.location?.href ?? (typeof window !== "undefined" ? window.location?.href || "" : "");
+		if (!isZhihuishuHost(targetUrl)) return false;
+		if (isZhihuishuExamPage(doc, targetUrl)) return false;
+		if (/(?:studyvideoh5|studyh5|fusioncourseh5|videoStudy|liveCourse)/i.test(targetUrl)) return true;
+		const targetDoc = doc ?? (typeof document !== "undefined" ? document : void 0);
+		if (targetDoc && typeof targetDoc.querySelector === "function") return !!targetDoc.querySelector("#vjs_container_html5_api, video.vjs-tech, .videoArea video, .clearfix.video, .current_play");
+		return false;
+	};
+	var findVisiblePopupTestDialog = (doc) => {
+		if (!doc || typeof doc.querySelectorAll !== "function") return null;
+		const primaryCandidates = Array.from(doc.querySelectorAll(".dialog-test, .el-dialog__wrapper.dialog-test, [class*=\"dialog-test\"]"));
+		for (const el of primaryCandidates) {
+			if (typeof el.closest === "function" && el.closest("kasa-helper-panel, .kasa-card")) continue;
+			if (!isElementOrAncestorHidden(el, doc)) return el;
+		}
+		const wrapperCandidates = Array.from(doc.querySelectorAll(".el-dialog__wrapper"));
+		for (const wrapper of wrapperCandidates) {
+			if (typeof wrapper.closest === "function" && wrapper.closest("kasa-helper-panel, .kasa-card")) continue;
+			if (isElementOrAncestorHidden(wrapper, doc)) continue;
+			if (wrapper.querySelector(".topic-item, .topic-title, .topic-list")) return wrapper;
+		}
+		return null;
+	};
+	var isPopupOptionSelected = (el) => {
+		if (el.classList?.contains("active") || el.classList?.contains("is-checked") || el.classList?.contains("selected") || el.getAttribute?.("aria-checked") === "true") return true;
+		return !!el.querySelector?.(".active, .is-checked, .selected, input:checked");
+	};
+	var isControlDisabled = (el) => el.disabled === true || typeof el.hasAttribute === "function" && el.hasAttribute("disabled") || el.classList?.contains("disabled") === true || el.classList?.contains("is-disabled") === true || typeof el.getAttribute === "function" && el.getAttribute("aria-disabled") === "true";
+	var findPopupCloseButton = (dialog, doc) => {
+		const allButtons = Array.from(dialog.querySelectorAll("button, a, .btn, [role=\"button\"], .el-dialog__headerbtn, .close-btn, [class*=\"close\"]"));
+		for (const btn of allButtons) {
+			if (isControlDisabled(btn) || isElementOrAncestorHidden(btn, doc)) continue;
+			const text = (btn.innerText || btn.textContent || "").replace(/\s+/g, "");
+			if (text.includes("关闭") || text.includes("确定") || text.includes("完成") || text.includes("提交") || text.includes("我知道了")) return btn;
+		}
+		const fallbackButtons = Array.from(dialog.querySelectorAll(".dialog-footer .el-button--primary, .dialog-footer .btn, .btn, .el-dialog__headerbtn, .close-btn, [class*=\"close\"]"));
+		for (const btn of fallbackButtons) {
+			if (isControlDisabled(btn) || isElementOrAncestorHidden(btn, doc)) continue;
+			return btn;
+		}
+		return null;
+	};
+	var findVisiblePopupTitleElement = (dialog, doc) => {
+		const titleSelector = ".topic-title, .question-title, .title, .subject_describe";
+		const rawCandidates = typeof dialog.querySelectorAll === "function" ? Array.from(dialog.querySelectorAll(titleSelector)) : [];
+		if (rawCandidates.length > 0) return rawCandidates.find((el) => !isElementOrAncestorHidden(el, doc)) ?? null;
+		if (typeof dialog.querySelector === "function") {
+			const single = dialog.querySelector(titleSelector);
+			if (single && !isElementOrAncestorHidden(single, doc)) return single;
+		}
+		return null;
+	};
+	var getPopupDialogSignature = (dialog, doc) => {
+		const titleEl = findVisiblePopupTitleElement(dialog, doc);
+		const titleText = (titleEl?.innerText || titleEl?.textContent || "").trim().slice(0, 80);
+		const fallbackText = (dialog.innerText || dialog.textContent || "").trim().slice(0, 80);
+		return titleText || fallbackText || "popup-dialog";
+	};
+	var parsePopupOptions = (dialog, doc) => {
+		const deduped = Array.from(dialog.querySelectorAll(".topic-item, ul.topic-list > li, .el-radio, .el-checkbox")).filter((node, i, arr) => !isElementOrAncestorHidden(node, doc) && !arr.some((other, j) => i !== j && node.contains(other)));
+		const parsed = [];
+		for (const optEl of deduped) {
+			const letterEl = optEl.querySelector(".topic-option, .option-letter, .node_Lab");
+			const textEl = optEl.querySelector(".topic-text, .el-radio__label, .el-checkbox__label, .option-detail, .node_detail");
+			const inputEl = optEl.querySelector("input[type=\"radio\"], input[type=\"checkbox\"]");
+			const rawOptText = (textEl?.innerText || textEl?.textContent || optEl.innerText || optEl.textContent || "").trim();
+			let letter = "";
+			const badgeMatch = (letterEl?.innerText || letterEl?.textContent || "").trim().match(/^([A-Z])[\.、．:：\s]?$/i);
+			if (badgeMatch) letter = badgeMatch[1].toUpperCase();
+			else if (inputEl?.value && /^[A-Z]$/i.test(inputEl.value.trim())) letter = inputEl.value.trim().toUpperCase();
+			else {
+				const prefixMatch = rawOptText.match(/^([A-Z])[\.、．:：\s]+/);
+				letter = prefixMatch ? prefixMatch[1].toUpperCase() : String.fromCharCode(65 + parsed.length);
+			}
+			const finalRawText = rawOptText.replace(new RegExp(`^${letter}[\\.、．:：\\s]*`, "i"), "").trim() || rawOptText;
+			if (!finalRawText && !inputEl) continue;
+			const clickableEl = optEl.querySelector("input[type=\"radio\"], input[type=\"checkbox\"], .el-radio__input, .el-checkbox__input, label") || optEl;
+			parsed.push({
+				el: optEl,
+				clickableEl,
+				rawText: finalRawText,
+				cleanText: normalizeText(finalRawText),
+				letter,
+				dataValue: inputEl?.value?.trim() || void 0
+			});
+		}
+		return parsed;
+	};
+	var solveZhihuishuPopupTest = async (doc, signal, isCurrent, timing) => {
+		if (!findVisiblePopupTestDialog(doc)) return false;
+		const reactionDelay = timing?.reactionDelayMs ?? 1500 + Math.random() * 2500;
+		store.addLog("检测到智慧树随堂弹题，正在模拟阅读题目...", "info");
+		if (reactionDelay > 0) try {
+			await sleep(reactionDelay, signal);
+		} catch {
+			return false;
+		}
+		if (!isCurrent() || signal.aborted) return false;
+		const activeDialog = findVisiblePopupTestDialog(doc);
+		if (!activeDialog) return false;
+		const tabItems = Array.from(activeDialog.querySelectorAll(".topic-num-item")).filter((tab) => !isElementOrAncestorHidden(tab, doc));
+		const totalTabs = tabItems.length > 0 ? Math.min(tabItems.length, 10) : 1;
+		const clickIntervalMs = timing ? 20 : 250;
+		for (let qIdx = 0; qIdx < totalTabs; qIdx++) {
+			if (!isCurrent() || signal.aborted) return false;
+			if (tabItems.length > 0) {
+				const tab = tabItems[qIdx];
+				const isActiveTab = tab.classList?.contains("active") || tab.classList?.contains("is-active") || tab.classList?.contains("current");
+				if (qIdx > 0 || !isActiveTab) {
+					tab.click();
+					try {
+						await sleep(clickIntervalMs, signal);
+					} catch {
+						return false;
+					}
+					if (!isCurrent() || signal.aborted) return false;
+				}
+			}
+			const titleEl = findVisiblePopupTitleElement(activeDialog, doc);
+			const rawTitle = (titleEl?.innerText || titleEl?.textContent || "").trim();
+			const cleanTitle = cleanQuestionTitle(rawTitle);
+			const parsedOptions = parsePopupOptions(activeDialog, doc);
+			if (parsedOptions.length > 0) {
+				const hasCheckboxes = !!activeDialog.querySelector("input[type=\"checkbox\"], .el-checkbox") || /多选/.test(rawTitle);
+				const radioCount = activeDialog.querySelectorAll("input[type=\"radio\"], .el-radio").length;
+				const qType = detectQuestionType(rawTitle, hasCheckboxes, radioCount, activeDialog.innerText || activeDialog.textContent || "");
+				const questionObj = {
+					id: `zhs-popup-${Date.now()}-${qIdx}`,
+					index: qIdx + 1,
+					type: qType,
+					title: cleanTitle || rawTitle,
+					options: parsedOptions.map((o) => o.rawText),
+					status: "searching"
+				};
+				let answers = [];
+				if (store.config.aiApiKey.trim()) {
+					try {
+						answers = await queryAiAnswer(questionObj, "智慧树视频随堂弹题", signal);
+					} catch {
+						answers = [];
+					}
+					if (!isCurrent() || signal.aborted) return false;
+				}
+				if (!answers || answers.length === 0) answers = matchFallbackAnswer(cleanTitle || rawTitle, parsedOptions.map((o) => o.rawText), qIdx + 1);
+				let matchedOptions = selectBestOptions(parsedOptions, answers, qType);
+				if (matchedOptions.length === 0) matchedOptions = [parsedOptions[0]];
+				for (const optItem of matchedOptions) {
+					if (!isCurrent() || signal.aborted) return false;
+					const isElementUiOption = optItem.el.classList?.contains("el-radio") || optItem.el.classList?.contains("el-checkbox") || !!optItem.el.querySelector?.(".el-radio, .el-checkbox, .el-radio__input, .el-checkbox__input") || optItem.el.classList?.contains("nodeLab") || optItem.el.classList?.contains("topic-item") || !!optItem.el.querySelector?.(".nodeLab");
+					if (!isPopupOptionSelected(optItem.el)) {
+						if (isElementUiOption) {
+							const primaryClickTarget = optItem.el.matches?.("label.el-radio, label.el-checkbox, .el-radio, .el-checkbox, .nodeLab, .topic-item") || typeof optItem.el.matches !== "function" ? optItem.el : optItem.el.querySelector("label.el-radio, label.el-checkbox, .el-radio, .el-checkbox, .nodeLab, .el-radio__input, .el-checkbox__input") || optItem.el;
+							primaryClickTarget.click();
+							try {
+								await sleep(50, signal);
+							} catch {
+								return false;
+							}
+							if (!isCurrent() || signal.aborted) return false;
+							if (!isPopupOptionSelected(optItem.el) && optItem.clickableEl !== primaryClickTarget) {
+								optItem.clickableEl.click();
+								try {
+									await sleep(50, signal);
+								} catch {
+									return false;
+								}
+								if (!isCurrent() || signal.aborted) return false;
+							}
+						} else {
+							optItem.el.click();
+							await Promise.resolve();
+							if (!isPopupOptionSelected(optItem.el) && optItem.clickableEl !== optItem.el) {
+								optItem.clickableEl.click();
+								await Promise.resolve();
+							}
+						}
+					}
+					try {
+						await sleep(clickIntervalMs, signal);
+					} catch {
+						return false;
+					}
+				}
+				store.addLog(`智慧树弹题第 ${qIdx + 1} 题已作答: [${matchedOptions.map((o) => o.letter).join(", ")}]`, "success");
+			}
+		}
+		const closeDelay = timing?.closeDelayMs ?? 800 + Math.random() * 700;
+		if (closeDelay > 0) try {
+			await sleep(closeDelay, signal);
+		} catch {
+			return false;
+		}
+		if (!isCurrent() || signal.aborted) return false;
+		const closeBtn = findPopupCloseButton(findVisiblePopupTestDialog(doc) || activeDialog, doc);
+		if (closeBtn) {
+			closeBtn.click();
+			store.addLog("已点击智慧树弹题关闭/确定按钮", "info");
+			const verifyCloseDelay = timing?.verifyCloseDelayMs ?? 300;
+			if (verifyCloseDelay > 0) {
+				try {
+					await sleep(verifyCloseDelay, signal);
+				} catch {
+					return false;
+				}
+				if (!isCurrent() || signal.aborted) return false;
+			}
+		}
+		return !findVisiblePopupTestDialog(doc);
+	};
+	var findNextZhihuishuVideoItem = (doc) => {
+		if (!doc || typeof doc.querySelectorAll !== "function") return null;
+		const directNextButtons = Array.from(doc.querySelectorAll(".next_lesson, .next_button"));
+		for (const btn of directNextButtons) if (!isControlDisabled(btn) && !isElementOrAncestorHidden(btn, doc)) return btn;
+		const items = Array.from(doc.querySelectorAll(".clearfix.video, li.video, .file-item, .catalog-item, .video-item")).filter((item, i, arr) => !arr.some((other, j) => i !== j && item.contains(other)));
+		if (items.length === 0) return null;
+		const isItemFinished = (item) => {
+			if (item.classList?.contains("finish") || item.classList?.contains("completed")) return true;
+			const finishIcon = item.querySelector(".time_icofinish, .fl.time_icofinish, .finish, .icon-finish, [class*=\"icofinish\"]");
+			return !!finishIcon && !isElementOrAncestorHidden(finishIcon, doc);
+		};
+		const isCurrentItem = (item) => item.classList?.contains("current_play") || item.classList?.contains("currentPlay") || item.classList?.contains("active") || !!item.querySelector?.(".current_play, .currentPlay, .active");
+		const getClickableTarget = (item) => item.querySelector("a, .catalogue_title, .file-name, .video-title, [onclick]") || item;
+		const currentIndex = items.findIndex(isCurrentItem);
+		if (currentIndex >= 0) {
+			for (let i = currentIndex + 1; i < items.length; i++) if (!isItemFinished(items[i])) return getClickableTarget(items[i]);
+			for (let i = 0; i < currentIndex; i++) if (!isItemFinished(items[i])) return getClickableTarget(items[i]);
+			return null;
+		}
+		for (const item of items) if (!isItemFinished(item)) return getClickableTarget(item);
+		return null;
+	};
+	var playZhihuishuVideoTask = async (doc, context, options) => {
+		return new Promise((resolve) => {
+			store.addLog("检测到智慧树视频课程页面，正在初始化播放任务", "info");
+			const initialUrl = doc?.location?.href ?? (typeof window !== "undefined" ? window.location?.href || "" : "");
+			const hasHostContext = Boolean(initialUrl);
+			let settled = false;
+			let isStarted = false;
+			let isSolvingPopup = false;
+			let isHandlingFinish = false;
+			let isRecoveringPause = false;
+			let videoElement = null;
+			let checkInterval;
+			const popupAttemptMap = new WeakMap();
+			const popupSigAttempts = new Map();
+			let trippedPopupSig = null;
+			const formatTime = (secs) => {
+				if (!secs || isNaN(secs)) return "00:00";
+				return `${Math.floor(secs / 60).toString().padStart(2, "0")}:${Math.floor(secs % 60).toString().padStart(2, "0")}`;
+			};
+			const getLessonTitle = () => {
+				const titleEl = doc.querySelector(".current_play .catalogue_title, #lessonOrder, .source-name, .video-title");
+				return (titleEl?.innerText || titleEl?.textContent || "").trim() || "智慧树视频课程";
+			};
+			const isCurrentVideoFinished = () => {
+				const currentPlay = doc.querySelector(".current_play, .currentPlay");
+				if (currentPlay && typeof currentPlay.querySelector === "function") {
+					const finishIcon = currentPlay.querySelector(".time_icofinish, .fl.time_icofinish, .finish, .icon-finish, [class*=\"icofinish\"]");
+					if (finishIcon && !isElementOrAncestorHidden(finishIcon, doc)) return true;
+				}
+				if (videoElement) {
+					if (videoElement.ended) return true;
+					if (videoElement.duration > 0 && videoElement.currentTime >= videoElement.duration - 1) return true;
+				}
+				return false;
+			};
+			const onTimeUpdate = () => {
+				if (settled || isHandlingFinish) return;
+				if (!videoElement) return;
+				const cur = videoElement.currentTime || 0;
+				const dur = videoElement.duration || 0;
+				const pct = dur > 0 ? Math.min(100, cur / dur * 100) : 0;
+				store.updateProgress({
+					title: getLessonTitle(),
+					percent: Math.round(pct * 10) / 10,
+					currentTime: formatTime(cur),
+					duration: formatTime(dur),
+					status: videoElement.paused ? "paused" : "playing"
+				});
+			};
+			const detachVideoListeners = (vid) => {
+				if (!vid) return;
+				vid.removeEventListener("timeupdate", onTimeUpdate);
+				vid.removeEventListener("pause", onPause);
+				vid.removeEventListener("ended", onEnded);
+			};
+			const cleanup = () => {
+				clearInterval(checkInterval);
+				detachVideoListeners(videoElement);
+				context.signal.removeEventListener("abort", onAbort);
+			};
+			const finish = (pauseVideo = false) => {
+				if (settled) return;
+				settled = true;
+				cleanup();
+				if (pauseVideo) try {
+					videoElement?.pause();
+				} catch {}
+				resolve();
+			};
+			const onAbort = () => {
+				finish(true);
+			};
+			const handleVideoFinished = async () => {
+				if (settled || isHandlingFinish) return;
+				isHandlingFinish = true;
+				clearInterval(checkInterval);
+				store.updateProgress({
+					title: getLessonTitle(),
+					percent: 100,
+					status: "finished"
+				});
+				const completedKey = getZhihuishuLessonKey(doc, videoElement);
+				if (store.config.autoNextChapter && context.isCurrent() && !context.signal.aborted) {
+					const nextItem = findNextZhihuishuVideoItem(doc);
+					if (nextItem) {
+						const prevCurrentPlayEl = doc.querySelector(".current_play, .currentPlay, .active.video");
+						const prevLessonTitle = getLessonTitle();
+						const prevSrc = videoElement?.currentSrc || videoElement?.src || "";
+						const delayMs = getHumanJitterDelay(store.config.randomDelayBase, store.config.randomDelayJitter);
+						store.addLog(`智慧树当前视频已学完，将在 ${(delayMs / 1e3).toFixed(1)} 秒后进入下一节`, "info");
+						try {
+							await sleep(delayMs, context.signal);
+						} catch {
+							return finish();
+						}
+						if (!settled && context.isCurrent() && !context.signal.aborted) {
+							try {
+								videoElement?.pause();
+							} catch {}
+							store.addLog("触发智慧树下一节视频切换", "success");
+							nextItem.click();
+							const switchWaitTimeoutMs = options?.switchWaitTimeoutMs ?? 4e3;
+							const pollStepMs = Math.min(250, Math.max(20, switchWaitTimeoutMs));
+							const isLessonSwitched = () => {
+								const curPlay = doc.querySelector(".current_play, .currentPlay, .active.video");
+								const curTitle = getLessonTitle();
+								const curVid = doc.querySelector("#vjs_container_html5_api, video.vjs-tech, .videoArea video, video");
+								const curSrc = curVid?.currentSrc || curVid?.src || "";
+								const curPlayHasFinishIcon = (() => {
+									if (!curPlay || typeof curPlay.querySelector !== "function") return false;
+									const finishIcon = curPlay.querySelector(".time_icofinish, .fl.time_icofinish, .finish, .icon-finish, [class*=\"icofinish\"]");
+									return !!finishIcon && !isElementOrAncestorHidden(finishIcon, doc);
+								})();
+								const playNodeChanged = !!prevCurrentPlayEl && !!curPlay && curPlay !== prevCurrentPlayEl && !curPlayHasFinishIcon;
+								const titleChanged = !!curTitle && curTitle !== prevLessonTitle && !curPlayHasFinishIcon;
+								const srcChanged = !!curSrc && curSrc !== prevSrc;
+								const videoReset = !!curVid && !curVid.ended && (curVid !== videoElement || srcChanged || curVid.duration > 0 && curVid.currentTime < curVid.duration - 2);
+								if (playNodeChanged) return !curVid || !curVid.ended || videoReset;
+								if (titleChanged || srcChanged) return !curVid || videoReset;
+								return !!curVid && curVid !== videoElement && !curVid.ended;
+							};
+							let switched = isLessonSwitched();
+							for (let waited = 0; !switched && waited < switchWaitTimeoutMs && !settled && context.isCurrent() && !context.signal.aborted; waited += pollStepMs) {
+								try {
+									await sleep(pollStepMs, context.signal);
+								} catch {
+									return finish();
+								}
+								switched = isLessonSwitched();
+							}
+							if (switched) {
+								lastCompletedLessonKey = null;
+								zhihuishuSwitchCooldownUntil = 0;
+							} else {
+								zhihuishuSwitchCooldownUntil = Date.now() + 5e3;
+								store.addLog("智慧树切集等待超时，已进入短时防连跳冷却", "warning");
+							}
+						}
+					} else {
+						lastCompletedLessonKey = completedKey;
+						store.addLog("智慧树目录中未发现更多未完成视频", "success");
+					}
+				} else {
+					lastCompletedLessonKey = completedKey;
+					store.addLog("智慧树当前视频已播放完成", "success");
+				}
+				finish();
+			};
+			const onPause = async () => {
+				if (settled || !context.isCurrent()) return finish(true);
+				if (isHandlingFinish || isCurrentVideoFinished() || isRecoveringPause) return;
+				if (findVisiblePopupTestDialog(doc) || isSolvingPopup) {
+					store.updateProgress({ status: "paused" });
+					store.addLog("检测到智慧树随堂弹题暂停，交由自动答题逻辑处理", "info");
+					return;
+				}
+				isRecoveringPause = true;
+				try {
+					const jitterDelay = getHumanJitterDelay(store.config.randomDelayBase, store.config.randomDelayJitter);
+					store.updateProgress({ status: "paused" });
+					store.addLog(`检测到智慧树视频被暂停，将在 ${(jitterDelay / 1e3).toFixed(1)} 秒后自动恢复播放`, "warning");
+					try {
+						await sleep(jitterDelay, context.signal);
+					} catch {
+						return finish(true);
+					}
+					if (settled || !context.isCurrent()) return finish(true);
+					if (isHandlingFinish || isCurrentVideoFinished() || !videoElement || !videoElement.paused || findVisiblePopupTestDialog(doc) || isSolvingPopup) return;
+					try {
+						videoElement.playbackRate = 1;
+						videoElement.muted = true;
+						await videoElement.play();
+						if (!settled) store.updateProgress({ status: "playing" });
+					} catch (err) {
+						store.addLog(`智慧树视频恢复播放失败: ${String(err)}`, "warning");
+					}
+				} finally {
+					isRecoveringPause = false;
+				}
+			};
+			const onEnded = () => {
+				if (!settled && context.isCurrent()) {
+					store.addLog("智慧树视频播放结束", "info");
+					handleVideoFinished();
+				}
+			};
+			context.signal.addEventListener("abort", onAbort, { once: true });
+			const pollIntervalMs = options?.pollIntervalMs ?? 2e3;
+			checkInterval = globalThis.setInterval(async () => {
+				try {
+					if (settled || isHandlingFinish) return;
+					if (!context.isCurrent() || context.signal.aborted) return finish(true);
+					if (hasHostContext && !isZhihuishuVideoPage(doc)) return finish(true);
+					if (isStarted && videoElement && videoElement.isConnected === false) {
+						detachVideoListeners(videoElement);
+						videoElement = null;
+						isStarted = false;
+					}
+					if (isSolvingPopup) return;
+					const visibleDialog = findVisiblePopupTestDialog(doc);
+					if (visibleDialog) {
+						const dialogSig = getPopupDialogSignature(visibleDialog, doc);
+						const elAttempts = popupAttemptMap.get(visibleDialog) ?? 0;
+						const sigAttempts = dialogSig ? popupSigAttempts.get(dialogSig) ?? 0 : 0;
+						if (Math.max(elAttempts, sigAttempts) >= 2) {
+							if (trippedPopupSig !== dialogSig) {
+								trippedPopupSig = dialogSig;
+								store.addLog("智慧树随堂弹题未能自动关闭，已停止重试以防异常，请手动关闭弹窗", "error");
+							}
+							return;
+						}
+						popupAttemptMap.set(visibleDialog, elAttempts + 1);
+						if (dialogSig) popupSigAttempts.set(dialogSig, sigAttempts + 1);
+						isSolvingPopup = true;
+						try {
+							if (await solveZhihuishuPopupTest(doc, context.signal, context.isCurrent, options?.popupTiming)) {
+								popupAttemptMap.delete(visibleDialog);
+								if (dialogSig) popupSigAttempts.delete(dialogSig);
+								trippedPopupSig = null;
+								if (!settled && !isHandlingFinish && context.isCurrent() && !context.signal.aborted && videoElement && videoElement.paused && !isCurrentVideoFinished()) try {
+									videoElement.playbackRate = 1;
+									videoElement.muted = true;
+									await videoElement.play();
+									if (!settled) {
+										store.updateProgress({ status: "playing" });
+										store.addLog("智慧树弹题处理完毕，已恢复 1.0x 原速播放", "success");
+									}
+								} catch (err) {
+									store.addLog(`弹题关闭后恢复播放失败: ${String(err)}`, "warning");
+								}
+							} else {
+								const stillVisible = findVisiblePopupTestDialog(doc);
+								if (stillVisible) {
+									if (Math.max(popupAttemptMap.get(stillVisible) ?? 0, dialogSig ? popupSigAttempts.get(dialogSig) ?? 0 : 0) >= 2 && trippedPopupSig !== dialogSig) {
+										trippedPopupSig = dialogSig;
+										store.addLog("智慧树随堂弹题未能自动关闭，已停止重试以防异常，请手动关闭弹窗", "error");
+									}
+								}
+							}
+						} finally {
+							isSolvingPopup = false;
+						}
+						return;
+					} else if (popupSigAttempts.size > 0 || trippedPopupSig !== null) {
+						popupSigAttempts.clear();
+						trippedPopupSig = null;
+					}
+					if (isCurrentVideoFinished()) {
+						handleVideoFinished();
+						return;
+					}
+					if (!isStarted) {
+						videoElement = doc.querySelector("#vjs_container_html5_api, video.vjs-tech, .videoArea video, video");
+						if (videoElement) {
+							if (isCurrentVideoFinished()) {
+								handleVideoFinished();
+								return;
+							}
+							isStarted = true;
+							lastCompletedLessonKey = null;
+							try {
+								videoElement.playbackRate = 1;
+								videoElement.muted = true;
+								videoElement.addEventListener("timeupdate", onTimeUpdate);
+								videoElement.addEventListener("pause", onPause);
+								videoElement.addEventListener("ended", onEnded);
+								store.addLog("启动智慧树 1.0x 原速静音播放", "info");
+								await videoElement.play();
+								if (settled || !context.isCurrent() || context.signal.aborted) return finish(true);
+								onTimeUpdate();
+							} catch (err) {
+								detachVideoListeners(videoElement);
+								if (!settled) {
+									store.addLog(`智慧树自动播放受限，将在下次轮询重试: ${String(err)}`, "warning");
+									isStarted = false;
+								}
+							}
+						}
+					}
+				} catch (err) {
+					store.addLog(`智慧树视频轮询异常: ${String(err)}`, "warning");
+					finish(true);
+				}
+			}, pollIntervalMs);
+			if (!context.isCurrent() || context.signal.aborted) finish(true);
+		});
+	};
 	var tryNavigateNextChapter = async (rootDocument, signal, isCurrent) => {
 		if (!store.config.autoNextChapter) {
 			store.addLog("已关闭自动下一章节，在设置面板中可随时开启", "warning");
@@ -26500,6 +27147,7 @@ input:checked + .toggle-slider:before {
 		watchdog = new LifecycleWatchdog();
 		isProcessing = false;
 		isAutoResuming = false;
+		isZhihuishuVideoRunning = false;
 		processedIframeDocs = new WeakSet();
 		scanDebounceTimer = null;
 		start() {
@@ -26570,7 +27218,7 @@ input:checked + .toggle-slider:before {
 						}
 					}
 					if (!found) {
-						if (!!document.querySelector(".questionLi, .TiMu.newTiMu, .TiMu, div[data-id], .singleQues, div[id^=\"question\"], .Zy_TItle")) {
+						if (!!document.querySelector(".questionLi, .TiMu.newTiMu, .TiMu, div[data-id], .singleQues, div[id^=\"question\"], .Zy_TItle, .examPaper_subject, .questionBox, .subject_item, .examQuestion_item")) {
 							processed = true;
 							await doQuizTask(null, document, context);
 						} else {
@@ -26590,10 +27238,12 @@ input:checked + .toggle-slider:before {
 				clearExamAutoResumeState();
 				if (err?.name !== "AbortError") store.addLog(`答题执行异常: ${String(err)}`, "error");
 			} finally {
-				store.setQuizRunning(false);
-				if (processed && !signal.aborted) {
-					if (this.isStandaloneQuiz(document)) this.processedIframeDocs.add(document);
-					if (store.progress.status !== "paused") store.updateProgress({ status: "finished" });
+				if (isCurrent()) {
+					store.setQuizRunning(false);
+					if (processed && !signal.aborted) {
+						if (this.isStandaloneQuiz(document)) this.processedIframeDocs.add(document);
+						if (store.progress.status !== "paused") store.updateProgress({ status: "finished" });
+					}
 				}
 			}
 		}
@@ -26608,11 +27258,17 @@ input:checked + .toggle-slider:before {
 		isQuizPageUrl(url) {
 			const loc = typeof window !== "undefined" ? window.location : void 0;
 			const targetUrl = url ?? (loc?.href || `${loc?.pathname || ""}${loc?.search || ""}`);
-			return /work\/|exam\/|quiz|dowork|doHomeWork|reVersionTest|reVersionPaper|doExam|examId=/i.test(targetUrl);
+			return /work\/|exam\/|quiz|dowork|doHomeWork|reVersionTest|reVersionPaper|doExam|examId=|onlineexamh5new|stuExamWeb|examPaper|doHomework/i.test(targetUrl);
 		}
 		isStandaloneQuiz(doc) {
-			const hasQuestions = !!doc.querySelector(".questionLi, .TiMu.newTiMu, .TiMu, div[data-id], .singleQues, div[id^=\"question\"], div[id^=\"q_\"]");
-			const hasOptions = !!doc.querySelector("ul.Zy_ulTop, li.before-after, .num_option, input[type=\"radio\"], input[type=\"checkbox\"], textarea, .answerBg");
+			if (isZhihuishuHost() && isZhihuishuVideoPage(doc)) return false;
+			const questionSel = ".questionLi, .TiMu.newTiMu, .TiMu, div[data-id], .singleQues, div[id^=\"question\"], div[id^=\"q_\"], .examPaper_subject, .questionBox, .subject_item, .examQuestion_item";
+			const optionSel = "ul.Zy_ulTop, li.before-after, .num_option, input[type=\"radio\"], input[type=\"checkbox\"], textarea, .answerBg, .subject_node, .nodeLab, .el-radio, .el-checkbox, .el-textarea__inner";
+			const isOutsidePopup = (el) => !!el && !(typeof el.closest === "function" && el.closest(".dialog-test, .el-dialog__wrapper"));
+			const rawQuestions = typeof doc.querySelectorAll === "function" ? Array.from(doc.querySelectorAll(questionSel)) : [];
+			const hasQuestions = rawQuestions.length > 0 ? rawQuestions.some((el) => isOutsidePopup(el)) : typeof doc.querySelector === "function" && isOutsidePopup(doc.querySelector(questionSel));
+			const rawOptions = typeof doc.querySelectorAll === "function" ? Array.from(doc.querySelectorAll(optionSel)) : [];
+			const hasOptions = rawOptions.length > 0 ? rawOptions.some((el) => isOutsidePopup(el)) : typeof doc.querySelector === "function" && isOutsidePopup(doc.querySelector(optionSel));
 			return hasQuestions && hasOptions || this.isQuizPageUrl() && hasQuestions;
 		}
 		async triggerScan() {
@@ -26661,6 +27317,27 @@ input:checked + .toggle-slider:before {
 			const clearStaleExamResumeIfSafe = () => {
 				if ((typeof document === "undefined" || document.readyState === void 0 || document.readyState === "complete") && !this.isQuizPageUrl() && !store.isQuizRunning && getExamAutoResumeState()?.active) clearExamAutoResumeState();
 			};
+			if (isZhihuishuVideoPage(document)) {
+				clearStaleExamResumeIfSafe();
+				if (Date.now() < getZhihuishuSwitchCooldownUntil()) return;
+				const completedKey = getLastCompletedZhihuishuLessonKey();
+				if (completedKey) {
+					if (getZhihuishuLessonKey(document) === completedKey) return;
+					clearZhihuishuCompletionSuppression();
+				}
+				if (!this.isZhihuishuVideoRunning) {
+					this.isZhihuishuVideoRunning = true;
+					try {
+						await playZhihuishuVideoTask(document, {
+							signal,
+							isCurrent
+						});
+					} finally {
+						this.isZhihuishuVideoRunning = false;
+					}
+				}
+				return;
+			}
 			const allIframes = getAllNestedIframes(document.documentElement);
 			if (!allIframes.length) {
 				clearStaleExamResumeIfSafe();

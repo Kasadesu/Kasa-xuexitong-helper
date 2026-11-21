@@ -8,8 +8,8 @@ export default defineConfig({
       userscript: {
         name: 'Kasa-xuexitong-helper',
         namespace: 'kasa.ai',
-        version: '1.3.1',
-        description: '超星学习通辅助脚本：支持视频自动播放、章节连播与作业测验作答。',
+        version: '1.4.0',
+        description: '超星学习通与知到智慧树双平台辅助脚本：支持视频自动播放、章节连播、随堂弹题过关与作业测验作答。',
         author: 'Kasa',
         icon: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext x='50' y='54' text-anchor='middle' dominant-baseline='central' font-size='82' font-family='Apple Color Emoji,Segoe UI Emoji,Noto Color Emoji,sans-serif'%3E%F0%9F%92%AF%3C/text%3E%3C/svg%3E",
         match: [
@@ -17,7 +17,8 @@ export default defineConfig({
           '*://*.edu.cn/*',
           '*://*.nbdlib.cn/*',
           '*://*.hnsyu.net/*',
-          '*://*.gdhkmooc.com/*'
+          '*://*.gdhkmooc.com/*',
+          '*://*.zhihuishu.com/*'
         ],
         connect: ['*'],
         grant: [

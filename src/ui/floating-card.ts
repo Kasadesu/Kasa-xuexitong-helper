@@ -87,7 +87,7 @@ export class FloatingCard extends HTMLElement {
         <div class="kasa-card">
           <div class="kasa-header" id="drag-handle">
             <div class="kasa-title-group">
-              <span class="kasa-badge">v1.3.1</span>
+              <span class="kasa-badge">v1.4.0</span>
               <span class="kasa-title">Kasa 学习通助手</span>
             </div>
             <div class="kasa-actions">
@@ -441,11 +441,12 @@ export class FloatingCard extends HTMLElement {
     return `
       <div style="font-size:12px;color:var(--kasa-text-secondary);line-height:1.7;">
         <div style="font-weight:600;margin-bottom:6px;color:var(--kasa-text);">使用说明</div>
-        <p style="margin:4px 0;">• <strong>课程学习</strong>：进入章节后自动原速播放音视频、浏览课件，完成后自动跳转下一节。</p>
-        <p style="margin:4px 0;">• <strong>作业与测验</strong>：在「AI 设置」中填好 API Key 与模型，点击右上角「开始答题」即可自动作答。</p>
+        <p style="margin:4px 0;">• <strong>超星学习通</strong>：进入章节后自动 1.0x 原速静音播放音视频、浏览课件，完成后自动跳转下一节。</p>
+        <p style="margin:4px 0;">• <strong>知到智慧树</strong>：支持 H5 视频 1.0x 原速播放、自动过随堂弹题与章节连播。</p>
+        <p style="margin:4px 0;">• <strong>作业与测验</strong>：在「AI 设置」中填好 API Key 与模型，进入超星或智慧树作业/考试页点击右上角「开始答题」即可自动作答。</p>
         <p style="margin:4px 0;">• <strong>数据安全</strong>：配置与 Key 仅保存在当前浏览器本地，直接请求服务商接口。</p>
         <div style="margin-top:12px;padding-top:8px;border-top:1px solid var(--kasa-border);color:var(--kasa-text-muted);font-size:11px;">
-          提示：遇到遮挡可点击右上角最小化面板 · v1.3.1
+          提示：遇到遮挡可点击右上角最小化面板 · v1.4.0
         </div>
       </div>
     `;

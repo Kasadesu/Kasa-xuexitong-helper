@@ -832,7 +832,7 @@ const locateQuizDocument = async (
 ): Promise<Document | null> => {
   const isTargetDoc = (doc: Document) =>
     !!doc.querySelector(
-      '.questionLi, .TiMu.newTiMu, .TiMu, div[data-id], .singleQues, div[id^="question"], .Zy_TItle'
+      '.questionLi, .TiMu.newTiMu, .TiMu, div[data-id], .singleQues, div[id^="question"], .Zy_TItle, .examPaper_subject, .questionBox, .subject_item, .examQuestion_item'
     );
 
   // If the root document already contains questions
@@ -898,7 +898,7 @@ export const isQuestionAnswered = (timuEl: HTMLElement, _quizDoc?: Document): bo
 
   // 2. Check active/checked CSS classes or aria-checked (strictly within option elements)
   const activeOption = timuEl.querySelector(
-    '.check_answer, .check_answer_dx, .num_option.check_answer, li.check_answer, li.check_answer_dx, [aria-checked="true"], .answerBg.cur'
+    '.check_answer, .check_answer_dx, .num_option.check_answer, li.check_answer, li.check_answer_dx, [aria-checked="true"], .answerBg.cur, .el-radio.is-checked, .el-checkbox.is-checked, .nodeLab.active, .nodeLab.is-checked, .subject_node .is-checked, .topic-item.active'
   );
   if (activeOption) return true;
 
@@ -906,7 +906,7 @@ export const isQuestionAnswered = (timuEl: HTMLElement, _quizDoc?: Document): bo
   // Strictly target authentic answer fields and reject hidden or system metadata inputs (type, score, etc.)
   const answerInputs = Array.from(
     timuEl.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>(
-      'textarea.answerText, textarea, input.answerInput, input.newAnswerInput'
+      'textarea.answerText, textarea, input.answerInput, input.newAnswerInput, .el-textarea__inner, .el-input__inner'
     )
   );
   for (const input of answerInputs) {
@@ -965,7 +965,10 @@ const STABLE_EXAM_ID_PARAMS = new Set([
   'workid',
   'knowledgeid',
   'chapterid',
-  'cpi'
+  'cpi',
+  'recruitid',
+  'homeworkid',
+  'studentexamid'
 ]);
 const VOLATILE_EXAM_PARAMS = new Set([
   'questionid',
@@ -1209,13 +1212,41 @@ export const clearExamAutoResumeState = (): void => {
 };
 
 /**
+ * Safely sets input/textarea value using native prototype setter so Vue 2 / Element UI v-model reacts,
+ * falling back to direct property assignment for Node test mocks.
+ */
+export const setNativeInputValue = (
+  inputEl: HTMLInputElement | HTMLTextAreaElement,
+  val: string
+): void => {
+  try {
+    const tag = (inputEl.tagName || '').toUpperCase();
+    const ownerWin = (inputEl.ownerDocument?.defaultView || null) as any;
+    const proto =
+      tag === 'TEXTAREA'
+        ? ownerWin?.HTMLTextAreaElement?.prototype ||
+          (typeof HTMLTextAreaElement !== 'undefined' ? HTMLTextAreaElement.prototype : null)
+        : ownerWin?.HTMLInputElement?.prototype ||
+          (typeof HTMLInputElement !== 'undefined' ? HTMLInputElement.prototype : null);
+    const descriptor = proto ? Object.getOwnPropertyDescriptor(proto, 'value') : undefined;
+    if (descriptor && typeof descriptor.set === 'function') {
+      descriptor.set.call(inputEl, val);
+      return;
+    }
+  } catch {
+    // Fallback to direct assignment for mock elements
+  }
+  inputEl.value = val;
+};
+
+/**
  * Locates the "Next Question" button in Chaoxing single-question exam/quiz mode
  */
 export const findNextQuestionBtn = (quizDoc: Document): HTMLElement | null => {
   if (!quizDoc || typeof quizDoc.querySelectorAll !== 'function') return null;
 
   const selectorGroups = [
-    '.nextDiv a, .nextDiv button, a.nextBtn, #nextBtn, .nextQuestion, a[onclick*="getTheNextQuestion"], button[onclick*="getTheNextQuestion"]',
+    '.nextDiv a, .nextDiv button, a.nextBtn, #nextBtn, .nextQuestion, a[onclick*="getTheNextQuestion"], button[onclick*="getTheNextQuestion"], .switch-btn-box .el-button, .next-topic, .next-btn',
     'a, button, input[type="button"], input[type="submit"], span[onclick], div[onclick]'
   ];
 
@@ -1334,6 +1365,16 @@ export async function doQuizTask(
 
   // Helper to extract clean question title element without accidentally matching option rows (.clearfix) or inline spans (.font-cx)
   const extractRawTitleFromTimu = (timuEl: HTMLElement): string => {
+    const typeBadgeEl = timuEl.querySelector<HTMLElement>('.subject_type, .type-title, .question-type');
+    const typeBadgeText = (typeBadgeEl?.innerText || typeBadgeEl?.textContent || '').trim();
+    const withTypePrefix = (titleText: string): string => {
+      if (!titleText) return titleText;
+      if (typeBadgeText && !titleText.includes(typeBadgeText)) {
+        return `${typeBadgeText} ${titleText}`.trim();
+      }
+      return titleText;
+    };
+
     const titleSelectors = [
       'h3.mark_name',
       '.mark_name',
@@ -1343,24 +1384,31 @@ export async function doQuizTask(
       '.Cy_TItle',
       '.TiMu_head',
       '.timu-title',
-      '.fontLabel'
+      '.fontLabel',
+      '.subject_describe',
+      '.smallStem_describe',
+      '.question-title',
+      '.subject_title',
+      '.stem-describe'
     ];
     for (const sel of titleSelectors) {
       const found = timuEl.querySelector<HTMLElement>(sel);
       if (found) {
         const text = (found.innerText || found.textContent || '').trim();
-        if (text) return text;
+        if (text) return withTypePrefix(text);
       }
     }
     // Safe fallback: clone timuEl and remove option containers so options never leak into the question stem
     try {
       const clone = timuEl.cloneNode(true) as HTMLElement;
       clone
-        .querySelectorAll('ul, .stem_answer, .answerBg, .mark_letter, .option-item')
+        .querySelectorAll(
+          'ul, .stem_answer, .answerBg, .mark_letter, .option-item, .subject_node, .ul-Lists, .el-radio-group, .el-checkbox-group'
+        )
         .forEach((el) => el.remove());
-      return (clone.innerText || clone.textContent || '').trim();
+      return withTypePrefix((clone.innerText || clone.textContent || '').trim());
     } catch {
-      return (timuEl.innerText || timuEl.textContent || '').trim();
+      return withTypePrefix((timuEl.innerText || timuEl.textContent || '').trim());
     }
   };
 
@@ -1371,40 +1419,73 @@ export async function doQuizTask(
   const discoverTimuNodes = (doc: Document): HTMLElement[] => {
     const rawCandidates = Array.from(
       doc.querySelectorAll<HTMLElement>(
-        '.questionLi, .TiMu.newTiMu, .TiMu, div[data-id], .singleQues, div[id^="question"], div[id^="q_"]'
+        '.questionLi, .TiMu.newTiMu, .TiMu, div[data-id], .singleQues, div[id^="question"], div[id^="q_"], .examPaper_subject, .questionBox, .subject_item, .examQuestion_item'
       )
     );
 
     const isExcludedArea = (node: HTMLElement): boolean =>
       typeof node.closest === 'function' &&
       !!node.closest(
-        'kasa-helper-panel, .kasa-card, .topicNumber, .topicNumber_list, .answerSheet, .right_card, .card_list'
+        'kasa-helper-panel, .kasa-card, .topicNumber, .topicNumber_list, .answerSheet, .right_card, .card_list, .exam-card, .answerCard, .question-card, .topic-card'
       );
 
     const validNodes = rawCandidates.filter((node) => {
       if (isExcludedArea(node)) return false;
 
       const hasInputs = !!node.querySelector(
-        'li, .num_option, input, textarea, .before-after, .answerBg, [onclick*="addChoice"], [onclick*="choose"]'
+        'li, .num_option, input, textarea, .before-after, .answerBg, [onclick*="addChoice"], [onclick*="choose"], .subject_node, .nodeLab, .el-radio, .el-checkbox, .el-textarea__inner, .el-input__inner'
       );
       if (!hasInputs) return false;
 
-      const optionLists = node.querySelectorAll('ul.Zy_ulTop, ul.Zy_ulBottom, ul.options, ul.mark_letter, .stem_answer');
+      const rawOptionLists = Array.from(
+        node.querySelectorAll<HTMLElement>(
+          'ul.Zy_ulTop, ul.Zy_ulBottom, ul.options, ul.mark_letter, .stem_answer, .ul-Lists, .el-radio-group, .el-checkbox-group, .subject_node_list'
+        )
+      );
+      const optionLists = rawOptionLists.filter(
+        (listEl, i, arr) =>
+          !arr.some(
+            (other, j) =>
+              i !== j && typeof other.contains === 'function' && other.contains(listEl)
+          )
+      );
       if (optionLists.length > 1) return false;
 
       return true;
     });
 
+    const hasOwnStem = (el: HTMLElement): boolean =>
+      !!el.querySelector(
+        'h3.mark_name, .mark_name, .Zy_TItle, .Cy_TItle, .TiMu_head, .timu-title, .subject_describe, .smallStem_describe, .question-title, .subject_title, .stem-describe'
+      );
+
+    // Prune inner option-only boxes (e.g. .questionBox inside .examPaper_subject without its own stem)
+    const prunedNodes = validNodes.filter((node) => {
+      if (hasOwnStem(node)) return true;
+      const wrappedByStemParent = validNodes.some(
+        (parent) =>
+          parent !== node &&
+          typeof parent.contains === 'function' &&
+          parent.contains(node) &&
+          hasOwnStem(parent)
+      );
+      return !wrappedByStemParent;
+    });
+
     const leafNodes: HTMLElement[] = [];
-    for (const node of validNodes) {
-      const containsOtherCandidate = validNodes.some((other) => other !== node && node.contains(other));
+    for (const node of prunedNodes) {
+      const containsOtherCandidate = prunedNodes.some(
+        (other) => other !== node && typeof node.contains === 'function' && node.contains(other)
+      );
       if (!containsOtherCandidate && !leafNodes.includes(node)) {
         leafNodes.push(node);
       }
     }
 
     if (leafNodes.length === 0) {
-      const fallbackTiMu = Array.from(doc.querySelectorAll<HTMLElement>('.TiMu, .questionLi'));
+      const fallbackTiMu = Array.from(
+        doc.querySelectorAll<HTMLElement>('.TiMu, .questionLi, .examPaper_subject, .questionBox')
+      );
       for (const node of fallbackTiMu) {
         if (!isExcludedArea(node) && !leafNodes.includes(node)) {
           leafNodes.push(node);
@@ -1559,8 +1640,8 @@ export async function doQuizTask(
       // Identify question type
       const qType: QuestionType = detectQuestionType(
         rawTitleText,
-        !!timuEl.querySelector('input[type="checkbox"]'),
-        timuEl.querySelectorAll('input[type="radio"]').length,
+        !!timuEl.querySelector('input[type="checkbox"], .el-checkbox'),
+        timuEl.querySelectorAll('input[type="radio"], .el-radio').length,
         timuEl.innerText || ''
       );
 
@@ -1569,6 +1650,7 @@ export async function doQuizTask(
       if (enabledTypes) {
         const typeKey = qType === 'unknown' ? 'single' : (qType as keyof typeof enabledTypes);
         if (enabledTypes[typeKey] === false) {
+          cancelAutoSubmit = true;
           const typeNames: Record<string, string> = {
             single: '单选题',
             multiple: '多选题',
@@ -1618,6 +1700,8 @@ export async function doQuizTask(
         'ul.Zy_ulTop > li, ul.Zy_ulBottom > li, ul.mark_letter > li, ul.options > li',
         '.stem_answer > .answerBg, .answerBg',
         'li.before-after, .option-item, li.mar4',
+        '.subject_node',
+        '.subject_node .nodeLab, .el-radio-group .el-radio, .el-checkbox-group .el-checkbox, ul.ul-Lists > li',
         'li'
       ];
       let candidateOptionEls: HTMLElement[] = [];
@@ -1639,7 +1723,7 @@ export async function doQuizTask(
       for (let optIdx = 0; optIdx < rawOptionEls.length; optIdx++) {
         const optEl = rawOptionEls[optIdx];
         const numOptionEl = optEl.querySelector<HTMLElement>(
-          '.num_option, .num_option_dx, .option-num, i.num_option, span.num_option'
+          '.num_option, .num_option_dx, .option-num, i.num_option, span.num_option, .node_Lab, .option-letter'
         );
         const rawDataAttr =
           numOptionEl?.getAttribute('data')?.trim() ||
@@ -1648,7 +1732,7 @@ export async function doQuizTask(
 
         // Extract option text from dedicated option content container (.answer_p for mooc2, a.after for classic)
         const afterTextEl = optEl.querySelector<HTMLElement>(
-          '.answer_p, a.after, .option-txt, span.after'
+          '.answer_p, a.after, .option-txt, span.after, .node_detail, .el-radio__label, .el-checkbox__label, .option-detail'
         );
         let optText = (afterTextEl?.innerText || afterTextEl?.textContent || optEl.innerText || optEl.textContent || '').trim();
 
@@ -1658,7 +1742,7 @@ export async function doQuizTask(
           letter = rawDataAttr.toUpperCase();
         } else {
           const badgeText = (numOptionEl?.innerText || numOptionEl?.textContent || '').trim();
-          const badgeMatch = badgeText.match(/^([A-Z])$/i);
+          const badgeMatch = badgeText.match(/^([A-Z])[\.、．]?$/i);
           if (badgeMatch) {
             letter = badgeMatch[1].toUpperCase();
           } else {
@@ -1686,7 +1770,7 @@ export async function doQuizTask(
 
         const clickableEl =
           optEl.querySelector<HTMLElement>(
-            'input[type="radio"], input[type="checkbox"], .num_option, a.after, .answer_p, a, label'
+            'input[type="radio"], input[type="checkbox"], .el-radio__input, .el-checkbox__input, .nodeLab, .el-radio, .el-checkbox, .num_option, a.after, .answer_p, a, label'
           ) || optEl;
 
         parsedOptions.push({
@@ -1782,12 +1866,13 @@ export async function doQuizTask(
             el.classList.contains('cur') ||
             el.classList.contains('active') ||
             el.classList.contains('selected') ||
+            el.classList.contains('is-checked') ||
             el.getAttribute('aria-checked') === 'true'
           ) {
             return true;
           }
           return !!el.querySelector(
-            '.check_answer, .check_answer_dx, .active, .selected, input[type="radio"]:checked, input[type="checkbox"]:checked'
+            '.check_answer, .check_answer_dx, .active, .selected, .is-checked, .el-radio.is-checked, .el-checkbox.is-checked, input[type="radio"]:checked, input[type="checkbox"]:checked'
           );
         };
 
@@ -1799,23 +1884,56 @@ export async function doQuizTask(
             optItem.el.scrollIntoView({ behavior: 'smooth', block: 'center' });
           } catch {}
 
-          // Avoid redundant clicks that could toggle off a checkbox
+          const isElementUiOption =
+            optItem.el.classList?.contains('el-radio') ||
+            optItem.el.classList?.contains('el-checkbox') ||
+            !!optItem.el.querySelector?.('.el-radio, .el-checkbox') ||
+            optItem.el.classList?.contains('nodeLab') ||
+            optItem.el.classList?.contains('topic-item') ||
+            !!optItem.el.querySelector?.('.nodeLab');
+
+          // Avoid redundant clicks that could toggle off a checkbox or Vue v-model option
           if (!isOptionSelected(optItem.el)) {
-            optItem.el.click();
+            if (isElementUiOption) {
+              const primaryClickTarget =
+                optItem.el.matches?.('label.el-radio, label.el-checkbox, .el-radio, .el-checkbox, .nodeLab, .topic-item') ||
+                typeof optItem.el.matches !== 'function'
+                  ? optItem.el
+                  : optItem.el.querySelector<HTMLElement>(
+                      'label.el-radio, label.el-checkbox, .el-radio, .el-checkbox, .nodeLab, .el-radio__input, .el-checkbox__input'
+                    ) || optItem.el;
+
+              primaryClickTarget.click();
+              await sleep(50, signal);
+              if (!isCurrent() || signal.aborted) return;
+
+              if (!isOptionSelected(optItem.el) && target !== primaryClickTarget) {
+                target.click();
+                await sleep(50, signal);
+                if (!isCurrent() || signal.aborted) return;
+              }
+            } else {
+              optItem.el.click();
+              await Promise.resolve();
+              if (!isOptionSelected(optItem.el) && target !== optItem.el) {
+                target.click();
+                await Promise.resolve();
+              }
+            }
           }
-          if (!isOptionSelected(optItem.el) && target !== optItem.el) {
-            target.click();
-          }
+
           if (!isOptionSelected(optItem.el) && typeof quizWin?.addChoice === 'function') {
             try {
               quizWin.addChoice(optItem.el);
             } catch {}
           }
 
-          const input = optItem.el.querySelector<HTMLInputElement>('input[type="radio"], input[type="checkbox"]');
-          if (input && !input.checked) {
-            input.checked = true;
-            input.dispatchEvent(new Event('change', { bubbles: true }));
+          if (!isElementUiOption || !isOptionSelected(optItem.el)) {
+            const input = optItem.el.querySelector<HTMLInputElement>('input[type="radio"], input[type="checkbox"]');
+            if (input && !input.checked) {
+              input.checked = true;
+              input.dispatchEvent(new Event('change', { bubbles: true }));
+            }
           }
 
           // Direct DOM enhancement: mark check_answer
@@ -1888,7 +2006,7 @@ export async function doQuizTask(
         } else {
           const rawInputs = Array.from(
             timuEl.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>(
-              'textarea.answerText, textarea, input.answerInput, input.newAnswerInput, input[type="text"]'
+              'textarea.answerText, textarea, input.answerInput, input.newAnswerInput, input[type="text"], .el-textarea__inner, .el-input__inner'
             )
           );
           const textInputs = rawInputs.filter((input) => {
@@ -1911,7 +2029,7 @@ export async function doQuizTask(
 
               const inputEl = textInputs[0];
               if (inputEl) {
-                inputEl.value = cleanFullText;
+                setNativeInputValue(inputEl, cleanFullText);
                 inputEl.dispatchEvent(new Event('input', { bubbles: true }));
                 inputEl.dispatchEvent(new Event('change', { bubbles: true }));
                 inputEl.dispatchEvent(new Event('blur', { bubbles: true }));
@@ -1946,7 +2064,7 @@ export async function doQuizTask(
 
                 const inputEl = textInputs[i];
                 if (inputEl) {
-                  inputEl.value = cleanVal;
+                  setNativeInputValue(inputEl, cleanVal);
                   inputEl.dispatchEvent(new Event('input', { bubbles: true }));
                   inputEl.dispatchEvent(new Event('change', { bubbles: true }));
                   inputEl.dispatchEvent(new Event('blur', { bubbles: true }));
@@ -2116,56 +2234,86 @@ export async function doQuizTask(
   // 6. Temporary save or Auto Submit
   const { autoSubmitWork } = store.config;
 
-  // Anti-modal override
-  try {
-    targetWin.confirm = () => true;
-    targetWin.alert = () => true;
-    // @ts-ignore
-    if (typeof unsafeWindow !== 'undefined') {
-      // @ts-ignore
-      unsafeWindow.confirm = () => true;
-      // @ts-ignore
-      unsafeWindow.alert = () => true;
-    }
-  } catch {}
-
   if (autoSubmitWork && !cancelAutoSubmit) {
-    store.addLog('已开启自动提交模式，正在定位提交按钮', 'info');
-    // Call Chaoxing native method btnBlueSubmit if present
-    if (typeof targetWin?.btnBlueSubmit === 'function') {
+    // Anti-modal override scoped strictly to confirmed auto-submit execution and restored in finally
+    const origTargetConfirm = targetWin?.confirm;
+    const origTargetAlert = targetWin?.alert;
+    // @ts-ignore
+    const hasUnsafeWin = typeof unsafeWindow !== 'undefined';
+    // @ts-ignore
+    const origUnsafeConfirm = hasUnsafeWin ? unsafeWindow.confirm : undefined;
+    // @ts-ignore
+    const origUnsafeAlert = hasUnsafeWin ? unsafeWindow.alert : undefined;
+
+    try {
       try {
-        targetWin.btnBlueSubmit();
-        store.addLog('已触发超星原生 btnBlueSubmit 提交方法', 'success');
-      } catch (e) {
-        // Fallback to DOM button click
-      }
-    }
+        targetWin.confirm = () => true;
+        targetWin.alert = () => true;
+        if (hasUnsafeWin) {
+          // @ts-ignore
+          unsafeWindow.confirm = () => true;
+          // @ts-ignore
+          unsafeWindow.alert = () => true;
+        }
+      } catch {}
 
-    const submitBtn = quizDoc.querySelector<HTMLElement>(
-      'a.btnSubmit.workBtnIndex, a.btnSubmit, #submitBtn, a.btn-ok, .btn-submit, a[onclick*="submit"], a[onclick*="Submit"], input[value*="提交"], button[type="submit"], .submitBtn'
-    );
-
-    if (submitBtn) {
-      submitBtn.click();
-      store.addLog('已点击提交按钮，正在确认提交弹窗', 'success');
-
-      // Click secondary confirmation modal if present (e.g. LayUI or Chaoxing modal)
-      await sleep(600, signal);
-      const confirmBtns = Array.from(
-        quizDoc.querySelectorAll<HTMLElement>(
-          '.layui-layer-btn0, .layui-layer-btn a, .dialog-ok, .blue-btn, a.okBtn'
-        )
-      );
-      for (const btn of confirmBtns) {
-        const text = btn.innerText || btn.textContent || '';
-        if (text.includes('确') || text.includes('是') || btn.classList.contains('layui-layer-btn0')) {
-          btn.click();
-          break;
+      store.addLog('已开启自动提交模式，正在定位提交按钮', 'info');
+      // Call Chaoxing native method btnBlueSubmit if present
+      if (typeof targetWin?.btnBlueSubmit === 'function') {
+        try {
+          targetWin.btnBlueSubmit();
+          store.addLog('已触发超星原生 btnBlueSubmit 提交方法', 'success');
+        } catch (e) {
+          // Fallback to DOM button click
         }
       }
-      store.addLog('作业已成功自动提交！', 'success');
-    } else {
-      store.addLog('未找到明确的提交按钮，作业已保持作答状态', 'warning');
+
+      const submitBtn = quizDoc.querySelector<HTMLElement>(
+        'a.btnSubmit.workBtnIndex, a.btnSubmit, #submitBtn, a.btn-ok, .btn-submit, a[onclick*="submit"], a[onclick*="Submit"], input[value*="提交"], button[type="submit"], .submitBtn, .submit-btn, .exam-submit-btn'
+      );
+
+      if (submitBtn) {
+        submitBtn.click();
+        store.addLog('已点击提交按钮，正在确认提交弹窗', 'success');
+
+        // Click secondary confirmation modal if present (e.g. LayUI, Chaoxing, or Element UI modal)
+        await sleep(600, signal);
+        const confirmBtns = Array.from(
+          quizDoc.querySelectorAll<HTMLElement>(
+            '.layui-layer-btn0, .layui-layer-btn a, .dialog-ok, .blue-btn, a.okBtn, .el-message-box__btns .el-button--primary, .el-dialog__footer .el-button--primary'
+          )
+        );
+        for (const btn of confirmBtns) {
+          if (isElementOrAncestorHidden(btn, quizDoc)) continue;
+          const text = btn.innerText || btn.textContent || '';
+          if (
+            text.includes('确') ||
+            text.includes('是') ||
+            text.includes('提交') ||
+            btn.classList.contains('layui-layer-btn0') ||
+            btn.classList.contains('el-button--primary')
+          ) {
+            btn.click();
+            break;
+          }
+        }
+        store.addLog('作业已成功自动提交！', 'success');
+      } else {
+        store.addLog('未找到明确的提交按钮，作业已保持作答状态', 'warning');
+      }
+    } finally {
+      try {
+        if (targetWin) {
+          targetWin.confirm = origTargetConfirm;
+          targetWin.alert = origTargetAlert;
+        }
+        if (hasUnsafeWin) {
+          // @ts-ignore
+          unsafeWindow.confirm = origUnsafeConfirm;
+          // @ts-ignore
+          unsafeWindow.alert = origUnsafeAlert;
+        }
+      } catch {}
     }
   } else {
     if (autoSubmitWork && cancelAutoSubmit) {
@@ -2184,7 +2332,7 @@ export async function doQuizTask(
     }
 
     const saveBtn = quizDoc.querySelector<HTMLElement>(
-      'a.btnSave.workBtnIndex, a.btnSave, #saveBtn, a.btn-save, a[onclick*="save"], a[onclick*="Save"], input[value*="暂存"], button.save, .saveBtn'
+      'a.btnSave.workBtnIndex, a.btnSave, #saveBtn, a.btn-save, a[onclick*="save"], a[onclick*="Save"], input[value*="暂存"], button.save, .saveBtn, .save-btn, .temporary-save, .btn-temp-save'
     );
 
     if (saveBtn) {

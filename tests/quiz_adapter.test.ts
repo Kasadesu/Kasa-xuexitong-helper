@@ -85,8 +85,22 @@ import {
   getExamScope,
   getExamAutoResumeState,
   setExamAutoResumeState,
-  clearExamAutoResumeState
+  clearExamAutoResumeState,
+  setNativeInputValue
 } from '../src/adapters/quiz';
+import {
+  isZhihuishuHost,
+  isZhihuishuVideoPage,
+  isZhihuishuExamPage,
+  findVisiblePopupTestDialog,
+  solveZhihuishuPopupTest,
+  findNextZhihuishuVideoItem,
+  playZhihuishuVideoTask,
+  getZhihuishuSwitchCooldownUntil,
+  getLastCompletedZhihuishuLessonKey,
+  clearZhihuishuCompletionSuppression,
+  getZhihuishuLessonKey
+} from '../src/adapters/zhihuishu-video';
 import { ChapterScheduler } from '../src/core/scheduler';
 import { PANEL_STYLES } from '../src/ui/style';
 import { parseAiResponse } from '../src/adapters/ai-solver/parser';
@@ -2169,6 +2183,9 @@ C 是温迪（风神巴巴托斯）
           return null;
         },
         querySelectorAll: (sel: string) => {
+          if (sel.includes('.subject_node_list') || sel.includes('ul.Zy_ulTop,')) {
+            return [];
+          }
           if (sel.includes('li')) {
             return [createOpt('A', '温迪'), createOpt('B', '钟离')];
           }
@@ -2537,7 +2554,7 @@ C 是温迪（风神巴巴托斯）
       return new FloatingCardClass();
     };
 
-    it('23.11 FloatingCard DOM 契约与无障碍属性：role=alert、aria-live=assertive、版本 v1.3、兄弟容器架构', async () => {
+    it('23.11 FloatingCard DOM 契约与无障碍属性：role=alert、aria-live=assertive、版本 v1.4.0、兄弟容器架构', async () => {
       const card = await getFloatingCard();
       const tabContentHtml = (card as any).getTabContentHtml();
 
@@ -2559,8 +2576,7 @@ C 是温迪（风神巴巴托斯）
       );
 
       const cardRenderHtml = (card as any).render.toString();
-      assert.ok(cardRenderHtml.includes('v1.3'), '面板必须标注 v1.3 版本');
-      assert.ok(!cardRenderHtml.includes('v1.4'), '版本不可篡改为 v1.4');
+      assert.ok(cardRenderHtml.includes('v1.4.0'), '面板必须标注 v1.4.0 版本');
       assert.ok(!cardRenderHtml.includes('💯'), '面板 HTML 不得包含 💯 emoji');
     });
 
@@ -4723,6 +4739,2230 @@ C 是温迪（风神巴巴托斯）
         (globalThis as any).sessionStorage = prevSession;
         (globalThis as any).GM_getValue = prevGmGet;
         (globalThis as any).GM_setValue = prevGmSet;
+      }
+    });
+  });
+
+  describe('【第 25 关】知到智慧树（Zhihuishu）视频挂机、弹题过关与作业考试双平台专项回归测试', () => {
+    it('25.1 路由与页面判定：isZhihuishuHost / isZhihuishuVideoPage / isZhihuishuExamPage 严格隔离双平台及考试与视频页', () => {
+      // 1. Host 判定
+      assert.equal(isZhihuishuHost('https://studyvideoh5.zhihuishu.com/videoStudy.html?recruitAndCourseId=123'), true);
+      assert.equal(isZhihuishuHost('https://onlineexamh5new.zhihuishu.com/stuExamWeb.html#/webExamList/dohomework'), true);
+      assert.equal(isZhihuishuHost('zhihuishu.com'), true);
+      assert.equal(isZhihuishuHost('studyh5.zhihuishu.com'), true);
+      assert.equal(isZhihuishuHost('https://evil-zhihuishu.com/videoStudy.html'), false, '非 zhihuishu.com 后缀域名不得误判');
+      assert.equal(isZhihuishuHost('https://mooc1.chaoxing.com/mycourse/studentstudy'), false, '超星域名不得误判为智慧树');
+      assert.equal(isZhihuishuHost(''), false);
+
+      // 2. stuExamWeb / onlineexamh5new 严禁误判为视频页
+      const stuExamUrl = 'https://onlineexamh5new.zhihuishu.com/stuExamWeb.html#/webExamList/dohomework?recruitId=101';
+      assert.equal(isZhihuishuExamPage(undefined, stuExamUrl), true);
+      assert.equal(isZhihuishuVideoPage(undefined, stuExamUrl), false, 'stuExamWeb 绝不可误判为视频页');
+
+      const mixedStudyExamUrl = 'https://studyh5.zhihuishu.com/stuExamWeb.html#/doExam';
+      assert.equal(isZhihuishuExamPage(undefined, mixedStudyExamUrl), true);
+      assert.equal(isZhihuishuVideoPage(undefined, mixedStudyExamUrl), false, '含 stuExamWeb 的 studyh5 URL 必须判定为考试页而非视频页');
+
+      // 3. 视频页精准判定
+      const videoUrl = 'https://studyvideoh5.zhihuishu.com/videoStudy.html?recruitAndCourseId=123';
+      assert.equal(isZhihuishuVideoPage(undefined, videoUrl), true);
+      assert.equal(isZhihuishuExamPage(undefined, videoUrl), false);
+
+      // 4. 泛域名下基于 DOM 的兜底判定
+      const genericZhsUrl = 'https://fusioncourseh5.zhihuishu.com/course/100';
+      const examDomDoc: any = {
+        querySelector: (sel: string) => (sel.includes('.examPaper_subject') ? {} : null)
+      };
+      // Note: fusioncourseh5 matches video URL pattern unless exam DOM/URL takes precedence; test on generic www.zhihuishu.com
+      const rootZhsUrl = 'https://www.zhihuishu.com/portal';
+      assert.equal(isZhihuishuExamPage(examDomDoc, rootZhsUrl), true);
+      assert.equal(isZhihuishuVideoPage(examDomDoc, rootZhsUrl), false, '存在考试题块 DOM 时绝不可误判为视频页');
+
+      const videoDomDoc: any = {
+        querySelector: (sel: string) => (sel.includes('#vjs_container_html5_api') ? {} : null)
+      };
+      assert.equal(isZhihuishuVideoPage(videoDomDoc, rootZhsUrl), true);
+      assert.equal(isZhihuishuExamPage(videoDomDoc, rootZhsUrl), false);
+
+      // 5. 超星 URL 即使带 doExam / videoStudy DOM 也不得误判为智慧树
+      const cxExamUrl = 'https://mooc1.chaoxing.com/exam-ans/exam/test/doExam?courseId=1';
+      assert.equal(isZhihuishuExamPage(examDomDoc, cxExamUrl), false);
+      assert.equal(isZhihuishuVideoPage(videoDomDoc, 'https://mooc1.chaoxing.com/mycourse/studentstudy'), false);
+    });
+
+    it('25.2 随堂弹题求解：findVisiblePopupTestDialog 过滤隐藏弹窗与 solveZhihuishuPopupTest 多题/多选防反选/无Key保底/关闭', async () => {
+      const prevXhr = (globalThis as any).GM_xmlhttpRequest;
+      const prevKey = store.config.aiApiKey;
+
+      const makeHiddenEl = (opts: { display?: string; hidden?: boolean; computedDisplay?: string; closestPanel?: boolean } = {}) => ({
+        hidden: Boolean(opts.hidden),
+        style: { display: opts.display || '', visibility: '' },
+        parentElement: null,
+        closest: (sel: string) => (opts.closestPanel && sel.includes('kasa-helper-panel') ? {} : null),
+        querySelector: () => null,
+        _computedDisplay: opts.computedDisplay
+      });
+
+      const makeDocView = () => ({
+        getComputedStyle: (el: any) => ({
+          display: el._computedDisplay || el.style?.display || 'block',
+          visibility: el.style?.visibility || 'visible'
+        })
+      });
+
+      try {
+        // 1. findVisiblePopupTestDialog 过滤隐藏、祖先隐藏与面板内部元素
+        const hiddenByStyle = makeHiddenEl({ display: 'none' });
+        const hiddenByComputed = makeHiddenEl({ computedDisplay: 'none' });
+        const hiddenByPanel = makeHiddenEl({ closestPanel: true });
+        const hiddenAncestor: any = makeHiddenEl({ display: 'none' });
+        const hiddenByParent: any = { ...makeHiddenEl(), parentElement: hiddenAncestor };
+        const visibleWrapper: any = {
+          ...makeHiddenEl(),
+          querySelector: (sel: string) => (sel.includes('.topic-item') ? {} : null)
+        };
+
+        const docFilter: any = {
+          defaultView: makeDocView(),
+          querySelectorAll: (sel: string) => {
+            if (sel.includes('.dialog-test')) {
+              return [hiddenByStyle, hiddenByComputed, hiddenByPanel, hiddenByParent];
+            }
+            if (sel.includes('.el-dialog__wrapper')) {
+              return [visibleWrapper];
+            }
+            return [];
+          }
+        };
+        assert.equal(findVisiblePopupTestDialog(docFilter), visibleWrapper, '应过滤全部隐藏/面板内弹窗并命中可见包装弹窗');
+
+        // 2. solveZhihuishuPopupTest 场景 A：多题 .topic-num-item 切换 + AI 多选防反选 + 自动关闭
+        let activeTabIndex = 0;
+        let tab2Clicked = false;
+        let closeClicked = false;
+
+        const makePopupOpt = (letter: string, text: string, initiallySelected = false) => {
+          let selected = initiallySelected;
+          let clickCount = 0;
+          let innerClickCount = 0;
+          const opt: any = {
+            innerText: `${letter}. ${text}`,
+            textContent: `${letter}. ${text}`,
+            style: { display: '', visibility: '' },
+            parentElement: null,
+            contains: () => false,
+            classList: {
+              contains: (c: string) => selected && (c === 'active' || c === 'is-checked')
+            },
+            getAttribute: (k: string) => (k === 'aria-checked' ? String(selected) : null),
+            click: () => {
+              clickCount++;
+              selected = !selected;
+            },
+            querySelector: (sel: string) => {
+              if (sel.includes('.topic-option')) return { innerText: letter, textContent: letter };
+              if (sel.includes('.topic-text')) return { innerText: text, textContent: text };
+              if (sel.includes('input[type="checkbox"]') || sel.includes('input[type="radio"]')) {
+                return {
+                  value: letter,
+                  checked: selected,
+                  click: () => {
+                    innerClickCount++;
+                    selected = !selected;
+                  }
+                };
+              }
+              if (sel.includes('.active')) return selected ? {} : null;
+              return null;
+            },
+            get clickCount() {
+              return clickCount;
+            },
+            get innerClickCount() {
+              return innerClickCount;
+            },
+            get isSelected() {
+              return selected;
+            }
+          };
+          return opt;
+        };
+
+        const q1Opts = [makePopupOpt('A', '错误选项一'), makePopupOpt('B', '正确选项二')];
+        // Q2 多选题中 A 已经处于选中状态，测试防反选
+        const q2Opts = [
+          makePopupOpt('A', '理论联系实际', true),
+          makePopupOpt('B', '闭门造车', false),
+          makePopupOpt('C', '密切联系群众', false)
+        ];
+
+        const tab1: any = {
+          classList: { contains: (c: string) => activeTabIndex === 0 && c === 'active' },
+          click: () => {
+            activeTabIndex = 0;
+          }
+        };
+        const tab2: any = {
+          classList: { contains: (c: string) => activeTabIndex === 1 && c === 'active' },
+          click: () => {
+            tab2Clicked = true;
+            activeTabIndex = 1;
+          }
+        };
+        const closeBtn: any = {
+          innerText: '关闭',
+          textContent: '关闭',
+          disabled: false,
+          style: { display: '', visibility: '' },
+          parentElement: null,
+          classList: { contains: () => false },
+          hasAttribute: () => false,
+          getAttribute: () => null,
+          click: () => {
+            closeClicked = true;
+            activePopupDialog.style.display = 'none';
+          }
+        };
+
+        const activePopupDialog: any = {
+          style: { display: '', visibility: '' },
+          parentElement: null,
+          closest: () => null,
+          get innerText() {
+            return activeTabIndex === 0 ? '【单选题】第一题标题' : '【多选题】第二题标题';
+          },
+          querySelector: (sel: string) => {
+            if (sel.includes('.topic-title')) {
+              const t = activeTabIndex === 0 ? '1. (单选题) 测试第一题' : '2. (多选题) 以下属于优良作风的有';
+              return { innerText: t, textContent: t };
+            }
+            if (sel.includes('input[type="checkbox"]')) {
+              return activeTabIndex === 1 ? {} : null;
+            }
+            return null;
+          },
+          querySelectorAll: (sel: string) => {
+            if (sel.includes('.topic-num-item')) return [tab1, tab2];
+            if (sel.includes('.topic-item')) return activeTabIndex === 0 ? q1Opts : q2Opts;
+            if (sel.includes('input[type="radio"]')) return activeTabIndex === 0 ? q1Opts : [];
+            if (sel.includes('button')) return [closeBtn];
+            return [];
+          }
+        };
+
+        const popupDoc: any = {
+          defaultView: makeDocView(),
+          querySelectorAll: (sel: string) => (sel.includes('.dialog-test') ? [activePopupDialog] : [])
+        };
+
+        store.config.aiApiKey = 'sk-zhs-popup-test';
+        let aiCallCount = 0;
+        (globalThis as any).GM_xmlhttpRequest = (opts: any) => {
+          aiCallCount++;
+          const body = JSON.parse(opts.data);
+          const promptText = JSON.stringify(body.messages);
+          const reply = promptText.includes('测试第一题') ? '["B"]' : '["A", "C"]';
+          setTimeout(() => {
+            opts.onload({
+              status: 200,
+              responseText: JSON.stringify({ choices: [{ message: { content: reply } }] })
+            });
+          }, 5);
+        };
+
+        const controller = new AbortController();
+        const solvedA = await solveZhihuishuPopupTest(
+          popupDoc,
+          controller.signal,
+          () => true,
+          { reactionDelayMs: 5, closeDelayMs: 5, verifyCloseDelayMs: 5 }
+        );
+
+        assert.equal(solvedA, true);
+        assert.equal(aiCallCount, 2);
+        assert.equal(tab2Clicked, true, '必须切换第二个 .topic-num-item 题目标签');
+        assert.equal(q1Opts[1].isSelected, true, '第 1 题应选中 B');
+        assert.equal(q2Opts[0].clickCount, 0, '第 2 题已选中的 A 绝不能重复点击导致反选');
+        assert.equal(q2Opts[0].isSelected, true);
+        assert.equal(q2Opts[2].clickCount, 1, '第 2 题未选中的 C 应被点击选中');
+        assert.equal(q2Opts[2].isSelected, true);
+        assert.equal(closeClicked, true, '作答完毕必须自动点击关闭按钮');
+
+        // 3. 场景 B：无 AI Key 时走保底逻辑并关闭弹窗
+        store.config.aiApiKey = '';
+        activeTabIndex = 0;
+        closeClicked = false;
+        const fallbackOptA = makePopupOpt('A', '保底选项甲', false);
+        const fallbackOptB = makePopupOpt('B', '保底选项乙', false);
+        const fallbackDialog: any = {
+          style: { display: '', visibility: '' },
+          parentElement: null,
+          closest: () => null,
+          innerText: '【单选题】无Key测试题',
+          querySelector: (sel: string) => {
+            if (sel.includes('.topic-title')) return { innerText: '1. 未知离线题目', textContent: '1. 未知离线题目' };
+            return null;
+          },
+          querySelectorAll: (sel: string) => {
+            if (sel.includes('.topic-num-item')) return [];
+            if (sel.includes('.topic-item')) return [fallbackOptA, fallbackOptB];
+            if (sel.includes('input[type="radio"]')) return [fallbackOptA, fallbackOptB];
+            if (sel.includes('button')) return [fallbackCloseBtn];
+            return [];
+          }
+        };
+        const fallbackCloseBtn: any = {
+          ...closeBtn,
+          click: () => {
+            closeClicked = true;
+            fallbackDialog.style.display = 'none';
+          }
+        };
+        const fallbackDoc: any = {
+          defaultView: makeDocView(),
+          querySelectorAll: (sel: string) => (sel.includes('.dialog-test') ? [fallbackDialog] : [])
+        };
+
+        const solvedB = await solveZhihuishuPopupTest(
+          fallbackDoc,
+          controller.signal,
+          () => true,
+          { reactionDelayMs: 5, closeDelayMs: 5, verifyCloseDelayMs: 5 }
+        );
+        assert.equal(solvedB, true);
+        assert.equal(fallbackOptA.isSelected, true, '无 API Key 时必须保底选中第 1 项防止卡死');
+        assert.equal(closeClicked, true);
+      } finally {
+        (globalThis as any).GM_xmlhttpRequest = prevXhr;
+        store.config.aiApiKey = prevKey;
+      }
+    });
+
+    it('25.3 视频挂机与自动连播：findNextZhihuishuVideoItem 扫描与 playZhihuishuVideoTask 原速静音、弹题暂停恢复、完播切集及 Abort 释放', async () => {
+      const prevAutoNext = store.config.autoNextChapter;
+      const prevDelayBase = store.config.randomDelayBase;
+      const prevDelayJitter = store.config.randomDelayJitter;
+      const prevKey = store.config.aiApiKey;
+
+      const makeDocView = () => ({
+        getComputedStyle: (el: any) => ({
+          display: el?._computedDisplay || el?.style?.display || 'block',
+          visibility: el?.style?.visibility || 'visible'
+        })
+      });
+
+      const makeVideoItem = (opts: {
+        name: string;
+        current?: boolean;
+        finished?: boolean;
+        hiddenFinishIcon?: boolean;
+      }) => {
+        const titleEl: any = { innerText: opts.name, textContent: opts.name, clicked: false, click() { this.clicked = true; } };
+        const finishIcon: any = {
+          style: { display: opts.hiddenFinishIcon ? 'none' : '' },
+          parentElement: null
+        };
+        const item: any = {
+          name: opts.name,
+          titleEl,
+          contains: () => false,
+          classList: {
+            contains: (c: string) => Boolean(opts.current && c === 'current_play')
+          },
+          querySelector: (sel: string) => {
+            if (sel.includes('icofinish') && opts.finished) return finishIcon;
+            if (sel.includes('catalogue_title')) return titleEl;
+            return null;
+          }
+        };
+        return item;
+      };
+
+      try {
+        // 1. findNextZhihuishuVideoItem 场景 A：直接下一节按钮（跳过 disabled / hidden）
+        const disabledNext: any = {
+          disabled: true,
+          style: { display: '', visibility: '' },
+          classList: { contains: () => false },
+          hasAttribute: () => true,
+          getAttribute: () => null
+        };
+        const visibleNext: any = {
+          disabled: false,
+          style: { display: '', visibility: '' },
+          classList: { contains: () => false },
+          hasAttribute: () => false,
+          getAttribute: () => null
+        };
+        assert.equal(
+          findNextZhihuishuVideoItem({
+            defaultView: makeDocView(),
+            querySelectorAll: (sel: string) => (sel.includes('.next_lesson') ? [disabledNext, visibleNext] : [])
+          } as any),
+          visibleNext
+        );
+
+        // 2. findNextZhihuishuVideoItem 场景 B：后扫跳过 .time_icofinish
+        const v0 = makeVideoItem({ name: '1.1', current: true, finished: true });
+        const v1 = makeVideoItem({ name: '1.2', finished: true });
+        const v2 = makeVideoItem({ name: '1.3', finished: false });
+        assert.equal(
+          findNextZhihuishuVideoItem({
+            defaultView: makeDocView(),
+            querySelectorAll: (sel: string) => (sel.includes('.clearfix.video') ? [v0, v1, v2] : [])
+          } as any),
+          v2.titleEl,
+          '应跳过已完成 .time_icofinish 的 1.2 并返回 1.3'
+        );
+
+        // 3. findNextZhihuishuVideoItem 场景 C：尾部回扫未完成项
+        const w0 = makeVideoItem({ name: '1.1', finished: true });
+        const w1 = makeVideoItem({ name: '1.2', finished: false });
+        const w2 = makeVideoItem({ name: '1.3', current: true, finished: true });
+        assert.equal(
+          findNextZhihuishuVideoItem({
+            defaultView: makeDocView(),
+            querySelectorAll: (sel: string) => (sel.includes('.clearfix.video') ? [w0, w1, w2] : [])
+          } as any),
+          w1.titleEl,
+          '当前在末尾节且后方无未完成时，必须回扫命中 1.2'
+        );
+
+        // 4. findNextZhihuishuVideoItem 场景 D：全部完成返回 null
+        const f0 = makeVideoItem({ name: '1.1', current: true, finished: true });
+        const f1 = makeVideoItem({ name: '1.2', finished: true });
+        assert.equal(
+          findNextZhihuishuVideoItem({
+            defaultView: makeDocView(),
+            querySelectorAll: (sel: string) => (sel.includes('.clearfix.video') ? [f0, f1] : [])
+          } as any),
+          null
+        );
+
+        // 5. playZhihuishuVideoTask 场景 A：1.0x 原速静音、不篡改 currentTime、弹题期间不盲播、解完恢复播放、完播切集
+        store.config.autoNextChapter = true;
+        store.config.randomDelayBase = 0.5;
+        store.config.randomDelayJitter = 0;
+        store.config.aiApiKey = '';
+
+        const listeners = new Map<string, Set<Function>>();
+        let currentTimeValue = 12;
+        let currentTimeSetCount = 0;
+        let playCallCount = 0;
+        let pauseCallCount = 0;
+
+        const mockVideo: any = {
+          playbackRate: 2.0,
+          muted: false,
+          duration: 120,
+          paused: true,
+          ended: false,
+          get currentTime() {
+            return currentTimeValue;
+          },
+          set currentTime(val: number) {
+            currentTimeSetCount++;
+            currentTimeValue = val;
+          },
+          play: async () => {
+            playCallCount++;
+            mockVideo.paused = false;
+          },
+          pause: () => {
+            pauseCallCount++;
+            mockVideo.paused = true;
+          },
+          addEventListener: (ev: string, fn: Function) => {
+            if (!listeners.has(ev)) listeners.set(ev, new Set());
+            listeners.get(ev)!.add(fn);
+          },
+          removeEventListener: (ev: string, fn: Function) => {
+            listeners.get(ev)?.delete(fn);
+          }
+        };
+
+        let popupVisible = false;
+        let popupCloseClicked = false;
+        let nextLessonClicked = false;
+
+        const popupOpt1: any = {
+          innerText: 'A. 正确选项',
+          textContent: 'A. 正确选项',
+          style: { display: '', visibility: '' },
+          parentElement: null,
+          contains: () => false,
+          selected: false,
+          classList: { contains: function (c: string) { return popupOpt1.selected && c === 'active'; } },
+          getAttribute: () => (popupOpt1.selected ? 'true' : null),
+          click: () => {
+            popupOpt1.selected = true;
+          },
+          querySelector: (sel: string) => {
+            if (sel.includes('.topic-text')) return { innerText: '正确选项', textContent: '正确选项' };
+            if (sel.includes('input')) return { value: 'A', checked: popupOpt1.selected };
+            return null;
+          }
+        };
+        const popupCloseBtn: any = {
+          innerText: '关闭',
+          textContent: '关闭',
+          disabled: false,
+          style: { display: '', visibility: '' },
+          parentElement: null,
+          classList: { contains: () => false },
+          hasAttribute: () => false,
+          getAttribute: () => null,
+          click: () => {
+            popupCloseClicked = true;
+            popupVisible = false;
+          }
+        };
+        const popupDialog: any = {
+          style: { display: '', visibility: '' },
+          parentElement: null,
+          closest: () => null,
+          innerText: '【单选题】视频弹题',
+          querySelector: (sel: string) => {
+            if (sel.includes('.topic-title')) return { innerText: '1. 视频弹题测试', textContent: '1. 视频弹题测试' };
+            return null;
+          },
+          querySelectorAll: (sel: string) => {
+            if (sel.includes('.topic-num-item')) return [];
+            if (sel.includes('.topic-item')) return [popupOpt1];
+            if (sel.includes('input[type="radio"]')) return [popupOpt1];
+            if (sel.includes('button')) return [popupCloseBtn];
+            return [];
+          }
+        };
+        const nextBtnInVideo: any = {
+          disabled: false,
+          style: { display: '', visibility: '' },
+          classList: { contains: () => false },
+          hasAttribute: () => false,
+          getAttribute: () => null,
+          click: () => {
+            nextLessonClicked = true;
+          }
+        };
+
+        const videoDoc: any = {
+          defaultView: makeDocView(),
+          querySelector: (sel: string) => {
+            if (sel.includes('.current_play .catalogue_title')) return { innerText: '第一章 导论', textContent: '第一章 导论' };
+            if (sel.includes('.active.video')) return null;
+            if (sel.includes('#vjs_container_html5_api') || sel.includes('video')) return mockVideo;
+            return null;
+          },
+          querySelectorAll: (sel: string) => {
+            if (sel.includes('.dialog-test')) return popupVisible ? [popupDialog] : [];
+            if (sel.includes('.next_lesson')) return [nextBtnInVideo];
+            return [];
+          }
+        };
+
+        const ctrlA = new AbortController();
+        const taskPromiseA = playZhihuishuVideoTask(
+          videoDoc,
+          { signal: ctrlA.signal, isCurrent: () => true },
+          {
+            pollIntervalMs: 25,
+            popupTiming: { reactionDelayMs: 5, closeDelayMs: 5, verifyCloseDelayMs: 5 },
+            switchWaitTimeoutMs: 60
+          }
+        );
+
+        try {
+          await new Promise((r) => setTimeout(r, 60));
+          assert.equal(mockVideo.playbackRate, 1.0, '必须强制锁定 1.0x 原速');
+          assert.equal(mockVideo.muted, true, '必须强制静音自动播放');
+          assert.equal(currentTimeSetCount, 0, '绝不可篡改 video.currentTime');
+          assert.equal(currentTimeValue, 12);
+          assert.equal(playCallCount, 1);
+
+          // 触发弹题暂停：期间不得盲目恢复 play()
+          popupVisible = true;
+          mockVideo.paused = true;
+          for (const fn of listeners.get('pause') || []) {
+            void fn();
+          }
+          assert.equal(playCallCount, 1, '弹题暂停期间绝不能立即抢播');
+
+          // 等待轮询解完弹题并恢复播放
+          await new Promise((r) => setTimeout(r, 150));
+          assert.equal(popupCloseClicked, true, '轮询应自动求解并关闭随堂弹题');
+          assert.equal(popupVisible, false);
+          assert.ok(playCallCount >= 2, '弹题关闭后必须恢复 1.0x 原速播放');
+          assert.equal(mockVideo.playbackRate, 1.0);
+          assert.equal(mockVideo.muted, true);
+
+          // 触发播放结束并自动切集
+          mockVideo.ended = true;
+          for (const fn of listeners.get('ended') || []) {
+            fn();
+          }
+          await taskPromiseA;
+          assert.equal(nextLessonClicked, true, '视频完播后应自动点击下一节');
+          assert.equal(store.progress.status, 'finished');
+        } finally {
+          ctrlA.abort();
+          await taskPromiseA.catch(() => {});
+        }
+
+        // 6. playZhihuishuVideoTask 场景 B：AbortSignal 中断后所有监听器与定时器 100% 彻底释放
+        const origSetInterval = globalThis.setInterval;
+        const origClearInterval = globalThis.clearInterval;
+        const createdIntervals = new Set<any>();
+        const clearedIntervals = new Set<any>();
+
+        (globalThis as any).setInterval = (fn: any, ms?: number, ...args: any[]) => {
+          const id = origSetInterval(fn, ms, ...args);
+          createdIntervals.add(id);
+          return id;
+        };
+        (globalThis as any).clearInterval = (id: any) => {
+          clearedIntervals.add(id);
+          return origClearInterval(id);
+        };
+
+        try {
+          const abortListeners = new Map<string, Set<Function>>();
+          const trackedVideoListeners = new Map<string, Set<Function>>();
+          let abortFlag = false;
+          let pausedOnAbort = false;
+
+          const trackedSignal: any = {
+            get aborted() {
+              return abortFlag;
+            },
+            addEventListener: (ev: string, fn: Function) => {
+              if (!abortListeners.has(ev)) abortListeners.set(ev, new Set());
+              abortListeners.get(ev)!.add(fn);
+            },
+            removeEventListener: (ev: string, fn: Function) => {
+              abortListeners.get(ev)?.delete(fn);
+            }
+          };
+
+          const trackedVideo: any = {
+            playbackRate: 1.5,
+            muted: false,
+            duration: 100,
+            currentTime: 0,
+            paused: true,
+            ended: false,
+            play: async () => {
+              trackedVideo.paused = false;
+            },
+            pause: () => {
+              pausedOnAbort = true;
+              trackedVideo.paused = true;
+            },
+            addEventListener: (ev: string, fn: Function) => {
+              if (!trackedVideoListeners.has(ev)) trackedVideoListeners.set(ev, new Set());
+              trackedVideoListeners.get(ev)!.add(fn);
+            },
+            removeEventListener: (ev: string, fn: Function) => {
+              trackedVideoListeners.get(ev)?.delete(fn);
+            }
+          };
+
+          const abortDoc: any = {
+            defaultView: makeDocView(),
+            querySelector: (sel: string) => (sel.includes('video') ? trackedVideo : null),
+            querySelectorAll: () => []
+          };
+
+          const taskPromiseB = playZhihuishuVideoTask(
+            abortDoc,
+            { signal: trackedSignal, isCurrent: () => true },
+            { pollIntervalMs: 30 }
+          );
+
+          await new Promise((r) => setTimeout(r, 70));
+          assert.equal(createdIntervals.size, 1, '应创建 1 个轮询定时器');
+          assert.equal(trackedVideoListeners.get('timeupdate')?.size, 1);
+          assert.equal(trackedVideoListeners.get('pause')?.size, 1);
+          assert.equal(trackedVideoListeners.get('ended')?.size, 1);
+          assert.equal(abortListeners.get('abort')?.size, 1);
+
+          abortFlag = true;
+          for (const fn of Array.from(abortListeners.get('abort') || [])) {
+            fn();
+          }
+          await taskPromiseB;
+
+          assert.equal(pausedOnAbort, true, 'abort 时应暂停视频');
+          for (const id of createdIntervals) {
+            assert.equal(clearedIntervals.has(id), true, 'abort 后必须彻底 clearInterval 释放轮询定时器');
+          }
+          assert.equal(trackedVideoListeners.get('timeupdate')?.size, 0, 'timeupdate 监听器必须释放');
+          assert.equal(trackedVideoListeners.get('pause')?.size, 0, 'pause 监听器必须释放');
+          assert.equal(trackedVideoListeners.get('ended')?.size, 0, 'ended 监听器必须释放');
+          assert.equal(abortListeners.get('abort')?.size, 0, 'abort 监听器必须释放');
+        } finally {
+          (globalThis as any).setInterval = origSetInterval;
+          (globalThis as any).clearInterval = origClearInterval;
+        }
+      } finally {
+        store.config.autoNextChapter = prevAutoNext;
+        store.config.randomDelayBase = prevDelayBase;
+        store.config.randomDelayJitter = prevDelayJitter;
+        store.config.aiApiKey = prevKey;
+      }
+    });
+
+    it('25.4 智慧树 stuExamWeb / onlineexamh5new 考试/作业集成测试 (doQuizTask)：题块解析、排除 .exam-card、Element UI 防反选/输入事件、单题翻页与 scope 稳定性', async () => {
+      const prevWin = (globalThis as any).window;
+      const prevXhr = (globalThis as any).GM_xmlhttpRequest;
+      const prevSession = (globalThis as any).sessionStorage;
+      const prevKey = store.config.aiApiKey;
+      const prevAutoSubmit = store.config.autoSubmitWork;
+
+      const sMap = new Map<string, string>();
+      (globalThis as any).sessionStorage = {
+        getItem: (k: string) => sMap.get(k) ?? null,
+        setItem: (k: string, v: string) => sMap.set(k, String(v)),
+        removeItem: (k: string) => sMap.delete(k),
+        clear: () => sMap.clear()
+      };
+
+      const setZhsUrl = (urlStr: string) => {
+        const parsed = new URL(urlStr);
+        (globalThis as any).window = {
+          location: {
+            href: parsed.href,
+            hostname: parsed.hostname,
+            pathname: parsed.pathname,
+            search: parsed.search
+          },
+          setTimeout,
+          clearTimeout,
+          setInterval,
+          clearInterval,
+          addEventListener: () => {},
+          removeEventListener: () => {}
+        };
+      };
+
+      try {
+        // 1. recruitId / homeworkId 的 getExamScope() 稳定性
+        setZhsUrl('https://onlineexamh5new.zhihuishu.com/stuExamWeb.html?recruitId=9001&homeworkId=8002&studentExamId=7003&questionId=1&t=111&index=0');
+        const zhsScope1 = getExamScope();
+        setZhsUrl('https://onlineexamh5new.zhihuishu.com/stuExamWeb.html?recruitId=9001&homeworkId=8002&studentExamId=7003&questionId=2&t=222&index=1');
+        const zhsScope2 = getExamScope();
+        assert.equal(zhsScope1, zhsScope2, '智慧树动态题号/时间戳变化时 examScope 必须保持稳定');
+
+        setZhsUrl('https://onlineexamh5new.zhihuishu.com/stuExamWeb.html?recruitId=9002&homeworkId=8002&studentExamId=7003');
+        assert.notEqual(getExamScope(), zhsScope1, '不同 recruitId 必须隔离');
+
+        setZhsUrl('https://onlineexamh5new.zhihuishu.com/stuExamWeb.html?recruitId=9001&homeworkId=8009&studentExamId=7003');
+        assert.notEqual(getExamScope(), zhsScope1, '不同 homeworkId 必须隔离');
+
+        // 2. isQuestionAnswered 对 Element UI 已选态的精准识别
+        const makeAnsweredMock = (matchedSelPart: string) => ({
+          querySelector: (sel: string) => (sel.includes(matchedSelPart) ? {} : null),
+          querySelectorAll: () => []
+        });
+        assert.equal(isQuestionAnswered(makeAnsweredMock('.el-radio.is-checked') as any), true);
+        assert.equal(isQuestionAnswered(makeAnsweredMock('.el-checkbox.is-checked') as any), true);
+        assert.equal(isQuestionAnswered(makeAnsweredMock('.nodeLab.active') as any), true);
+        assert.equal(isQuestionAnswered(makeAnsweredMock('.nodeLab.is-checked') as any), true);
+        assert.equal(isQuestionAnswered(makeAnsweredMock('.subject_node .is-checked') as any), true);
+        assert.equal(
+          isQuestionAnswered({
+            querySelector: () => null,
+            querySelectorAll: (sel: string) =>
+              sel.includes('.el-textarea__inner') ? [{ type: 'textarea', name: '', id: '', className: 'el-textarea__inner', value: '已填主观题答案' }] : []
+          } as any),
+          true
+        );
+        assert.equal(
+          isQuestionAnswered({
+            querySelector: () => null,
+            querySelectorAll: (sel: string) =>
+              sel.includes('.el-textarea__inner') ? [{ type: 'textarea', name: '', id: '', className: 'el-textarea__inner', value: '   ' }] : []
+          } as any),
+          false
+        );
+
+        // 3. setNativeInputValue 必须调用原生原型 setter（触发 Vue 2 / Element UI 响应式）
+        let nativeSetterCalledWith: string | null = null;
+        class FakeVueTextarea {
+          private _val = '';
+          tagName = 'TEXTAREA';
+          get value() {
+            return this._val;
+          }
+          set value(v: string) {
+            nativeSetterCalledWith = v;
+            this._val = v;
+          }
+        }
+        const fakeTextarea = new FakeVueTextarea() as any;
+        fakeTextarea.ownerDocument = {
+          defaultView: {
+            HTMLTextAreaElement: FakeVueTextarea
+          }
+        };
+        setNativeInputValue(fakeTextarea, '原生响应式写入值');
+        assert.equal(nativeSetterCalledWith, '原生响应式写入值');
+        assert.equal(fakeTextarea.value, '原生响应式写入值');
+
+        // 4. doQuizTask 智慧树 stuExamWeb 两页单题考试集成测试
+        setZhsUrl('https://onlineexamh5new.zhihuishu.com/stuExamWeb.html?recruitId=9001&homeworkId=8002&studentExamId=7003');
+        sMap.clear();
+        store.config.aiApiKey = 'sk-zhs-exam-test';
+        store.config.autoSubmitWork = true;
+
+        // 构造被 .exam-card 包裹的伪题块（必须被排除）
+        const examCardDecoy: any = {
+          getAttribute: () => 'card-decoy-1',
+          closest: (sel: string) => (sel.includes('.exam-card') ? {} : null),
+          contains: () => false,
+          querySelector: () => ({}),
+          querySelectorAll: () => [{}]
+        };
+
+        // Page 1 选项：.subject_node .nodeLab + .el-checkbox（验证点击勾选且不二次点击 clickableEl 导致反选）
+        const makeZhsMultiOpt = (letter: string, text: string) => {
+          let checked = false;
+          let outerClicks = 0;
+          let innerInputClicks = 0;
+          const checkboxInput: any = {
+            type: 'checkbox',
+            value: letter,
+            get checked() {
+              return checked;
+            },
+            set checked(v: boolean) {
+              checked = v;
+            },
+            click: () => {
+              innerInputClicks++;
+              checked = !checked;
+            },
+            dispatchEvent: () => true
+          };
+          const elCheckboxInput: any = {
+            classList: { contains: (c: string) => checked && c === 'is-checked' },
+            click: () => {
+              innerInputClicks++;
+              checked = !checked;
+            }
+          };
+          const opt: any = {
+            innerText: `${letter}. ${text}`,
+            textContent: `${letter}. ${text}`,
+            closest: () => null,
+            contains: () => false,
+            scrollIntoView: () => {},
+            classList: {
+              contains: (c: string) => checked && (c === 'is-checked' || c === 'active')
+            },
+            getAttribute: () => null,
+            setAttribute: () => {},
+            click: () => {
+              outerClicks++;
+              checked = !checked;
+            },
+            querySelector: (sel: string) => {
+              if (sel.includes('.node_Lab') || sel.includes('.option-letter')) {
+                return { innerText: letter, textContent: letter, getAttribute: () => null };
+              }
+              if (sel.includes('.node_detail') || sel.includes('.el-checkbox__label')) {
+                return { innerText: text, textContent: text };
+              }
+              if (sel.includes('input[type="checkbox"]') && sel.includes(':checked')) {
+                return checked ? checkboxInput : null;
+              }
+              if (sel.includes('input[type="checkbox"]')) return checkboxInput;
+              if (sel.includes('.el-checkbox__input')) return elCheckboxInput;
+              if (sel.includes('.is-checked') || sel.includes('.el-checkbox.is-checked')) {
+                return checked ? elCheckboxInput : null;
+              }
+              return null;
+            },
+            get isChecked() {
+              return checked;
+            },
+            get outerClicks() {
+              return outerClicks;
+            },
+            get innerInputClicks() {
+              return innerInputClicks;
+            }
+          };
+          return opt;
+        };
+
+        const p1Opts = [
+          makeZhsMultiOpt('A', '智慧树 1.0x 原速静音'),
+          makeZhsMultiOpt('B', '随机弹题自动过关'),
+          makeZhsMultiOpt('C', '篡改进度条快进')
+        ];
+
+        const q1Node: any = {
+          getAttribute: (k: string) => (k === 'data-id' ? 'zhs-q1' : null),
+          closest: () => null,
+          contains: () => false,
+          cloneNode: function () { return this; },
+          innerText: '【多选题】智慧树双平台辅助支持哪些能力？',
+          querySelector: (sel: string) => {
+            if (sel.includes('.subject_type')) return { innerText: '【多选题】', textContent: '【多选题】' };
+            if (sel.includes('.subject_describe')) return { innerText: '智慧树双平台辅助支持哪些能力？', textContent: '智慧树双平台辅助支持哪些能力？' };
+            if (sel.includes(':checked') || sel.includes('.is-checked') || sel.includes('.nodeLab.active')) {
+              return p1Opts.some((o) => o.isChecked) ? {} : null;
+            }
+            if (sel.includes('input[type="checkbox"]') || sel.includes('.el-checkbox')) return p1Opts[0];
+            if (sel.includes('.subject_node')) return p1Opts[0];
+            return null;
+          },
+          querySelectorAll: (sel: string) => {
+            if (sel.includes('.subject_node .nodeLab')) return p1Opts;
+            if (sel.includes('input[type="checkbox"]') || sel.includes('.el-checkbox')) return p1Opts;
+            return [];
+          }
+        };
+
+        // Page 2 主观简答题：.questionBox + .el-textarea__inner
+        const firedEvents: string[] = [];
+        let textareaRealValue = '';
+        class ZhsTextareaMock {
+          tagName = 'TEXTAREA';
+          type = 'textarea';
+          id = 'zhs-essay-1';
+          name = 'essayAnswer';
+          className = 'el-textarea__inner';
+          get value() {
+            return textareaRealValue;
+          }
+          set value(v: string) {
+            textareaRealValue = v;
+          }
+          dispatchEvent(ev: any) {
+            firedEvents.push(ev?.type || '');
+            return true;
+          }
+          getAttribute() {
+            return null;
+          }
+        }
+        const zhsTextarea = new ZhsTextareaMock() as any;
+        zhsTextarea.ownerDocument = {
+          defaultView: {
+            HTMLTextAreaElement: ZhsTextareaMock
+          }
+        };
+
+        const q2Node: any = {
+          getAttribute: (k: string) => (k === 'data-id' ? 'zhs-q2' : null),
+          closest: () => null,
+          contains: () => false,
+          cloneNode: function () { return this; },
+          innerText: '【简答题】简述智慧树 1.0x 原速静音策略的目的',
+          querySelector: (sel: string) => {
+            if (sel.includes('.subject_type')) return { innerText: '【简答题】', textContent: '【简答题】' };
+            if (sel.includes('.subject_describe')) return { innerText: '简述智慧树 1.0x 原速静音策略的目的', textContent: '简述智慧树 1.0x 原速静音策略的目的' };
+            if (sel.includes(':checked') || sel.includes('.is-checked')) return null;
+            if (sel.includes('.el-textarea__inner') || sel.includes('textarea')) return zhsTextarea;
+            return null;
+          },
+          querySelectorAll: (sel: string) => {
+            if (sel.includes('.el-textarea__inner') || sel.includes('textarea')) return [zhsTextarea];
+            return [];
+          }
+        };
+
+        let currentPage = 1;
+        let nextBtnClicked = false;
+        let submitBtnClicked = false;
+        let confirmModalClicked = false;
+
+        const nextBtnEl: any = {
+          innerText: '下一题',
+          textContent: '下一题',
+          disabled: false,
+          style: { display: '', visibility: '' },
+          classList: { contains: () => false },
+          hasAttribute: () => false,
+          getAttribute: () => null,
+          closest: () => null,
+          click: () => {
+            nextBtnClicked = true;
+            setTimeout(() => {
+              currentPage = 2;
+            }, 30);
+          }
+        };
+        const submitBtnEl: any = {
+          click: () => {
+            submitBtnClicked = true;
+          }
+        };
+        const confirmBtnEl: any = {
+          innerText: '确定提交',
+          textContent: '确定提交',
+          classList: { contains: (c: string) => c === 'el-button--primary' },
+          click: () => {
+            confirmModalClicked = true;
+          }
+        };
+
+        const zhsExamDoc: any = {
+          defaultView: {
+            getComputedStyle: (el: any) => ({
+              display: el?.style?.display || 'block',
+              visibility: el?.style?.visibility || 'visible'
+            }),
+            confirm: () => true,
+            alert: () => true
+          },
+          querySelector: (sel: string) => {
+            if (sel.includes('.examPaper_subject') || sel.includes('.questionBox')) {
+              return currentPage === 1 ? q1Node : q2Node;
+            }
+            if (sel.includes('title')) return { textContent: '智慧树期末考试' };
+            if (sel.includes('.exam-submit-btn')) return submitBtnEl;
+            return null;
+          },
+          querySelectorAll: (sel: string) => {
+            if (sel.includes('.examPaper_subject') && sel.includes('.questionBox')) {
+              return currentPage === 1 ? [examCardDecoy, q1Node] : [examCardDecoy, q2Node];
+            }
+            if (sel.includes('.switch-btn-box .el-button')) {
+              return currentPage === 1 ? [nextBtnEl] : [];
+            }
+            if (sel.includes('.el-message-box__btns .el-button--primary')) {
+              return [confirmBtnEl];
+            }
+            return [];
+          }
+        };
+
+        (globalThis as any).GM_xmlhttpRequest = (opts: any) => {
+          const body = JSON.parse(opts.data);
+          const prompt = JSON.stringify(body.messages);
+          const reply = prompt.includes('智慧树双平台辅助支持哪些能力')
+            ? '["A", "B"]'
+            : '保持 1.0x 原速静音可在避免风控的同时稳定完成播放进度统计。';
+          setTimeout(() => {
+            opts.onload({
+              status: 200,
+              responseText: JSON.stringify({ choices: [{ message: { content: reply } }] })
+            });
+          }, 5);
+        };
+
+        const ctrl = new AbortController();
+        await doQuizTask(null, zhsExamDoc, { signal: ctrl.signal, isCurrent: () => true });
+
+        assert.equal(store.questions.length, 2, '应仅解析出 2 道真实题目并严格排除 .exam-card');
+        assert.equal(store.questions[0].type, 'multiple', '题 1 应识别为 multiple');
+        assert.equal(p1Opts[0].isChecked, true);
+        assert.equal(p1Opts[1].isChecked, true);
+        assert.equal(p1Opts[2].isChecked, false);
+        assert.equal(p1Opts[0].outerClicks, 1, '勾选后不应再次点击导致反选');
+        assert.equal(p1Opts[0].innerInputClicks, 0, '外层点击已触发 .is-checked 后，禁止再点击内层 input 反选');
+        assert.equal(nextBtnClicked, true, '必须触发 .switch-btn-box .el-button 单题下一题翻页');
+
+        assert.equal(store.questions[1].type, 'essay', '题 2 应识别为 essay');
+        assert.ok(textareaRealValue.includes('1.0x 原速静音'), '应将回答写入 .el-textarea__inner');
+        assert.ok(firedEvents.includes('input'), '必须触发 input 事件');
+        assert.ok(firedEvents.includes('change'), '必须触发 change 事件');
+        assert.ok(firedEvents.includes('blur'), '必须触发 blur 事件');
+        assert.equal(submitBtnClicked, true, '全部作答完成应点击 .exam-submit-btn');
+        assert.equal(confirmModalClicked, true, '应点击 Element UI 二次确认按钮');
+      } finally {
+        clearExamAutoResumeState();
+        (globalThis as any).window = prevWin;
+        (globalThis as any).GM_xmlhttpRequest = prevXhr;
+        (globalThis as any).sessionStorage = prevSession;
+        store.config.aiApiKey = prevKey;
+        store.config.autoSubmitWork = prevAutoSubmit;
+      }
+    });
+
+    it('25.5 ChapterScheduler 智慧树视频防重入/考试自动识别续跑与 v1.4.0 产物静态元数据校验', async () => {
+      const prevWin = (globalThis as any).window;
+      const prevDoc = (globalThis as any).document;
+      const prevSession = (globalThis as any).sessionStorage;
+
+      const sMap = new Map<string, string>();
+      (globalThis as any).sessionStorage = {
+        getItem: (k: string) => sMap.get(k) ?? null,
+        setItem: (k: string, v: string) => sMap.set(k, String(v)),
+        removeItem: (k: string) => sMap.delete(k),
+        clear: () => sMap.clear()
+      };
+
+      const setEnvUrl = (fullUrl: string) => {
+        const parsed = new URL(fullUrl);
+        (globalThis as any).window = {
+          location: {
+            href: parsed.href,
+            hostname: parsed.hostname,
+            pathname: parsed.pathname,
+            search: parsed.search
+          },
+          setTimeout,
+          clearTimeout,
+          setInterval,
+          clearInterval,
+          addEventListener: () => {},
+          removeEventListener: () => {}
+        };
+      };
+
+      try {
+        // 1. ChapterScheduler 在智慧树视频页触发 playZhihuishuVideoTask 且防重入
+        setEnvUrl('https://studyvideoh5.zhihuishu.com/videoStudy.html?recruitAndCourseId=555');
+        let playInvokeCount = 0;
+        const mockVid: any = {
+          playbackRate: 1.0,
+          muted: true,
+          duration: 100,
+          currentTime: 0,
+          paused: true,
+          ended: false,
+          play: async () => {
+            playInvokeCount++;
+            mockVid.paused = false;
+          },
+          pause: () => {
+            mockVid.paused = true;
+          },
+          addEventListener: () => {},
+          removeEventListener: () => {}
+        };
+        (globalThis as any).document = {
+          readyState: 'complete',
+          location: (globalThis as any).window.location,
+          defaultView: { getComputedStyle: () => ({ display: 'block', visibility: 'visible' }) },
+          documentElement: { querySelectorAll: () => [] },
+          querySelector: (sel: string) => (sel.includes('#vjs_container_html5_api') ? mockVid : null),
+          querySelectorAll: () => []
+        };
+
+        const videoScheduler = new ChapterScheduler();
+        const p1 = (videoScheduler as any).runPipeline();
+        // 尚未结束时并发调用 runPipeline()，必须被 isZhihuishuVideoRunning 拦截
+        assert.equal((videoScheduler as any).isZhihuishuVideoRunning, true);
+        const p2 = (videoScheduler as any).runPipeline();
+        await p2;
+        assert.equal(playInvokeCount, 0, '尚未到默认 2000ms 轮询点前防重入直接返回，绝不会启动第二个播放任务');
+        (videoScheduler as any).watchdog.abort();
+        await p1;
+        assert.equal((videoScheduler as any).isZhihuishuVideoRunning, false, '退出后必须复位防重入锁');
+
+        // 2. ChapterScheduler 在智慧树考试页自动识别与续跑
+        setEnvUrl('https://onlineexamh5new.zhihuishu.com/stuExamWeb.html#/webExamList/dohomework?recruitId=101&homeworkId=202');
+        sMap.clear();
+        (globalThis as any).document = {
+          readyState: 'complete',
+          location: (globalThis as any).window.location,
+          documentElement: { querySelectorAll: () => [] },
+          querySelector: (sel: string) => {
+            if (sel.includes('.examPaper_subject')) return { id: 'zhs-exam-q1' };
+            if (sel.includes('.subject_node') || sel.includes('.el-radio')) return { id: 'zhs-opt-1' };
+            return null;
+          },
+          querySelectorAll: () => []
+        };
+
+        store.updateProgress({ status: 'idle', title: '待机中', percent: 0, currentTime: '00:00' });
+        const examSched1 = new ChapterScheduler();
+        assert.equal((examSched1 as any).isStandaloneQuiz((globalThis as any).document), true);
+        await (examSched1 as any).runPipeline();
+        assert.equal(store.progress.title, '已检测到作业/测验，点击【开始答题】启动');
+
+        // 存在续跑状态时，自动触发 triggerManualQuiz
+        setExamAutoResumeState({ solvedCount: 2, lastPageSig: 'zhs-q2::题二' });
+        const examSched2 = new ChapterScheduler();
+        let resumed = 0;
+        (examSched2 as any).triggerManualQuiz = async () => {
+          resumed++;
+          store.setQuizRunning(false);
+        };
+        await (examSched2 as any).runPipeline();
+        await new Promise((r) => setTimeout(r, 100));
+        assert.equal(resumed, 1, '智慧树考试页存在 ExamAutoResumeState 时必须自动续跑');
+
+        // 3. v1.4.0 产物与工程配置文件静态元数据校验
+        const rootDir = path.resolve(process.cwd());
+        const pkgJson = JSON.parse(fs.readFileSync(path.join(rootDir, 'package.json'), 'utf8'));
+        assert.equal(pkgJson.version, '1.4.0', 'package.json 版本必须为 1.4.0');
+
+        const viteCfg = fs.readFileSync(path.join(rootDir, 'vite.config.ts'), 'utf8');
+        assert.ok(viteCfg.includes("version: '1.4.0'") || viteCfg.includes('version: "1.4.0"'), 'vite.config.ts 必须声明 1.4.0');
+        assert.ok(viteCfg.includes('*://*.zhihuishu.com/*'), 'vite.config.ts 必须包含 *://*.zhihuishu.com/*');
+
+        const manifest = JSON.parse(fs.readFileSync(path.join(rootDir, 'chrome-extension', 'manifest.json'), 'utf8'));
+        assert.equal(manifest.version, '1.4.0', 'manifest.json 版本必须为 1.4.0');
+        assert.ok(
+          Array.isArray(manifest.host_permissions) && manifest.host_permissions.includes('*://*.zhihuishu.com/*'),
+          'manifest.json host_permissions 必须包含 *://*.zhihuishu.com/*'
+        );
+        assert.ok(
+          Array.isArray(manifest.content_scripts) &&
+            manifest.content_scripts[0]?.matches?.includes('*://*.zhihuishu.com/*'),
+          'manifest.json content_scripts matches 必须包含 *://*.zhihuishu.com/*'
+        );
+
+        const distUserJsPath = path.join(rootDir, 'dist', 'Kasa-xuexitong-helper.user.js');
+        assert.equal(fs.existsSync(distUserJsPath), true, 'dist/Kasa-xuexitong-helper.user.js 产物必须存在');
+        const distUserJs = fs.readFileSync(distUserJsPath, 'utf8');
+        assert.match(distUserJs, /@version\s+1\.4\.0/, '构建产物 UserScript 头必须包含 @version 1.4.0');
+        assert.match(distUserJs, /@match\s+\*:\/\/\*\.zhihuishu\.com\/\*/, '构建产物 UserScript 头必须包含 @match *://*.zhihuishu.com/*');
+      } finally {
+        clearExamAutoResumeState();
+        (globalThis as any).window = prevWin;
+        (globalThis as any).document = prevDoc;
+        (globalThis as any).sessionStorage = prevSession;
+      }
+    });
+
+    it('25.6 核验 Kurumi 风控修复：Vue 异步 nextTick 防反选、嵌套列表/兄弟 .node_detail 提取、confirm/alert 恢复、隐藏弹窗过滤与禁用题型熔断', async () => {
+      const prevWin = (globalThis as any).window;
+      const prevXhr = (globalThis as any).GM_xmlhttpRequest;
+      const prevSession = (globalThis as any).sessionStorage;
+      const prevKey = store.config.aiApiKey;
+      const prevAutoSubmit = store.config.autoSubmitWork;
+      const prevEnabledTypes = store.config.enabledQuestionTypes;
+
+      const sMap = new Map<string, string>();
+      (globalThis as any).sessionStorage = {
+        getItem: (k: string) => sMap.get(k) ?? null,
+        setItem: (k: string, v: string) => sMap.set(k, String(v)),
+        removeItem: (k: string) => sMap.delete(k),
+        clear: () => sMap.clear()
+      };
+
+      const makeAsyncCheckboxOpt = (opts: {
+        letter: string;
+        text: string;
+        useNodeDetailSibling?: boolean;
+        delayMs?: number;
+      }) => {
+        let checked = false;
+        let clickCount = 0;
+        const delayMs = opts.delayMs ?? 10;
+        const toggleAsync = () => {
+          clickCount++;
+          const targetState = !checked;
+          setTimeout(() => {
+            checked = targetState;
+          }, delayMs);
+        };
+
+        const inputEl: any = {
+          type: 'checkbox',
+          value: opts.letter,
+          get checked() {
+            return checked;
+          },
+          set checked(v: boolean) {
+            checked = v;
+          },
+          click: toggleAsync,
+          dispatchEvent: () => true
+        };
+        const elCheckboxInput: any = {
+          classList: { contains: (c: string) => checked && c === 'is-checked' },
+          click: toggleAsync
+        };
+        const nodeLabEl: any = {
+          classList: {
+            contains: (c: string) => c === 'nodeLab' || (checked && (c === 'is-checked' || c === 'active'))
+          },
+          matches: (sel: string) => sel.includes('.nodeLab'),
+          click: toggleAsync,
+          querySelector: (sel: string) => {
+            if (sel.includes('.node_Lab')) return { innerText: opts.letter, textContent: opts.letter, getAttribute: () => null };
+            return null;
+          }
+        };
+        const nodeDetailEl: any = {
+          innerText: opts.text,
+          textContent: opts.text
+        };
+
+        const optEl: any = {
+          innerText: `${opts.letter}. ${opts.text}`,
+          textContent: `${opts.letter}. ${opts.text}`,
+          style: { display: '', visibility: '' },
+          parentElement: null,
+          closest: () => null,
+          contains: (other: any) => other === nodeLabEl || other === nodeDetailEl,
+          scrollIntoView: () => {},
+          matches: (sel: string) =>
+            opts.useNodeDetailSibling ? false : sel.includes('.el-checkbox'),
+          classList: {
+            contains: (c: string) =>
+              (!opts.useNodeDetailSibling && c === 'el-checkbox') ||
+              (checked && (c === 'is-checked' || c === 'active'))
+          },
+          getAttribute: () => null,
+          setAttribute: () => {},
+          click: toggleAsync,
+          querySelector: (sel: string) => {
+            if (sel.includes('.node_Lab') || sel.includes('.option-letter')) {
+              return { innerText: opts.letter, textContent: opts.letter, getAttribute: () => null };
+            }
+            if (sel.includes('.node_detail') || sel.includes('.el-checkbox__label')) {
+              return nodeDetailEl;
+            }
+            if (sel.includes('.nodeLab')) {
+              return opts.useNodeDetailSibling ? nodeLabEl : null;
+            }
+            if (sel.includes('input[type="checkbox"]') && sel.includes(':checked')) {
+              return checked ? inputEl : null;
+            }
+            if (sel.includes('input[type="checkbox"]')) return inputEl;
+            if (sel.includes('.el-checkbox__input')) return elCheckboxInput;
+            if (sel.includes('.is-checked') || sel.includes('.el-checkbox.is-checked')) {
+              return checked ? elCheckboxInput : null;
+            }
+            return null;
+          },
+          get clickCount() {
+            return clickCount;
+          },
+          get isChecked() {
+            return checked;
+          }
+        };
+        return optEl;
+      };
+
+      try {
+        // 1. solveZhihuishuPopupTest：Vue 异步 nextTick 延迟 10ms 设置 .is-checked，严禁重复点击反选
+        const popupAsyncOpts = [
+          makeAsyncCheckboxOpt({ letter: 'A', text: '异步选中甲', delayMs: 10 }),
+          makeAsyncCheckboxOpt({ letter: 'B', text: '干扰项乙', delayMs: 10 }),
+          makeAsyncCheckboxOpt({ letter: 'C', text: '异步选中丙', delayMs: 10 })
+        ];
+        // Adapt popup selector expectations onto async checkbox opts
+        const wrapPopupOpt = (base: any, letter: string, text: string) => ({
+          ...base,
+          matches: (sel: string) => sel.includes('.el-checkbox'),
+          classList: base.classList,
+          get clickCount() {
+            return base.clickCount;
+          },
+          get isChecked() {
+            return base.isChecked;
+          },
+          querySelector: (sel: string) => {
+            if (sel.includes('.topic-option')) return { innerText: letter, textContent: letter };
+            if (sel.includes('.topic-text')) return { innerText: text, textContent: text };
+            return base.querySelector(sel);
+          }
+        });
+        const pOpts = [
+          wrapPopupOpt(popupAsyncOpts[0], 'A', '异步选中甲'),
+          wrapPopupOpt(popupAsyncOpts[1], 'B', '干扰项乙'),
+          wrapPopupOpt(popupAsyncOpts[2], 'C', '异步选中丙')
+        ];
+        const popupDialog: any = {
+          style: { display: '', visibility: '' },
+          parentElement: null,
+          closest: () => null,
+          innerText: '【多选题】异步 Vue 弹题',
+          querySelector: (sel: string) => {
+            if (sel.includes('.topic-title')) return { innerText: '1. (多选题) 异步多选测试', textContent: '1. (多选题) 异步多选测试' };
+            if (sel.includes('input[type="checkbox"]')) return pOpts[0];
+            return null;
+          },
+          querySelectorAll: (sel: string) => {
+            if (sel.includes('.topic-num-item')) return [];
+            if (sel.includes('.el-checkbox')) return pOpts;
+            if (sel.includes('button')) {
+              return [
+                {
+                  innerText: '关闭',
+                  textContent: '关闭',
+                  disabled: false,
+                  style: { display: '', visibility: '' },
+                  parentElement: null,
+                  classList: { contains: () => false },
+                  hasAttribute: () => false,
+                  getAttribute: () => null,
+                  click: () => {
+                    popupDialog.style.display = 'none';
+                  }
+                }
+              ];
+            }
+            return [];
+          }
+        };
+        const popupDoc: any = {
+          defaultView: {
+            getComputedStyle: (el: any) => ({
+              display: el?.style?.display || 'block',
+              visibility: el?.style?.visibility || 'visible'
+            })
+          },
+          querySelectorAll: (sel: string) => (sel.includes('.dialog-test') ? [popupDialog] : [])
+        };
+
+        store.config.aiApiKey = 'sk-vue-async-test';
+        (globalThis as any).GM_xmlhttpRequest = (opts: any) => {
+          setTimeout(() => {
+            opts.onload({
+              status: 200,
+              responseText: JSON.stringify({ choices: [{ message: { content: '["A", "C"]' } }] })
+            });
+          }, 5);
+        };
+
+        const ctrlPopup = new AbortController();
+        const solvedPopup = await solveZhihuishuPopupTest(
+          popupDoc,
+          ctrlPopup.signal,
+          () => true,
+          { reactionDelayMs: 5, closeDelayMs: 5, verifyCloseDelayMs: 5 }
+        );
+        assert.equal(solvedPopup, true);
+        assert.equal(pOpts[0].clickCount, 1, '弹题 Vue 异步选项 A 只允许点击 1 次');
+        assert.equal(pOpts[0].isChecked, true, '弹题异步选项 A 最终必须保持选中');
+        assert.equal(pOpts[1].clickCount, 0);
+        assert.equal(pOpts[2].clickCount, 1, '弹题 Vue 异步选项 C 只允许点击 1 次');
+        assert.equal(pOpts[2].isChecked, true, '弹题异步选项 C 最终必须保持选中');
+
+        // 2. doQuizTask：.subject_node_list 内嵌 .el-checkbox-group 去重 + 嵌套无题干 .questionBox 剪枝 + 兄弟 .node_detail 提取 + Vue 异步防反选 + 跳过隐藏确认按钮 + confirm/alert 恢复
+        const origConfirm = () => false;
+        const origAlert = () => undefined;
+        const mockWin: any = {
+          location: new URL('https://onlineexamh5new.zhihuishu.com/stuExamWeb.html?recruitId=701&homeworkId=802'),
+          confirm: origConfirm,
+          alert: origAlert,
+          setTimeout,
+          clearTimeout,
+          setInterval,
+          clearInterval,
+          addEventListener: () => {},
+          removeEventListener: () => {}
+        };
+        (globalThis as any).window = mockWin;
+
+        const qOpts = [
+          makeAsyncCheckboxOpt({ letter: 'A', text: '正确内容甲', useNodeDetailSibling: true, delayMs: 10 }),
+          makeAsyncCheckboxOpt({ letter: 'B', text: '正确内容乙', useNodeDetailSibling: true, delayMs: 10 }),
+          makeAsyncCheckboxOpt({ letter: 'C', text: '错误干扰丙', useNodeDetailSibling: true, delayMs: 10 })
+        ];
+
+        const innerCheckboxGroup: any = { contains: () => false };
+        const outerSubjectNodeList: any = {
+          contains: (other: any) => other === innerCheckboxGroup
+        };
+
+        // 内嵌在 .examPaper_subject 内部且没有独立题干的 .questionBox，必须被 prunedNodes 剪枝而不重复作答
+        const innerOptionOnlyBox: any = {
+          getAttribute: () => null,
+          closest: () => null,
+          contains: () => false,
+          querySelector: (sel: string) => {
+            if (sel.includes('.subject_describe') || sel.includes('.mark_name')) return null;
+            if (sel.includes('.subject_node')) return qOpts[0];
+            return null;
+          },
+          querySelectorAll: (sel: string) => {
+            if (sel.includes('.subject_node_list')) return [innerCheckboxGroup];
+            return [];
+          }
+        };
+
+        const outerSubject: any = {
+          getAttribute: (k: string) => (k === 'data-id' ? 'nested-zhs-1' : null),
+          closest: () => null,
+          contains: (other: any) => other === innerOptionOnlyBox,
+          cloneNode: function () { return this; },
+          innerText: '【多选题】下列符合智慧树结构提取的选项有？',
+          querySelector: (sel: string) => {
+            if (sel.includes('.subject_type')) return { innerText: '【多选题】', textContent: '【多选题】' };
+            if (sel.includes('.subject_describe')) return { innerText: '下列符合智慧树结构提取的选项有？', textContent: '下列符合智慧树结构提取的选项有？' };
+            if (sel.includes(':checked') || sel.includes('.is-checked') || sel.includes('.nodeLab.active')) {
+              return qOpts.some((o) => o.isChecked) ? {} : null;
+            }
+            if (sel.includes('.subject_node') || sel.includes('input[type="checkbox"]')) return qOpts[0];
+            return null;
+          },
+          querySelectorAll: (sel: string) => {
+            if (sel.includes('.subject_node_list') && sel.includes('.el-checkbox-group')) {
+              return [outerSubjectNodeList, innerCheckboxGroup];
+            }
+            if (sel.includes('.subject_node') && !sel.includes('.nodeLab')) {
+              return qOpts;
+            }
+            if (sel.includes('input[type="checkbox"]')) return qOpts;
+            return [];
+          }
+        };
+
+        let hiddenConfirmClicked = false;
+        let visibleConfirmClicked = false;
+        let submitBtnClicked = false;
+        const hiddenConfirmBtn: any = {
+          innerText: '确定提交',
+          textContent: '确定提交',
+          style: { display: 'none', visibility: '' },
+          parentElement: null,
+          classList: { contains: (c: string) => c === 'el-button--primary' },
+          click: () => {
+            hiddenConfirmClicked = true;
+          }
+        };
+        const visibleConfirmBtn: any = {
+          innerText: '确定提交',
+          textContent: '确定提交',
+          style: { display: '', visibility: '' },
+          parentElement: null,
+          classList: { contains: (c: string) => c === 'el-button--primary' },
+          click: () => {
+            visibleConfirmClicked = true;
+          }
+        };
+
+        const examDoc1: any = {
+          defaultView: mockWin,
+          getComputedStyle: (el: any) => ({
+            display: el?.style?.display || 'block',
+            visibility: el?.style?.visibility || 'visible'
+          }),
+          querySelector: (sel: string) => {
+            if (sel.includes('.examPaper_subject')) return outerSubject;
+            if (sel.includes('title')) return { textContent: '嵌套列表与提交测试' };
+            if (sel.includes('.exam-submit-btn')) {
+              return {
+                click: () => {
+                  submitBtnClicked = true;
+                }
+              };
+            }
+            return null;
+          },
+          querySelectorAll: (sel: string) => {
+            if (sel.includes('.examPaper_subject') && sel.includes('.questionBox')) {
+              return [outerSubject, innerOptionOnlyBox];
+            }
+            if (sel.includes('.el-dialog__footer .el-button--primary')) {
+              return [hiddenConfirmBtn, visibleConfirmBtn];
+            }
+            return [];
+          }
+        };
+        mockWin.getComputedStyle = examDoc1.getComputedStyle;
+
+        store.config.autoSubmitWork = true;
+        store.config.enabledQuestionTypes = { single: true, multiple: true, judge: true, fill: true, essay: true };
+        (globalThis as any).GM_xmlhttpRequest = (opts: any) => {
+          setTimeout(() => {
+            opts.onload({
+              status: 200,
+              responseText: JSON.stringify({ choices: [{ message: { content: '["A", "B"]' } }] })
+            });
+          }, 5);
+        };
+
+        await doQuizTask(null, examDoc1, { signal: new AbortController().signal, isCurrent: () => true });
+
+        assert.equal(store.questions.length, 1, '内嵌无题干 .questionBox 与多层 .subject_node_list 不得重复或丢弃题目');
+        assert.deepEqual(store.questions[0].options, ['正确内容甲', '正确内容乙', '错误干扰丙'], '必须通过兄弟 .node_detail 准确提取选项文本');
+        assert.equal(qOpts[0].clickCount, 1, 'doQuizTask Vue 异步选项 A 仅点击 1 次');
+        assert.equal(qOpts[0].isChecked, true);
+        assert.equal(qOpts[1].clickCount, 1, 'doQuizTask Vue 异步选项 B 仅点击 1 次');
+        assert.equal(qOpts[1].isChecked, true);
+        assert.equal(submitBtnClicked, true);
+        assert.equal(hiddenConfirmClicked, false, '必须跳过 display:none 隐藏确认按钮');
+        assert.equal(visibleConfirmClicked, true, '必须准确点击可见的确认按钮');
+        assert.equal(mockWin.confirm, origConfirm, 'doQuizTask 结束后必须恢复原 targetWin.confirm');
+        assert.equal(mockWin.alert, origAlert, 'doQuizTask 结束后必须恢复原 targetWin.alert');
+
+        // 3. enabledQuestionTypes 取消勾选某题型时跳过作答并熔断 cancelAutoSubmit
+        store.config.autoSubmitWork = true;
+        store.config.enabledQuestionTypes = { single: true, multiple: true, judge: true, fill: false, essay: true };
+
+        const fillSkipNode: any = {
+          getAttribute: () => 'q-fill-skip',
+          closest: () => null,
+          contains: () => false,
+          cloneNode: function () { return this; },
+          innerText: '【填空题】被禁用的填空题',
+          querySelector: (sel: string) => {
+            if (sel.includes('.subject_type')) return { innerText: '【填空题】', textContent: '【填空题】' };
+            if (sel.includes('.subject_describe')) return { innerText: '被禁用的填空题', textContent: '被禁用的填空题' };
+            if (sel.includes('textarea') || sel.includes('input')) return { type: 'text', value: '' };
+            return null;
+          },
+          querySelectorAll: () => []
+        };
+        const singleNormalOpt = makeAsyncCheckboxOpt({ letter: 'A', text: '唯一答案', delayMs: 5 });
+        const singleNormalNode: any = {
+          getAttribute: () => 'q-single-ok',
+          closest: () => null,
+          contains: () => false,
+          cloneNode: function () { return this; },
+          innerText: '【单选题】正常启用的单选题',
+          querySelector: (sel: string) => {
+            if (sel.includes('.subject_type')) return { innerText: '【单选题】', textContent: '【单选题】' };
+            if (sel.includes('.subject_describe')) return { innerText: '正常启用的单选题', textContent: '正常启用的单选题' };
+            if (sel.includes(':checked') || sel.includes('.is-checked') || sel.includes('.nodeLab.active')) {
+              return singleNormalOpt.isChecked ? {} : null;
+            }
+            if (sel.includes('.subject_node') || sel.includes('input')) return singleNormalOpt;
+            return null;
+          },
+          querySelectorAll: (sel: string) => {
+            if (sel.includes('.subject_node_list')) return [];
+            if (sel.includes('.subject_node') && !sel.includes('.nodeLab')) return [singleNormalOpt];
+            if (sel.includes('.el-radio') || sel.includes('input[type="radio"]')) return [singleNormalOpt];
+            return [];
+          }
+        };
+
+        let disabledSubmitCalled = false;
+        let disabledSaveCalled = false;
+        const examDocDisabled: any = {
+          defaultView: mockWin,
+          querySelector: (sel: string) => {
+            if (sel.includes('.examPaper_subject')) return fillSkipNode;
+            if (sel.includes('title')) return { textContent: '禁用题型熔断测试' };
+            if (sel.includes('.exam-submit-btn')) return { click: () => { disabledSubmitCalled = true; } };
+            if (sel.includes('.save-btn')) return { click: () => { disabledSaveCalled = true; } };
+            return null;
+          },
+          querySelectorAll: (sel: string) => {
+            if (sel.includes('.examPaper_subject') && sel.includes('.questionBox')) {
+              return [fillSkipNode, singleNormalNode];
+            }
+            return [];
+          }
+        };
+
+        (globalThis as any).GM_xmlhttpRequest = (opts: any) => {
+          setTimeout(() => {
+            opts.onload({
+              status: 200,
+              responseText: JSON.stringify({ choices: [{ message: { content: '["A"]' } }] })
+            });
+          }, 5);
+        };
+
+        await doQuizTask(null, examDocDisabled, { signal: new AbortController().signal, isCurrent: () => true });
+        assert.equal(disabledSubmitCalled, false, '存在被禁用跳过的题型时必须熔断自动提交');
+        assert.equal(disabledSaveCalled, true, '熔断自动提交后应转为点击暂存按钮');
+      } finally {
+        clearExamAutoResumeState();
+        (globalThis as any).window = prevWin;
+        (globalThis as any).GM_xmlhttpRequest = prevXhr;
+        (globalThis as any).sessionStorage = prevSession;
+        store.config.aiApiKey = prevKey;
+        store.config.autoSubmitWork = prevAutoSubmit;
+        store.config.enabledQuestionTypes = prevEnabledTypes;
+      }
+    });
+
+    it('25.7 随堂弹题未关闭防 AI 刷费雪崩熔断与 v-show 隐藏题干过滤', async () => {
+      const prevXhr = (globalThis as any).GM_xmlhttpRequest;
+      const prevKey = store.config.aiApiKey;
+      store.acknowledgeAllErrors();
+
+      const makeDocView = () => ({
+        getComputedStyle: (el: any) => ({
+          display: el?.style?.display || 'block',
+          visibility: el?.style?.visibility || 'visible'
+        })
+      });
+
+      try {
+        // 1. v-show 隐藏题干 1 + 可见题干 2 -> 必须只抓取可见题干 2
+        const hiddenTitle: any = {
+          innerText: '1. (单选题) v-show 隐藏的旧题干',
+          textContent: '1. (单选题) v-show 隐藏的旧题干',
+          style: { display: 'none', visibility: '' },
+          parentElement: null
+        };
+        const visibleTitle: any = {
+          innerText: '2. (单选题) v-show 可见的真实题干',
+          textContent: '2. (单选题) v-show 可见的真实题干',
+          style: { display: '', visibility: '' },
+          parentElement: null
+        };
+        const vshowOptA: any = {
+          innerText: 'A. 选项甲',
+          textContent: 'A. 选项甲',
+          style: { display: '', visibility: '' },
+          parentElement: null,
+          contains: () => false,
+          selected: false,
+          classList: { contains: (c: string) => vshowOptA.selected && c === 'active' },
+          getAttribute: () => (vshowOptA.selected ? 'true' : null),
+          click: () => {
+            vshowOptA.selected = true;
+          },
+          querySelector: (sel: string) => {
+            if (sel.includes('.topic-text')) return { innerText: '选项甲', textContent: '选项甲' };
+            if (sel.includes('input')) return { value: 'A', checked: vshowOptA.selected };
+            return null;
+          }
+        };
+
+        let capturedPromptForVshow = '';
+        store.config.aiApiKey = 'sk-zhs-vshow-circuit';
+        (globalThis as any).GM_xmlhttpRequest = (opts: any) => {
+          capturedPromptForVshow = JSON.stringify(JSON.parse(opts.data).messages);
+          setTimeout(() => {
+            opts.onload({
+              status: 200,
+              responseText: JSON.stringify({ choices: [{ message: { content: '["A"]' } }] })
+            });
+          }, 5);
+        };
+
+        const vshowDialog: any = {
+          style: { display: '', visibility: '' },
+          parentElement: null,
+          closest: () => null,
+          innerText: 'v-show 测试',
+          querySelector: () => null,
+          querySelectorAll: (sel: string) => {
+            if (sel.includes('.topic-title')) return [hiddenTitle, visibleTitle];
+            if (sel.includes('.topic-num-item')) return [];
+            if (sel.includes('.topic-item')) return [vshowOptA];
+            if (sel.includes('input[type="radio"]')) return [vshowOptA];
+            if (sel.includes('button')) {
+              return [
+                {
+                  innerText: '关闭',
+                  textContent: '关闭',
+                  disabled: false,
+                  style: { display: '', visibility: '' },
+                  parentElement: null,
+                  classList: { contains: () => false },
+                  hasAttribute: () => false,
+                  getAttribute: () => null,
+                  click: () => {
+                    vshowDialog.style.display = 'none';
+                  }
+                }
+              ];
+            }
+            return [];
+          }
+        };
+        const vshowDoc: any = {
+          defaultView: makeDocView(),
+          querySelectorAll: (sel: string) => (sel.includes('.dialog-test') ? [vshowDialog] : [])
+        };
+
+        const vshowRes = await solveZhihuishuPopupTest(
+          vshowDoc,
+          new AbortController().signal,
+          () => true,
+          { reactionDelayMs: 5, closeDelayMs: 5, verifyCloseDelayMs: 5 }
+        );
+        assert.equal(vshowRes, true);
+        assert.ok(capturedPromptForVshow.includes('v-show 可见的真实题干'), '必须提取可见题干 2');
+        assert.ok(!capturedPromptForVshow.includes('v-show 隐藏的旧题干'), '绝不可提取 v-show 隐藏题干 1');
+
+        // 2. 弹题关闭按钮失效防 AI 刷费雪崩熔断（最多 2 次后熔断，写入 pinnedErrors，不误触 play）
+        store.acknowledgeAllErrors();
+        let circuitAiCalls = 0;
+        (globalThis as any).GM_xmlhttpRequest = (opts: any) => {
+          circuitAiCalls++;
+          setTimeout(() => {
+            opts.onload({
+              status: 200,
+              responseText: JSON.stringify({ choices: [{ message: { content: '["A"]' } }] })
+            });
+          }, 5);
+        };
+
+        const stubOptA: any = {
+          innerText: 'A. 卡死弹窗选项',
+          textContent: 'A. 卡死弹窗选项',
+          style: { display: '', visibility: '' },
+          parentElement: null,
+          contains: () => false,
+          selected: false,
+          classList: { contains: (c: string) => stubOptA.selected && c === 'active' },
+          getAttribute: () => (stubOptA.selected ? 'true' : null),
+          click: () => {
+            stubOptA.selected = true;
+          },
+          querySelector: (sel: string) => {
+            if (sel.includes('.topic-text')) return { innerText: '卡死弹窗选项', textContent: '卡死弹窗选项' };
+            if (sel.includes('input')) return { value: 'A', checked: stubOptA.selected };
+            return null;
+          }
+        };
+        const stubbornDialog: any = {
+          style: { display: '', visibility: '' },
+          parentElement: null,
+          closest: () => null,
+          innerText: '卡死无法关闭的弹题',
+          querySelector: () => null,
+          querySelectorAll: (sel: string) => {
+            if (sel.includes('.topic-title')) {
+              return [{ innerText: '1. 卡死弹题标题', textContent: '1. 卡死弹题标题', style: { display: '', visibility: '' }, parentElement: null }];
+            }
+            if (sel.includes('.topic-num-item')) return [];
+            if (sel.includes('.topic-item')) return [stubOptA];
+            if (sel.includes('input[type="radio"]')) return [stubOptA];
+            if (sel.includes('button')) {
+              return [
+                {
+                  innerText: '关闭',
+                  textContent: '关闭',
+                  disabled: false,
+                  style: { display: '', visibility: '' },
+                  parentElement: null,
+                  classList: { contains: () => false },
+                  hasAttribute: () => false,
+                  getAttribute: () => null,
+                  click: () => {
+                    // 模拟关闭失效：弹窗仍然保持可见
+                  }
+                }
+              ];
+            }
+            return [];
+          }
+        };
+
+        let videoPlayCount = 0;
+        const circuitVideo: any = {
+          playbackRate: 1.0,
+          muted: true,
+          duration: 120,
+          currentTime: 10,
+          paused: true,
+          ended: false,
+          isConnected: true,
+          play: async () => {
+            videoPlayCount++;
+            circuitVideo.paused = false;
+          },
+          pause: () => {
+            circuitVideo.paused = true;
+          },
+          addEventListener: () => {},
+          removeEventListener: () => {}
+        };
+        const circuitDoc: any = {
+          defaultView: makeDocView(),
+          querySelector: (sel: string) => (sel.includes('video') ? circuitVideo : null),
+          querySelectorAll: (sel: string) => (sel.includes('.dialog-test') ? [stubbornDialog] : [])
+        };
+
+        const circuitCtrl = new AbortController();
+        const taskPromise = playZhihuishuVideoTask(
+          circuitDoc,
+          { signal: circuitCtrl.signal, isCurrent: () => true },
+          { pollIntervalMs: 25, popupTiming: { reactionDelayMs: 5, closeDelayMs: 5, verifyCloseDelayMs: 5 } }
+        );
+
+        // 等待足够多轮 poll tick（>10 轮）验证熔断后不再发 AI 请求
+        await new Promise((r) => setTimeout(r, 380));
+        circuitCtrl.abort();
+        await taskPromise;
+
+        assert.equal(circuitAiCalls, 2, '弹窗关闭失效时最多重试 2 次即触发熔断，绝不无限刷 AI');
+        assert.equal(videoPlayCount, 0, '未关闭弹题前绝不可误触 video.play()');
+        assert.ok(
+          store.pinnedErrors.some((e) => e.message.includes('智慧树随堂弹题未能自动关闭，已停止重试以防异常')),
+          '熔断后必须向 store.pinnedErrors 写入红色置顶告警'
+        );
+      } finally {
+        (globalThis as any).GM_xmlhttpRequest = prevXhr;
+        store.config.aiApiKey = prevKey;
+        store.acknowledgeAllErrors();
+      }
+    });
+
+    it('25.8 调度防劫持与 SPA 边界：.dialog-test 不触发 isStandaloneQuiz、全课完播防重入/切集冷却、onPause 互斥、路由切出释放与 video 重连', async () => {
+      const prevWin = (globalThis as any).window;
+      const prevDoc = (globalThis as any).document;
+      const prevAutoNext = store.config.autoNextChapter;
+      const prevDelayBase = store.config.randomDelayBase;
+      const prevDelayJitter = store.config.randomDelayJitter;
+
+      const makeDocView = () => ({
+        getComputedStyle: (el: any) => ({
+          display: el?.style?.display || 'block',
+          visibility: el?.style?.visibility || 'visible'
+        })
+      });
+
+      try {
+        clearZhihuishuCompletionSuppression();
+
+        // 1. 视频页顶层挂有 .dialog-test（含 .subject_describe 与 .el-radio）时，isStandaloneQuiz 返回 false 且不被 Step 0 劫持
+        const setUrl = (u: string) => {
+          const parsed = new URL(u);
+          (globalThis as any).window = {
+            location: {
+              href: parsed.href,
+              hostname: parsed.hostname,
+              pathname: parsed.pathname,
+              search: parsed.search
+            },
+            setTimeout,
+            clearTimeout,
+            setInterval,
+            clearInterval,
+            addEventListener: () => {},
+            removeEventListener: () => {}
+          };
+        };
+
+        setUrl('https://studyvideoh5.zhihuishu.com/videoStudy.html?recruitAndCourseId=555');
+        const popupRadioEl: any = {
+          closest: (sel: string) => (sel.includes('.dialog-test') ? {} : null)
+        };
+        const popupQuestionBoxEl: any = {
+          closest: (sel: string) => (sel.includes('.dialog-test') ? {} : null)
+        };
+        let videoStartAttempted = false;
+        const vidWithPopup: any = {
+          playbackRate: 1.0,
+          muted: true,
+          duration: 100,
+          currentTime: 0,
+          paused: true,
+          ended: false,
+          isConnected: true,
+          play: async () => {
+            videoStartAttempted = true;
+            vidWithPopup.paused = false;
+          },
+          pause: () => {
+            vidWithPopup.paused = true;
+          },
+          addEventListener: () => {},
+          removeEventListener: () => {}
+        };
+        (globalThis as any).document = {
+          readyState: 'complete',
+          location: (globalThis as any).window.location,
+          defaultView: makeDocView(),
+          documentElement: { querySelectorAll: () => [] },
+          querySelector: (sel: string) => {
+            if (sel.includes('#vjs_container_html5_api')) return vidWithPopup;
+            if (sel.includes('.examPaper_subject')) return popupQuestionBoxEl;
+            return null;
+          },
+          querySelectorAll: (sel: string) => {
+            if (sel.includes('.examPaper_subject')) return [popupQuestionBoxEl];
+            if (sel.includes('.el-radio')) return [popupRadioEl];
+            return [];
+          }
+        };
+
+        const schedPopup = new ChapterScheduler();
+        assert.equal(isZhihuishuExamPage((globalThis as any).document), false, '弹题内部元素不可误判为智慧树考试页');
+        assert.equal((schedPopup as any).isStandaloneQuiz((globalThis as any).document), false, '视频页含 .dialog-test 时 isStandaloneQuiz 必须为 false');
+        const pipeP = (schedPopup as any).runPipeline();
+        assert.equal((schedPopup as any).isZhihuishuVideoRunning, true, '必须进入智慧树视频调度流程而不被 Step 0 劫持');
+        (schedPopup as any).watchdog.abort();
+        await pipeP;
+        assert.equal(videoStartAttempted, false);
+
+        // 2. 完播后在 autoNextChapter === false 或无下一集时，连续 runPipeline 不重启；切换到新小节自动恢复
+        clearZhihuishuCompletionSuppression();
+        store.config.autoNextChapter = false;
+        let currentLessonTitle = '1.1 第一节';
+        let currentVideoSrc = 'https://cdn.zhihuishu.com/v1.mp4';
+        const lessonListeners = new Map<string, Set<Function>>();
+        let lessonPlayCount = 0;
+
+        const lessonVideo: any = {
+          playbackRate: 1.0,
+          muted: true,
+          duration: 100,
+          currentTime: 0,
+          paused: true,
+          ended: false,
+          isConnected: true,
+          get src() {
+            return currentVideoSrc;
+          },
+          get currentSrc() {
+            return currentVideoSrc;
+          },
+          play: async () => {
+            lessonPlayCount++;
+            lessonVideo.paused = false;
+          },
+          pause: () => {
+            lessonVideo.paused = true;
+          },
+          addEventListener: (ev: string, fn: Function) => {
+            if (!lessonListeners.has(ev)) lessonListeners.set(ev, new Set());
+            lessonListeners.get(ev)!.add(fn);
+          },
+          removeEventListener: (ev: string, fn: Function) => {
+            lessonListeners.get(ev)?.delete(fn);
+          }
+        };
+        const lessonDoc: any = {
+          location: (globalThis as any).window.location,
+          defaultView: makeDocView(),
+          querySelector: (sel: string) => {
+            if (sel.includes('.current_play .catalogue_title')) {
+              return { innerText: currentLessonTitle, textContent: currentLessonTitle };
+            }
+            if (sel.includes('.active.video')) return null;
+            if (sel.includes('#vjs_container_html5_api') || sel.includes('video')) return lessonVideo;
+            return null;
+          },
+          querySelectorAll: () => []
+        };
+
+        clearZhihuishuCompletionSuppression();
+        lessonPlayCount = 0;
+        const finishCtrl = new AbortController();
+        const finishTask = playZhihuishuVideoTask(
+          lessonDoc,
+          { signal: finishCtrl.signal, isCurrent: () => true },
+          { pollIntervalMs: 20 }
+        );
+        try {
+          await new Promise((r) => setTimeout(r, 45));
+          assert.equal(lessonPlayCount, 1);
+          lessonVideo.ended = true;
+          for (const fn of lessonListeners.get('ended') || []) fn();
+          await finishTask;
+        } finally {
+          finishCtrl.abort();
+          await finishTask.catch(() => {});
+        }
+
+        const completedKey = getLastCompletedZhihuishuLessonKey();
+        assert.ok(completedKey && completedKey.includes('1.1 第一节'), '完播后必须记录当前小节抑制 key');
+
+        // 连续调用 ChapterScheduler.runPipeline() 不得重启同小节播放
+        (globalThis as any).document = {
+          ...lessonDoc,
+          readyState: 'complete',
+          documentElement: { querySelectorAll: () => [] }
+        };
+        const schedSuppress = new ChapterScheduler();
+        await (schedSuppress as any).runPipeline();
+        await (schedSuppress as any).runPipeline();
+        assert.equal(lessonPlayCount, 1, '同小节完播后连续心跳绝不可无限重启');
+
+        // 用户切换到新小节 1.2 后，自动解除抑制并启动新视频
+        currentLessonTitle = '1.2 第二节';
+        currentVideoSrc = 'https://cdn.zhihuishu.com/v2.mp4';
+        lessonVideo.ended = false;
+        lessonVideo.paused = true;
+        assert.notEqual(getZhihuishuLessonKey(lessonDoc, lessonVideo), completedKey);
+        const newLessonP = (schedSuppress as any).runPipeline();
+        await new Promise((r) => setTimeout(r, 40));
+        assert.equal((schedSuppress as any).isZhihuishuVideoRunning, true, '切换至新小节后必须自动解除抑制并进入新视频任务');
+        assert.equal(getLastCompletedZhihuishuLessonKey(), null);
+        (schedSuppress as any).watchdog.abort();
+        await newLessonP;
+
+        // 3. SPA 切集等待超时进入防连跳冷却期
+        clearZhihuishuCompletionSuppression();
+        store.config.autoNextChapter = true;
+        store.config.randomDelayBase = 0.5;
+        store.config.randomDelayJitter = 0;
+
+        const stuckListeners = new Map<string, Set<Function>>();
+        let nextLessonClicks = 0;
+        const stuckVideo: any = {
+          playbackRate: 1.0,
+          muted: true,
+          duration: 100,
+          currentTime: 0,
+          paused: true,
+          ended: false,
+          isConnected: true,
+          src: 'https://cdn.zhihuishu.com/stuck.mp4',
+          play: async () => { stuckVideo.paused = false; },
+          pause: () => { stuckVideo.paused = true; },
+          addEventListener: (ev: string, fn: Function) => {
+            if (!stuckListeners.has(ev)) stuckListeners.set(ev, new Set());
+            stuckListeners.get(ev)!.add(fn);
+          },
+          removeEventListener: (ev: string, fn: Function) => {
+            stuckListeners.get(ev)?.delete(fn);
+          }
+        };
+        const stuckDoc: any = {
+          location: (globalThis as any).window.location,
+          defaultView: makeDocView(),
+          querySelector: (sel: string) => {
+            if (sel.includes('.current_play .catalogue_title')) return { innerText: '1.1 卡住节', textContent: '1.1 卡住节' };
+            if (sel.includes('.active.video')) return null;
+            if (sel.includes('#vjs_container_html5_api') || sel.includes('video')) return stuckVideo;
+            return null;
+          },
+          querySelectorAll: (sel: string) => {
+            if (sel.includes('.next_lesson')) {
+              return [
+                {
+                  disabled: false,
+                  style: { display: '', visibility: '' },
+                  classList: { contains: () => false },
+                  hasAttribute: () => false,
+                  getAttribute: () => null,
+                  click: () => {
+                    nextLessonClicks++;
+                    // 故意不切换 DOM
+                  }
+                }
+              ];
+            }
+            return [];
+          }
+        };
+        const stuckCtrl = new AbortController();
+        const stuckTask = playZhihuishuVideoTask(
+          stuckDoc,
+          { signal: stuckCtrl.signal, isCurrent: () => true },
+          { pollIntervalMs: 20, switchWaitTimeoutMs: 60 }
+        );
+        try {
+          await new Promise((r) => setTimeout(r, 45));
+          stuckVideo.ended = true;
+          for (const fn of stuckListeners.get('ended') || []) fn();
+          await stuckTask;
+          assert.equal(nextLessonClicks, 1);
+          assert.ok(getZhihuishuSwitchCooldownUntil() > Date.now(), '切集未切换超时后必须开启冷却时间戳防止连跳');
+        } finally {
+          stuckCtrl.abort();
+          await stuckTask.catch(() => {});
+        }
+
+        // 冷却期内 ChapterScheduler.runPipeline 直接返回不触发 playZhihuishuVideoTask
+        const schedCooldown = new ChapterScheduler();
+        (globalThis as any).document = {
+          ...stuckDoc,
+          readyState: 'complete',
+          documentElement: { querySelectorAll: () => [] }
+        };
+        await (schedCooldown as any).runPipeline();
+        assert.equal((schedCooldown as any).isZhihuishuVideoRunning, false, '冷却期内绝不能连跳或重入');
+        clearZhihuishuCompletionSuppression();
+
+        // 4. 高频 pause 互斥 + <video> 断开重连 + SPA 路由切出释放
+        const v1Listeners = new Map<string, Set<Function>>();
+        const v2Listeners = new Map<string, Set<Function>>();
+        let v1PlayCalls = 0;
+        let v2PlayCalls = 0;
+        let activeVideoIndex = 1;
+
+        const v1: any = {
+          playbackRate: 1.0,
+          muted: true,
+          duration: 100,
+          currentTime: 0,
+          paused: true,
+          ended: false,
+          isConnected: true,
+          play: async () => {
+            v1PlayCalls++;
+            v1.paused = false;
+          },
+          pause: () => {
+            v1.paused = true;
+          },
+          addEventListener: (ev: string, fn: Function) => {
+            if (!v1Listeners.has(ev)) v1Listeners.set(ev, new Set());
+            v1Listeners.get(ev)!.add(fn);
+          },
+          removeEventListener: (ev: string, fn: Function) => {
+            v1Listeners.get(ev)?.delete(fn);
+          }
+        };
+        const v2: any = {
+          playbackRate: 2.0,
+          muted: false,
+          duration: 100,
+          currentTime: 0,
+          paused: true,
+          ended: false,
+          isConnected: true,
+          play: async () => {
+            v2PlayCalls++;
+            v2.paused = false;
+          },
+          pause: () => {
+            v2.paused = true;
+          },
+          addEventListener: (ev: string, fn: Function) => {
+            if (!v2Listeners.has(ev)) v2Listeners.set(ev, new Set());
+            v2Listeners.get(ev)!.add(fn);
+          },
+          removeEventListener: (ev: string, fn: Function) => {
+            v2Listeners.get(ev)?.delete(fn);
+          }
+        };
+
+        const dynamicDoc: any = {
+          location: (globalThis as any).window.location,
+          defaultView: makeDocView(),
+          querySelector: (sel: string) => {
+            if (activeVideoIndex === 0) return null;
+            if (sel.includes('video')) return activeVideoIndex === 1 ? v1 : v2;
+            return null;
+          },
+          querySelectorAll: () => []
+        };
+
+        store.config.randomDelayBase = 0.5;
+        store.config.randomDelayJitter = 0;
+        const dynamicCtrl = new AbortController();
+        const dynamicTask = playZhihuishuVideoTask(
+          dynamicDoc,
+          { signal: dynamicCtrl.signal, isCurrent: () => true },
+          { pollIntervalMs: 25 }
+        );
+
+        try {
+          await new Promise((r) => setTimeout(r, 45));
+          assert.equal(v1PlayCalls, 1);
+
+          // 连续触发 5 次 pause 事件，验证 isRecoveringPause 互斥只触发 1 次恢复 play()
+          v1.paused = true;
+          for (let i = 0; i < 5; i++) {
+            for (const fn of v1Listeners.get('pause') || []) void fn();
+          }
+          await new Promise((r) => setTimeout(r, 560));
+          assert.equal(v1PlayCalls, 2, '高频连发 pause 事件仅允许 1 次恢复 play() 调用');
+
+          // 模拟 SPA 替换 <video>：v1 断开连接 (isConnected = false)，切换到 v2
+          v1.isConnected = false;
+          activeVideoIndex = 2;
+          await new Promise((r) => setTimeout(r, 70));
+          assert.equal(v1Listeners.get('pause')?.size, 0, '旧 video 断开后必须解绑监听器');
+          assert.equal(v2PlayCalls, 1, '必须自动重绑新 video 并启动播放');
+          assert.equal(v2.playbackRate, 1.0, '重绑新 video 必须锁定 1.0x 原速');
+          assert.equal(v2.muted, true, '重绑新 video 必须锁定静音');
+
+          // 模拟 SPA 路由切出视频页 -> 轮询检测到 !isZhihuishuVideoPage(doc) 立即退出并暂停
+          activeVideoIndex = 0;
+          setUrl('https://www.zhihuishu.com/portal');
+          dynamicDoc.location = (globalThis as any).window.location;
+          await dynamicTask;
+          assert.equal(v2.paused, true, '路由离开视频页后必须立即退出并暂停视频');
+          assert.equal(v2Listeners.get('pause')?.size, 0, '路由切出退出后必须释放全部监听器');
+        } finally {
+          dynamicCtrl.abort();
+          await dynamicTask.catch(() => {});
+        }
+      } finally {
+        clearZhihuishuCompletionSuppression();
+        (globalThis as any).window = prevWin;
+        (globalThis as any).document = prevDoc;
+        store.config.autoNextChapter = prevAutoNext;
+        store.config.randomDelayBase = prevDelayBase;
+        store.config.randomDelayJitter = prevDelayJitter;
       }
     });
   });
