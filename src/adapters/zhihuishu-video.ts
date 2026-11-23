@@ -106,7 +106,10 @@ export const isZhihuishuExamPage = (doc?: Document, url?: string): boolean => {
   const examSel = '.examPaper_subject, .questionBox, .subject_item, .examQuestion_item';
   const isRealExamNode = (el: HTMLElement | null): boolean => {
     if (!el) return false;
-    if (typeof el.closest === 'function' && el.closest('.dialog-test, .el-dialog__wrapper')) {
+    if (
+      typeof el.closest === 'function' &&
+      el.closest('.dialog-test, .el-dialog__wrapper, .el-dialog, [role="dialog"]')
+    ) {
       return false;
     }
     if (isElementOrAncestorHidden(el, targetDoc)) {
@@ -155,18 +158,19 @@ export const isZhihuishuVideoPage = (doc?: Document, url?: string): boolean => {
 };
 
 /**
- * Finds a currently visible Zhihuishu in-video popup quiz dialog
+ * Finds a currently visible Zhihuishu in-video popup quiz dialog (classic .dialog-test or new AI 随堂练习 modal)
  */
 export const findVisiblePopupTestDialog = (doc: Document): HTMLElement | null => {
   if (!doc || typeof doc.querySelectorAll !== 'function') return null;
+
+  const isNotHelper = (el: HTMLElement): boolean =>
+    !(typeof el.closest === 'function' && el.closest('kasa-helper-panel, .kasa-card'));
 
   const primaryCandidates = Array.from(
     doc.querySelectorAll<HTMLElement>('.dialog-test, .el-dialog__wrapper.dialog-test, [class*="dialog-test"]')
   );
   for (const el of primaryCandidates) {
-    if (typeof el.closest === 'function' && el.closest('kasa-helper-panel, .kasa-card')) {
-      continue;
-    }
+    if (!isNotHelper(el)) continue;
     if (!isElementOrAncestorHidden(el, doc)) {
       return el;
     }
@@ -174,15 +178,41 @@ export const findVisiblePopupTestDialog = (doc: Document): HTMLElement | null =>
 
   const wrapperCandidates = Array.from(doc.querySelectorAll<HTMLElement>('.el-dialog__wrapper'));
   for (const wrapper of wrapperCandidates) {
-    if (typeof wrapper.closest === 'function' && wrapper.closest('kasa-helper-panel, .kasa-card')) {
-      continue;
-    }
-    if (isElementOrAncestorHidden(wrapper, doc)) {
-      continue;
-    }
+    if (!isNotHelper(wrapper)) continue;
+    if (isElementOrAncestorHidden(wrapper, doc)) continue;
     if (wrapper.querySelector('.topic-item, .topic-title, .topic-list')) {
       return wrapper;
     }
+  }
+
+  // New AI course in-video practice modal ("AI随堂练习" + "[单选题]/[多选题]" + "提交作答")
+  const aiModalCandidates = Array.from(
+    doc.querySelectorAll<HTMLElement>(
+      '.el-dialog, [role="dialog"], .el-overlay-dialog, .el-overlay, [class*="dialog"], [class*="modal"], [class*="popup"], [class*="practice"], [class*="exercise"], [class*="quiz"]'
+    )
+  ).filter((el) => {
+    if (!isNotHelper(el) || isElementOrAncestorHidden(el, doc)) return false;
+    const txt = (el.innerText || el.textContent || '').trim();
+    if (!txt) return false;
+    const hasPracticeHeader = /(?:AI随堂练习|随堂练习|随堂测验)/.test(txt);
+    const hasPracticeActionOrType =
+      /\[(?:单选|多选|判断)题?\]/.test(txt) || /(?:提交作答|继续学习|继续观看)/.test(txt);
+    const hasTypeAndSubmit = /\[(?:单选|多选|判断)题?\]/.test(txt) && txt.includes('提交作答');
+    return (hasPracticeHeader && hasPracticeActionOrType) || hasTypeAndSubmit;
+  });
+
+  if (aiModalCandidates.length > 0) {
+    // Prefer the innermost matching dialog that still contains action buttons if available
+    const withActionBtn = aiModalCandidates.filter((el) => {
+      const txt = el.innerText || el.textContent || '';
+      return /(?:提交作答|继续学习|继续观看|关闭|确定)/.test(txt) || !!el.querySelector?.('button');
+    });
+    const pool = withActionBtn.length > 0 ? withActionBtn : aiModalCandidates;
+    const innermost = pool.find(
+      (node, i, arr) =>
+        !arr.some((other, j) => i !== j && typeof node.contains === 'function' && node.contains(other))
+    );
+    return innermost || pool[0];
   }
 
   return null;
@@ -191,13 +221,14 @@ export const findVisiblePopupTestDialog = (doc: Document): HTMLElement | null =>
 const isPopupOptionSelected = (el: HTMLElement): boolean => {
   if (
     el.classList?.contains('active') ||
+    el.classList?.contains('is-active') ||
     el.classList?.contains('is-checked') ||
     el.classList?.contains('selected') ||
     el.getAttribute?.('aria-checked') === 'true'
   ) {
     return true;
   }
-  return !!el.querySelector?.('.active, .is-checked, .selected, input:checked');
+  return !!el.querySelector?.('.active, .is-active, .is-checked, .selected, input:checked');
 };
 
 const isControlDisabled = (el: HTMLElement): boolean =>
@@ -207,93 +238,268 @@ const isControlDisabled = (el: HTMLElement): boolean =>
   el.classList?.contains('is-disabled') === true ||
   (typeof el.getAttribute === 'function' && el.getAttribute('aria-disabled') === 'true');
 
-const findPopupCloseButton = (dialog: HTMLElement, doc: Document): HTMLElement | null => {
-  const allButtons = Array.from(
-    dialog.querySelectorAll<HTMLElement>(
-      'button, a, .btn, [role="button"], .el-dialog__headerbtn, .close-btn, [class*="close"]'
+const ACTION_LABEL_RE =
+  /^(?:提交作答|确认作答|提交答案|提交|继续学习|继续观看|继续播放|关闭|确定|完成|我知道了|知道了|好的)$/;
+
+const collectPopupActionCandidates = (container: HTMLElement, doc: Document): HTMLElement[] => {
+  if (typeof container.querySelectorAll !== 'function') return [];
+  const raw = Array.from(
+    container.querySelectorAll<HTMLElement>(
+      'button, a, [role="button"], .btn, [class*="btn"], [class*="button"], [class*="submit"], [class*="close"], div, span'
     )
   );
 
-  for (const btn of allButtons) {
-    if (isControlDisabled(btn) || isElementOrAncestorHidden(btn, doc)) continue;
-    const text = (btn.innerText || btn.textContent || '').replace(/\s+/g, '');
-    if (
-      text.includes('关闭') ||
-      text.includes('确定') ||
-      text.includes('完成') ||
-      text.includes('提交') ||
-      text.includes('我知道了')
-    ) {
-      return btn;
+  const unique: HTMLElement[] = [];
+  for (const el of raw) {
+    if (!unique.includes(el)) unique.push(el);
+  }
+
+  const filtered = unique.filter((btn) => {
+    if (isControlDisabled(btn) || isElementOrAncestorHidden(btn, doc)) return false;
+    if (typeof btn.closest === 'function' && btn.closest('kasa-helper-panel, .kasa-card')) {
+      return false;
+    }
+    const tag = (btn.tagName || '').toUpperCase();
+    const cls = typeof btn.className === 'string' ? btn.className : '';
+    const role = btn.getAttribute?.('role') || '';
+    const hasButtonHint =
+      tag === 'BUTTON' ||
+      tag === 'A' ||
+      role === 'button' ||
+      /(?:btn|button|submit|close)/i.test(cls);
+    const compact = (btn.innerText || btn.textContent || '').replace(/\s+/g, '');
+    if (!hasButtonHint) {
+      return compact.length > 0 && compact.length <= 12 && ACTION_LABEL_RE.test(compact);
+    }
+    return true;
+  });
+
+  // Prefer semantic <button>/<a>/[role=button] over nested wrapper spans; otherwise keep innermost div/span
+  return filtered.filter((node, i, arr) => {
+    const tag = (node.tagName || '').toUpperCase();
+    const isNativeBtn = tag === 'BUTTON' || tag === 'A' || node.getAttribute?.('role') === 'button';
+    if (isNativeBtn) return true;
+    return !arr.some(
+      (other, j) => i !== j && typeof node.contains === 'function' && node.contains(other)
+    );
+  });
+};
+
+const findPopupCloseButton = (
+  dialog: HTMLElement,
+  doc: Document,
+  options?: { excludeEl?: HTMLElement | null; postSubmit?: boolean }
+): HTMLElement | null => {
+  const candidates = collectPopupActionCandidates(dialog, doc).filter((btn) => {
+    if (!options?.excludeEl) return true;
+    const ex = options.excludeEl;
+    if (btn === ex) return false;
+    if (typeof ex.contains === 'function' && ex.contains(btn)) return false;
+    if (typeof btn.contains === 'function' && btn.contains(ex)) return false;
+    return true;
+  });
+
+  const priorityKeywords = options?.postSubmit
+    ? ['继续学习', '继续观看', '继续播放', '关闭', '确定', '完成', '好的', '我知道了', '知道了']
+    : ['提交作答', '确认作答', '提交答案', '关闭', '确定', '完成', '提交', '继续学习', '继续观看', '继续播放', '我知道了'];
+
+  for (const kw of priorityKeywords) {
+    for (const btn of candidates) {
+      const compact = (btn.innerText || btn.textContent || '').replace(/\s+/g, '');
+      if (options?.postSubmit && /提交作答|确认作答|提交答案|^提交$/.test(compact)) {
+        continue;
+      }
+      if (compact.includes(kw)) {
+        return btn;
+      }
     }
   }
 
-  const fallbackButtons = Array.from(
-    dialog.querySelectorAll<HTMLElement>(
-      '.dialog-footer .el-button--primary, .dialog-footer .btn, .btn, .el-dialog__headerbtn, .close-btn, [class*="close"]'
-    )
-  );
-  for (const btn of fallbackButtons) {
-    if (isControlDisabled(btn) || isElementOrAncestorHidden(btn, doc)) continue;
-    return btn;
+  if (typeof dialog.querySelectorAll === 'function') {
+    const fallbackSelector = options?.postSubmit
+      ? '.el-dialog__headerbtn, .close-btn, [class*="close"]'
+      : '.dialog-footer .el-button--primary, .dialog-footer .btn, .btn, .el-dialog__headerbtn, .close-btn, [class*="close"]';
+    const fallbackButtons = Array.from(dialog.querySelectorAll<HTMLElement>(fallbackSelector));
+    for (const btn of fallbackButtons) {
+      if (isControlDisabled(btn) || isElementOrAncestorHidden(btn, doc)) continue;
+      if (options?.excludeEl && btn === options.excludeEl) continue;
+      return btn;
+    }
   }
 
   return null;
 };
 
+const isHeaderOrNoiseLine = (text: string): boolean => {
+  const compact = text.replace(/\s+/g, '');
+  if (!compact) return true;
+  return (
+    compact === 'AI随堂练习' ||
+    compact === '随堂练习' ||
+    compact === '随堂测验' ||
+    compact.includes('以下所有内容均由AI生成') ||
+    compact.includes('请注意甄别') ||
+    ACTION_LABEL_RE.test(compact)
+  );
+};
+
 const findVisiblePopupTitleElement = (dialog: HTMLElement, doc: Document): HTMLElement | null => {
-  const titleSelector = '.topic-title, .question-title, .title, .subject_describe';
+  const titleSelector =
+    '.topic-title, .question-title, .subject_describe, .question-stem, .stem, .topic-stem, .title';
   const rawCandidates =
     typeof dialog.querySelectorAll === 'function'
       ? Array.from(dialog.querySelectorAll<HTMLElement>(titleSelector))
       : [];
   if (rawCandidates.length > 0) {
-    return rawCandidates.find((el) => !isElementOrAncestorHidden(el, doc)) ?? null;
+    return (
+      rawCandidates.find(
+        (el) =>
+          !isElementOrAncestorHidden(el, doc) &&
+          !isHeaderOrNoiseLine((el.innerText || el.textContent || '').trim())
+      ) ?? null
+    );
   }
   if (typeof dialog.querySelector === 'function') {
     const single = dialog.querySelector<HTMLElement>(titleSelector);
-    if (single && !isElementOrAncestorHidden(single, doc)) {
+    if (
+      single &&
+      !isElementOrAncestorHidden(single, doc) &&
+      !isHeaderOrNoiseLine((single.innerText || single.textContent || '').trim())
+    ) {
       return single;
     }
   }
   return null;
 };
 
+const extractPopupQuestionTitle = (dialog: HTMLElement, doc: Document): string => {
+  const el = findVisiblePopupTitleElement(dialog, doc);
+  const direct = (el?.innerText || el?.textContent || '').trim();
+  if (direct) return direct;
+
+  // Fallback for AI 随堂练习 where "1. [单选题]" and the stem live inside plain divs without dedicated title classes
+  const rawLines = (dialog.innerText || dialog.textContent || '')
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const kept: string[] = [];
+  for (const line of rawLines) {
+    if (isHeaderOrNoiseLine(line)) continue;
+    if (/^[A-H]$/.test(line)) break;
+    if (/^[A-H](?:[\.、．:：\)\]\s]+)\S+/.test(line) && !/^AI/i.test(line)) break;
+    kept.push(line);
+    if (kept.length >= 2 && !/^\d+\.\s*\[.*\]$/.test(kept[kept.length - 1])) {
+      break;
+    }
+  }
+  return kept.join(' ').trim();
+};
+
 const getPopupDialogSignature = (dialog: HTMLElement, doc: Document): string => {
-  const titleEl = findVisiblePopupTitleElement(dialog, doc);
-  const titleText = (titleEl?.innerText || titleEl?.textContent || '').trim().slice(0, 80);
+  const titleText = extractPopupQuestionTitle(dialog, doc).slice(0, 80);
   const fallbackText = (dialog.innerText || dialog.textContent || '').trim().slice(0, 80);
   return titleText || fallbackText || 'popup-dialog';
 };
 
+/**
+ * Dismisses lightweight Zhihuishu tip/guidance dialogs (e.g. "videoConfigTip01" with "好的")
+ */
+export const dismissZhihuishuTipDialog = (doc: Document): boolean => {
+  if (!doc || typeof doc.querySelectorAll !== 'function') return false;
+
+  const activeQuizDialog = findVisiblePopupTestDialog(doc);
+  const candidates = Array.from(
+    doc.querySelectorAll<HTMLElement>(
+      '.el-dialog, .el-dialog__wrapper, .el-message-box__wrapper, [role="dialog"], [class*="dialog"], [class*="modal"], [class*="tip"], [class*="popup"]'
+    )
+  ).filter((el) => {
+    if (typeof el.closest === 'function' && el.closest('kasa-helper-panel, .kasa-card')) {
+      return false;
+    }
+    if (isElementOrAncestorHidden(el, doc)) return false;
+    if (
+      activeQuizDialog &&
+      (el === activeQuizDialog ||
+        (typeof el.contains === 'function' && el.contains(activeQuizDialog)) ||
+        (typeof activeQuizDialog.contains === 'function' && activeQuizDialog.contains(el)))
+    ) {
+      return false;
+    }
+    if (
+      typeof el.querySelector === 'function' &&
+      el.querySelector('.topic-item, .topic-title, .examPaper_subject, .questionBox')
+    ) {
+      return false;
+    }
+    const txt = (el.innerText || el.textContent || '').trim();
+    if (!txt || /提交作答|\[(?:单选|多选|判断)题?\]|AI随堂练习|随堂练习/.test(txt)) {
+      return false;
+    }
+    return /videoConfigTip/i.test(txt) || txt.length <= 220;
+  });
+
+  if (candidates.length === 0) return false;
+
+  // Prefer innermost matching tip dialog
+  const innermost =
+    candidates.find(
+      (node, i, arr) =>
+        !arr.some((other, j) => i !== j && typeof node.contains === 'function' && node.contains(other))
+    ) || candidates[0];
+
+  const tipText = (innermost.innerText || innermost.textContent || '').trim();
+  const isTipKeyMatch = /videoConfigTip/i.test(tipText);
+  const dismissLabels = ['好的', '我知道了', '知道了', '继续观看', '继续学习'];
+  const allLabels = isTipKeyMatch ? [...dismissLabels, '确定', '关闭'] : dismissLabels;
+
+  const actionButtons = collectPopupActionCandidates(innermost, doc);
+  for (const label of allLabels) {
+    const matched = actionButtons.find((btn) => {
+      const compact = (btn.innerText || btn.textContent || '').replace(/\s+/g, '');
+      return compact === label || (isTipKeyMatch && compact.includes(label));
+    });
+    if (matched) {
+      matched.click();
+      store.addLog('已自动关闭智慧树提示弹窗', 'info');
+      return true;
+    }
+  }
+
+  return false;
+};
+
 const parsePopupOptions = (dialog: HTMLElement, doc: Document): ParsedOptionItem[] => {
   const rawNodes = Array.from(
-    dialog.querySelectorAll<HTMLElement>('.topic-item, ul.topic-list > li, .el-radio, .el-checkbox')
+    dialog.querySelectorAll<HTMLElement>(
+      '.topic-item, ul.topic-list > li, .el-radio, .el-checkbox, .option-item, [class*="option-item"], [class*="answer-item"]'
+    )
   );
   const deduped = rawNodes.filter(
     (node, i, arr) =>
       !isElementOrAncestorHidden(node, doc) &&
-      !arr.some((other, j) => i !== j && node.contains(other))
+      !arr.some((other, j) => i !== j && typeof node.contains === 'function' && node.contains(other))
   );
 
   const parsed: ParsedOptionItem[] = [];
   for (const optEl of deduped) {
-    const letterEl = optEl.querySelector<HTMLElement>('.topic-option, .option-letter, .node_Lab');
+    const letterEl = optEl.querySelector<HTMLElement>(
+      '.topic-option, .option-letter, .node_Lab, [class*="letter"], [class*="badge"]'
+    );
     const textEl = optEl.querySelector<HTMLElement>(
-      '.topic-text, .el-radio__label, .el-checkbox__label, .option-detail, .node_detail'
+      '.topic-text, .el-radio__label, .el-checkbox__label, .option-detail, .node_detail, [class*="text"], [class*="label"]'
     );
     const inputEl = optEl.querySelector<HTMLInputElement>('input[type="radio"], input[type="checkbox"]');
     const rawOptText = (textEl?.innerText || textEl?.textContent || optEl.innerText || optEl.textContent || '').trim();
 
     let letter = '';
     const letterBadge = (letterEl?.innerText || letterEl?.textContent || '').trim();
-    const badgeMatch = letterBadge.match(/^([A-Z])[\.、．:：\s]?$/i);
+    const badgeMatch = letterBadge.match(/^([A-H])[\.、．:：\s]?$/i);
     if (badgeMatch) {
       letter = badgeMatch[1].toUpperCase();
-    } else if (inputEl?.value && /^[A-Z]$/i.test(inputEl.value.trim())) {
+    } else if (inputEl?.value && /^[A-H]$/i.test(inputEl.value.trim())) {
       letter = inputEl.value.trim().toUpperCase();
     } else {
-      const prefixMatch = rawOptText.match(/^([A-Z])[\.、．:：\s]+/);
+      const prefixMatch = rawOptText.match(/^([A-H])[\.、．:：\s]+/);
       letter = prefixMatch ? prefixMatch[1].toUpperCase() : String.fromCharCode(65 + parsed.length);
     }
 
@@ -316,7 +522,77 @@ const parsePopupOptions = (dialog: HTMLElement, doc: Document): ParsedOptionItem
     });
   }
 
-  return parsed;
+  if (parsed.length > 0) {
+    return parsed;
+  }
+
+  // Tier 2 fallback: circular "A / B / C / D" div/li rows without <input> or fixed option classes (new AI随堂练习)
+  if (typeof dialog.querySelectorAll !== 'function') {
+    return [];
+  }
+
+  const extractGenericOptionRow = (el: HTMLElement): { letter: string; text: string } | null => {
+    const raw = (el.innerText || el.textContent || '').trim();
+    if (!raw || raw.length >= 180 || isHeaderOrNoiseLine(raw)) return null;
+    if (typeof el.closest === 'function' && el.closest('kasa-helper-panel, .kasa-card')) return null;
+    const tag = (el.tagName || '').toUpperCase();
+    if (tag === 'BUTTON' || tag === 'A' || el.getAttribute?.('role') === 'button') return null;
+
+    // Separated format: "A 线性回归", "A\n线性回归", "A. 线性回归", "A、线性回归"
+    const sepMatch = raw.match(/^([A-H])(?:[\.、．:：\)\]]\s*|\s+)([\s\S]+)$/);
+    if (sepMatch) {
+      const text = sepMatch[2].trim();
+      if (text && !/^随堂练习/.test(text)) {
+        return { letter: sepMatch[1].toUpperCase(), text };
+      }
+    }
+
+    // Two-child badge layout where textContent concatenates without space (e.g. <span>A</span><span>线性回归</span>)
+    const childNodes = (el as any).children
+      ? Array.from((el as any).children as ArrayLike<HTMLElement>)
+      : typeof el.querySelectorAll === 'function'
+        ? Array.from(el.querySelectorAll<HTMLElement>('span, div, p'))
+        : [];
+    if (childNodes.length >= 2) {
+      const firstText = (childNodes[0]?.innerText || childNodes[0]?.textContent || '').trim();
+      if (/^[A-H]$/i.test(firstText)) {
+        const restParts = childNodes
+          .slice(1)
+          .map((c) => (c.innerText || c.textContent || '').trim())
+          .filter(Boolean);
+        const combinedRest = restParts.join(' ').trim();
+        if (combinedRest && !/^I随堂/.test(combinedRest)) {
+          return { letter: firstText.toUpperCase(), text: combinedRest };
+        }
+      }
+    }
+
+    return null;
+  };
+
+  const genericCandidates = Array.from(dialog.querySelectorAll<HTMLElement>('li, div, p, label')).filter(
+    (el) => !isElementOrAncestorHidden(el, doc) && !!extractGenericOptionRow(el)
+  );
+  const innermostRows = genericCandidates.filter(
+    (node, i, arr) =>
+      !arr.some((other, j) => i !== j && typeof node.contains === 'function' && node.contains(other))
+  );
+
+  const fallbackParsed: ParsedOptionItem[] = [];
+  for (const optEl of innermostRows) {
+    const info = extractGenericOptionRow(optEl);
+    if (!info) continue;
+    fallbackParsed.push({
+      el: optEl,
+      clickableEl: optEl,
+      rawText: info.text,
+      cleanText: normalizeText(info.text),
+      letter: info.letter
+    });
+  }
+
+  const distinctLetters = new Set(fallbackParsed.map((o) => o.letter));
+  return distinctLetters.size >= 2 ? fallbackParsed : [];
 };
 
 /**
@@ -372,15 +648,19 @@ export const solveZhihuishuPopupTest = async (
       }
     }
 
-    const titleEl = findVisiblePopupTitleElement(activeDialog, doc);
-    const rawTitle = (titleEl?.innerText || titleEl?.textContent || '').trim();
+    const rawTitle = extractPopupQuestionTitle(activeDialog, doc);
     const cleanTitle = cleanQuestionTitle(rawTitle);
     const parsedOptions = parsePopupOptions(activeDialog, doc);
 
     if (parsedOptions.length > 0) {
       const hasCheckboxes =
-        !!activeDialog.querySelector('input[type="checkbox"], .el-checkbox') || /多选/.test(rawTitle);
-      const radioCount = activeDialog.querySelectorAll('input[type="radio"], .el-radio').length;
+        (typeof activeDialog.querySelector === 'function' &&
+          !!activeDialog.querySelector('input[type="checkbox"], .el-checkbox')) ||
+        /多选/.test(rawTitle);
+      const radioCount =
+        typeof activeDialog.querySelectorAll === 'function'
+          ? activeDialog.querySelectorAll('input[type="radio"], .el-radio').length
+          : 0;
       const qType = detectQuestionType(
         rawTitle,
         hasCheckboxes,
@@ -493,11 +773,17 @@ export const solveZhihuishuPopupTest = async (
   if (!isCurrent() || signal.aborted) return false;
 
   const dialogToClose = findVisiblePopupTestDialog(doc) || activeDialog;
-  const closeBtn = findPopupCloseButton(dialogToClose, doc);
-  if (closeBtn) {
-    closeBtn.click();
-    store.addLog('已点击智慧树弹题关闭/确定按钮', 'info');
-    const verifyCloseDelay = timing?.verifyCloseDelayMs ?? 300;
+  const primaryBtn = findPopupCloseButton(dialogToClose, doc, { postSubmit: false });
+  const verifyCloseDelay = timing?.verifyCloseDelayMs ?? 350;
+  if (primaryBtn) {
+    primaryBtn.click();
+    const btnLabel = (primaryBtn.innerText || primaryBtn.textContent || '').replace(/\s+/g, '');
+    store.addLog(
+      btnLabel.includes('提交')
+        ? `已点击智慧树弹题【${btnLabel || '提交作答'}】按钮`
+        : '已点击智慧树弹题关闭/确定按钮',
+      'info'
+    );
     if (verifyCloseDelay > 0) {
       try {
         await sleep(verifyCloseDelay, signal);
@@ -505,6 +791,27 @@ export const solveZhihuishuPopupTest = async (
         return false;
       }
       if (!isCurrent() || signal.aborted) return false;
+    }
+  }
+
+  // Phase 2: If post-submit explanation/result view stays open, click "继续学习 / 关闭 / 确定"
+  const remainingDialog = findVisiblePopupTestDialog(doc);
+  if (remainingDialog && primaryBtn) {
+    const secondaryBtn = findPopupCloseButton(remainingDialog, doc, {
+      excludeEl: primaryBtn,
+      postSubmit: true
+    });
+    if (secondaryBtn) {
+      secondaryBtn.click();
+      store.addLog('已点击弹题提交后关闭/继续学习按钮', 'info');
+      if (verifyCloseDelay > 0) {
+        try {
+          await sleep(verifyCloseDelay, signal);
+        } catch {
+          return false;
+        }
+        if (!isCurrent() || signal.aborted) return false;
+      }
     }
   }
 
@@ -847,6 +1154,8 @@ export const playZhihuishuVideoTask = async (
           return;
         }
 
+        dismissZhihuishuTipDialog(doc);
+
         try {
           videoElement.playbackRate = 1.0;
           videoElement.muted = true;
@@ -892,6 +1201,8 @@ export const playZhihuishuVideoTask = async (
         }
 
         if (isSolvingPopup) return;
+
+        dismissZhihuishuTipDialog(doc);
 
         const visibleDialog = findVisiblePopupTestDialog(doc);
         if (visibleDialog) {

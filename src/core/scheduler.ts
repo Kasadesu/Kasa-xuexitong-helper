@@ -8,6 +8,8 @@ import {
   isZhihuishuHost,
   isZhihuishuVideoPage,
   playZhihuishuVideoTask,
+  findVisiblePopupTestDialog,
+  solveZhihuishuPopupTest,
   getZhihuishuLessonKey,
   getZhihuishuSwitchCooldownUntil,
   getLastCompletedZhihuishuLessonKey,
@@ -21,6 +23,7 @@ export class ChapterScheduler {
   private isProcessing = false;
   private isAutoResuming = false;
   private isZhihuishuVideoRunning = false;
+  private isCoursePausedByUser = false;
   private processedIframeDocs = new WeakSet<Document>();
   private scanDebounceTimer: number | null = null;
 
@@ -34,13 +37,9 @@ export class ChapterScheduler {
       return;
     }
 
-    // Listen for manual quiz trigger from UI button
+    // Listen for primary action button toggle (quiz or course depending on current page)
     window.addEventListener('kasa:toggle-quiz', () => {
-      if (store.isQuizRunning) {
-        this.pauseQuiz();
-      } else {
-        this.triggerManualQuiz();
-      }
+      this.togglePrimaryAction();
     });
 
     window.addEventListener('kasa:manual-quiz', () => {
@@ -125,6 +124,12 @@ export class ChapterScheduler {
           if (hasAnyQuestions) {
             processed = true;
             await doQuizTask(null, document, context);
+          } else if (findVisiblePopupTestDialog(document)) {
+            processed = true;
+            const solvedPopup = await solveZhihuishuPopupTest(document, signal, isCurrent);
+            if (!solvedPopup) {
+              store.addLog('随堂弹题未自动关闭，请检查页面弹窗', 'warning');
+            }
           } else {
             clearExamAutoResumeState();
             store.addLog('当前页面未检测到任何作业或测验任务点', 'warning');
@@ -150,12 +155,60 @@ export class ChapterScheduler {
           if (this.isStandaloneQuiz(document)) {
             this.processedIframeDocs.add(document);
           }
-          if (store.progress.status !== 'paused') {
+          if (store.progress.status !== 'paused' && store.actionMode !== 'course') {
             store.updateProgress({ status: 'finished' });
           }
         }
       }
     }
+  }
+
+  public togglePrimaryAction() {
+    if (store.actionMode === 'course') {
+      if (store.isCourseRunning) {
+        this.pauseCourse();
+      } else if (store.progress.status === 'paused' || this.isCoursePausedByUser) {
+        this.resumeCourse();
+      } else {
+        this.isCoursePausedByUser = false;
+        void Promise.resolve().then(() => this.triggerScan());
+      }
+      return;
+    }
+
+    if (store.isQuizRunning) {
+      this.pauseQuiz();
+    } else {
+      void this.triggerManualQuiz();
+    }
+  }
+
+  public pauseCourse() {
+    this.isCoursePausedByUser = true;
+    this.isZhihuishuVideoRunning = false;
+    this.watchdog.renew();
+    try {
+      const topVideo = document.querySelector<HTMLVideoElement>(
+        '#vjs_container_html5_api, video.vjs-tech, .videoArea video, video'
+      );
+      topVideo?.pause?.();
+    } catch {}
+    store.setCourseRunning(false);
+    store.updateProgress({ status: 'paused' });
+    store.addLog('已暂停刷课', 'warning');
+  }
+
+  public resumeCourse() {
+    this.isCoursePausedByUser = false;
+    clearZhihuishuCompletionSuppression();
+    this.processedIframeDocs = new WeakSet<Document>();
+    store.updateProgress({ status: 'playing' });
+    store.addLog('已继续刷课，正在检测课程任务...', 'info');
+    void Promise.resolve().then(() => {
+      if (!this.isCoursePausedByUser) {
+        void this.triggerScan();
+      }
+    });
   }
 
   public pauseQuiz() {
@@ -189,7 +242,7 @@ export class ChapterScheduler {
       !!el &&
       !(
         typeof (el as HTMLElement).closest === 'function' &&
-        (el as HTMLElement).closest('.dialog-test, .el-dialog__wrapper')
+        (el as HTMLElement).closest('.dialog-test, .el-dialog__wrapper, .el-dialog, [role="dialog"]')
       );
 
     const rawQuestions =
@@ -236,6 +289,7 @@ export class ChapterScheduler {
 
     // Step 0: Check if current top-level document is a standalone Homework / Exam page
     if (this.isStandaloneQuiz(document)) {
+      store.setActionMode('quiz');
       const resumeState = getExamAutoResumeState();
       if (resumeState && resumeState.active) {
         if (!this.processedIframeDocs.has(document) && !this.isAutoResuming) {
@@ -284,6 +338,10 @@ export class ChapterScheduler {
 
     // Step 0.5: Handle Zhihuishu H5 video learning pages directly (strict 1.0x muted playback & popup quiz handling)
     if (isZhihuishuVideoPage(document)) {
+      store.setActionMode('course');
+      if (this.isCoursePausedByUser) {
+        return;
+      }
       clearStaleExamResumeIfSafe();
       if (Date.now() < getZhihuishuSwitchCooldownUntil()) {
         return;
@@ -298,10 +356,14 @@ export class ChapterScheduler {
       }
       if (!this.isZhihuishuVideoRunning) {
         this.isZhihuishuVideoRunning = true;
+        store.setCourseRunning(true);
         try {
           await playZhihuishuVideoTask(document, { signal, isCurrent });
         } finally {
           this.isZhihuishuVideoRunning = false;
+          if (isCurrent()) {
+            store.setCourseRunning(false);
+          }
         }
       }
       return;
@@ -370,6 +432,9 @@ export class ChapterScheduler {
 
       if (isQuizIframe) {
         hasUnfinishedQuiz = true;
+        if (pendingTasksCount === 0 && !store.isCourseRunning) {
+          store.setActionMode('quiz');
+        }
         const resumeState = getExamAutoResumeState();
         if (resumeState && resumeState.active) {
           if (!this.processedIframeDocs.has(iframeDoc) && !this.isAutoResuming) {
@@ -402,18 +467,30 @@ export class ChapterScheduler {
         continue;
       }
 
+      store.setActionMode('course');
+      if (this.isCoursePausedByUser) {
+        continue;
+      }
+
       pendingTasksCount++;
       const context: IframeContext = {
         signal,
         isCurrent: () => isCurrent() && iframe.isConnected && iframe.contentDocument === iframeDoc
       };
 
-      if (src.includes('video')) {
-        await playMediaTask('video', iframe, iframeDoc, context);
-      } else if (src.includes('audio')) {
-        await playMediaTask('audio', iframe, iframeDoc, context);
-      } else if (['ppt', 'doc', 'pptx', 'docx', 'pdf'].some((t) => src.includes('modules/' + t))) {
-        await readDocumentTask(iframeWin, context);
+      store.setCourseRunning(true);
+      try {
+        if (src.includes('video')) {
+          await playMediaTask('video', iframe, iframeDoc, context);
+        } else if (src.includes('audio')) {
+          await playMediaTask('audio', iframe, iframeDoc, context);
+        } else if (['ppt', 'doc', 'pptx', 'docx', 'pdf'].some((t) => src.includes('modules/' + t))) {
+          await readDocumentTask(iframeWin, context);
+        }
+      } finally {
+        if (isCurrent()) {
+          store.setCourseRunning(false);
+        }
       }
 
       this.processedIframeDocs.add(iframeDoc);

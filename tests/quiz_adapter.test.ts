@@ -93,6 +93,7 @@ import {
   isZhihuishuVideoPage,
   isZhihuishuExamPage,
   findVisiblePopupTestDialog,
+  dismissZhihuishuTipDialog,
   solveZhihuishuPopupTest,
   findNextZhihuishuVideoItem,
   playZhihuishuVideoTask,
@@ -6963,6 +6964,457 @@ C 是温迪（风神巴巴托斯）
         store.config.autoNextChapter = prevAutoNext;
         store.config.randomDelayBase = prevDelayBase;
         store.config.randomDelayJitter = prevDelayJitter;
+      }
+    });
+
+    it('25.9 新版 AI 随堂练习弹窗与轻提示弹窗 (videoConfigTip01) 两阶段作答与自动关闭测试', async () => {
+      const prevXhr = (globalThis as any).GM_xmlhttpRequest;
+      const prevKey = store.config.aiApiKey;
+
+      try {
+        store.config.aiApiKey = 'sk-zhs-ai-practice';
+
+        let submittedStage = false;
+        let submitClicks = 0;
+        let continueClicks = 0;
+
+        const makeAiOptionRow = (letter: string, label: string) => {
+          let active = false;
+          const badgeChild: any = { innerText: letter, textContent: letter };
+          const textChild: any = { innerText: label, textContent: label };
+          const row: any = {
+            tagName: 'DIV',
+            children: [badgeChild, textChild],
+            innerText: `${letter} ${label}`,
+            textContent: `${letter}${label}`,
+            style: { display: '', visibility: '' },
+            parentElement: null,
+            closest: () => null,
+            contains: (other: any) => other === badgeChild || other === textChild,
+            classList: {
+              contains: (c: string) => active && (c === 'active' || c === 'is-active' || c === 'selected')
+            },
+            getAttribute: () => (active ? 'true' : null),
+            click: () => {
+              active = true;
+            },
+            querySelector: () => null,
+            querySelectorAll: () => [],
+            get isSelected() {
+              return active;
+            }
+          };
+          return row;
+        };
+
+        const aiOpts = [
+          makeAiOptionRow('A', '线性回归'),
+          makeAiOptionRow('B', '支持向量机'),
+          makeAiOptionRow('C', 'K均值聚类'),
+          makeAiOptionRow('D', '随机森林')
+        ];
+
+        const submitActionDiv: any = {
+          tagName: 'DIV',
+          className: 'submit-btn',
+          innerText: '提交作答',
+          textContent: '提交作答',
+          style: { display: '', visibility: '' },
+          parentElement: null,
+          closest: () => null,
+          contains: () => false,
+          classList: { contains: () => false },
+          hasAttribute: () => false,
+          getAttribute: () => null,
+          click: () => {
+            submitClicks++;
+            submittedStage = true;
+          }
+        };
+
+        const continueActionBtn: any = {
+          tagName: 'BUTTON',
+          className: 'continue-btn',
+          innerText: '继续学习',
+          textContent: '继续学习',
+          disabled: false,
+          style: { display: '', visibility: '' },
+          parentElement: null,
+          closest: () => null,
+          contains: () => false,
+          classList: { contains: () => false },
+          hasAttribute: () => false,
+          getAttribute: () => null,
+          click: () => {
+            continueClicks++;
+            aiPracticeDialog.style.display = 'none';
+          }
+        };
+
+        const headerEl: any = {
+          tagName: 'DIV',
+          innerText: 'AI随堂练习',
+          textContent: 'AI随堂练习',
+          style: { display: '', visibility: '' },
+          closest: () => null
+        };
+
+        const aiPracticeDialog: any = {
+          tagName: 'DIV',
+          className: 'el-dialog',
+          style: { display: '', visibility: '' },
+          parentElement: null,
+          closest: () => null,
+          contains: (other: any) =>
+            aiOpts.includes(other) || other === submitActionDiv || other === continueActionBtn,
+          get innerText() {
+            const actionLabel = submittedStage ? '继续学习' : '提交作答';
+            return [
+              'AI随堂练习',
+              '以下所有内容均由AI生成请注意甄别',
+              '1. [单选题]',
+              '在人工智能中，以下哪种算法主要用于处理分类问题？',
+              'A 线性回归',
+              'B 支持向量机',
+              'C K均值聚类',
+              'D 随机森林',
+              actionLabel
+            ].join('\n');
+          },
+          get textContent() {
+            return this.innerText;
+          },
+          querySelector: (sel: string) => {
+            if (sel.includes('button') && submittedStage) return continueActionBtn;
+            return null;
+          },
+          querySelectorAll: (sel: string) => {
+            if (sel.includes('.topic-title') || sel.includes('.title')) return [headerEl];
+            if (sel.includes('.topic-num-item')) return [];
+            if (sel.includes('.topic-item') || sel.includes('.el-radio')) return [];
+            if (sel.includes('li, div, p, label')) return [...aiOpts, submitActionDiv, continueActionBtn];
+            if (sel.includes('button') || sel.includes('[class*="submit"]')) {
+              return submittedStage ? [continueActionBtn] : [submitActionDiv];
+            }
+            return [];
+          }
+        };
+
+        let tipDismissClicked = false;
+        const tipOkBtn: any = {
+          tagName: 'BUTTON',
+          className: 'ok-pill',
+          innerText: '好的',
+          textContent: '好的',
+          disabled: false,
+          style: { display: '', visibility: '' },
+          parentElement: null,
+          closest: () => null,
+          contains: () => false,
+          classList: { contains: () => false },
+          hasAttribute: () => false,
+          getAttribute: () => null,
+          click: () => {
+            tipDismissClicked = true;
+            tipDialog.style.display = 'none';
+          }
+        };
+        const tipDialog: any = {
+          tagName: 'DIV',
+          className: 'el-dialog tip-modal',
+          style: { display: 'none', visibility: '' },
+          parentElement: null,
+          closest: () => null,
+          contains: (other: any) => other === tipOkBtn,
+          innerText: 'videoConfigTip01\n好的',
+          textContent: 'videoConfigTip01\n好的',
+          querySelector: () => null,
+          querySelectorAll: (sel: string) => {
+            if (sel.includes('button') || sel.includes('.btn')) return [tipOkBtn];
+            return [];
+          }
+        };
+
+        const aiDoc: any = {
+          defaultView: {
+            getComputedStyle: (el: any) => ({
+              display: el?.style?.display || 'block',
+              visibility: el?.style?.visibility || 'visible'
+            })
+          },
+          querySelectorAll: (sel: string) => {
+            if (sel.includes('.dialog-test') || sel === '.el-dialog__wrapper') return [];
+            if (sel.includes('[role="dialog"]') || sel.includes('.el-dialog') || sel.includes('[class*="tip"]')) {
+              return [aiPracticeDialog, tipDialog];
+            }
+            return [];
+          }
+        };
+
+        // 1. 当 AI随堂练习 激活时，findVisiblePopupTestDialog 必须捕获它，且 dismissZhihuishuTipDialog 不可误触测验弹窗
+        assert.equal(findVisiblePopupTestDialog(aiDoc), aiPracticeDialog, '必须识别新版 AI随堂练习 弹窗');
+        assert.equal(dismissZhihuishuTipDialog(aiDoc), false, '轻提示关闭逻辑不可误关测验弹窗');
+
+        let aiPromptSeen = '';
+        (globalThis as any).GM_xmlhttpRequest = (opts: any) => {
+          aiPromptSeen = JSON.stringify(JSON.parse(opts.data).messages);
+          setTimeout(() => {
+            opts.onload({
+              status: 200,
+              responseText: JSON.stringify({ choices: [{ message: { content: '["B"]' } }] })
+            });
+          }, 5);
+        };
+
+        const ctrl = new AbortController();
+        const solved = await solveZhihuishuPopupTest(
+          aiDoc,
+          ctrl.signal,
+          () => true,
+          { reactionDelayMs: 5, closeDelayMs: 5, verifyCloseDelayMs: 5 }
+        );
+
+        assert.equal(solved, true, '两阶段提交并点击继续学习后应关闭弹窗并返回 true');
+        assert.ok(aiPromptSeen.includes('线性回归') && aiPromptSeen.includes('随机森林'), '纯 div 圆形选项文本必须完整传给 AI');
+        assert.equal(aiOpts[1].isSelected, true, '必须选中选项 B（支持向量机）');
+        assert.equal(submitClicks, 1, '第 1 阶段必须点击【提交作答】');
+        assert.equal(continueClicks, 1, '第 2 阶段必须点击【继续学习】关闭解析页');
+        assert.equal(findVisiblePopupTestDialog(aiDoc), null);
+
+        // 2. 激活 videoConfigTip01 轻提示框后，dismissZhihuishuTipDialog 自动点击【好的】
+        tipDialog.style.display = '';
+        assert.equal(dismissZhihuishuTipDialog(aiDoc), true, '必须识别并自动关闭 videoConfigTip01 弹窗');
+        assert.equal(tipDismissClicked, true, '必须点击【好的】按钮');
+        assert.equal(tipDialog.style.display, 'none');
+      } finally {
+        (globalThis as any).GM_xmlhttpRequest = prevXhr;
+        store.config.aiApiKey = prevKey;
+      }
+    });
+
+    it('25.10 上下文感知按钮文案 (开始刷课/暂停刷课 vs 开始答题/暂停答题) 与暂停/恢复/手动弹题联动测试', async () => {
+      const prevWin = (globalThis as any).window;
+      const prevDoc = (globalThis as any).document;
+      const prevXhr = (globalThis as any).GM_xmlhttpRequest;
+      const prevKey = store.config.aiApiKey;
+
+      try {
+        clearZhihuishuCompletionSuppression();
+        store.acknowledgeAllErrors();
+
+        // 1. 验证 FloatingCard 主按钮随 actionMode 自动切换文案
+        const mod = await import('../src/ui/floating-card');
+        const card = new mod.FloatingCard();
+
+        store.setActionMode('quiz');
+        store.setQuizRunning(false);
+        store.setCourseRunning(false);
+        store.updateProgress({ status: 'idle', title: '等待任务开始...', percent: 0 });
+        assert.deepEqual((card as any).getPrimaryActionState(), { text: '开始答题', stateClass: 'start' });
+
+        store.setQuizRunning(true);
+        assert.deepEqual((card as any).getPrimaryActionState(), { text: '暂停答题', stateClass: 'pause' });
+
+        store.setQuizRunning(false);
+        store.updateProgress({ status: 'paused' });
+        assert.deepEqual((card as any).getPrimaryActionState(), { text: '继续答题', stateClass: 'resume' });
+
+        store.setActionMode('course');
+        store.updateProgress({ status: 'idle' });
+        assert.deepEqual((card as any).getPrimaryActionState(), { text: '开始刷课', stateClass: 'start' });
+
+        store.setCourseRunning(true);
+        assert.deepEqual((card as any).getPrimaryActionState(), { text: '暂停刷课', stateClass: 'pause' });
+
+        store.setCourseRunning(false);
+        store.updateProgress({ status: 'paused' });
+        assert.deepEqual((card as any).getPrimaryActionState(), { text: '继续刷课', stateClass: 'resume' });
+
+        // 2. 验证 ChapterScheduler 在智慧树视频页的 togglePrimaryAction 暂停/恢复真实联动
+        const setUrl = (u: string) => {
+          const parsed = new URL(u);
+          (globalThis as any).window = {
+            location: {
+              href: parsed.href,
+              hostname: parsed.hostname,
+              pathname: parsed.pathname,
+              search: parsed.search
+            },
+            setTimeout,
+            clearTimeout,
+            setInterval,
+            clearInterval,
+            addEventListener: () => {},
+            removeEventListener: () => {}
+          };
+        };
+
+        setUrl('https://studyvideoh5.zhihuishu.com/videoStudy.html?recruitAndCourseId=999');
+        let coursePlayCalls = 0;
+        let coursePauseCalls = 0;
+        const vidObj: any = {
+          playbackRate: 1.0,
+          muted: true,
+          duration: 120,
+          currentTime: 10,
+          paused: true,
+          ended: false,
+          isConnected: true,
+          play: async () => {
+            coursePlayCalls++;
+            vidObj.paused = false;
+          },
+          pause: () => {
+            coursePauseCalls++;
+            vidObj.paused = true;
+          },
+          addEventListener: () => {},
+          removeEventListener: () => {}
+        };
+        (globalThis as any).document = {
+          readyState: 'complete',
+          location: (globalThis as any).window.location,
+          defaultView: {
+            getComputedStyle: (el: any) => ({
+              display: el?.style?.display || 'block',
+              visibility: el?.style?.visibility || 'visible'
+            })
+          },
+          documentElement: { querySelectorAll: () => [] },
+          querySelector: (sel: string) => {
+            if (sel.includes('#vjs_container_html5_api')) return vidObj;
+            return null;
+          },
+          querySelectorAll: () => []
+        };
+
+        store.updateProgress({ status: 'idle', title: '等待任务开始...', percent: 0 });
+        const sched = new ChapterScheduler();
+        try {
+          const p1 = (sched as any).runPipeline();
+          assert.equal(store.actionMode, 'course', '智慧树视频页必须自动切为刷课模式');
+          assert.equal(store.isCourseRunning, true, '进入刷课流程时 isCourseRunning 必须为 true');
+          assert.deepEqual((card as any).getPrimaryActionState(), { text: '暂停刷课', stateClass: 'pause' });
+
+          // 用户点击【暂停刷课】
+          sched.togglePrimaryAction();
+          await p1;
+          assert.equal(store.isCourseRunning, false);
+          assert.equal(store.progress.status, 'paused');
+          assert.ok(coursePauseCalls >= 1, '暂停刷课必须停止底层视频任务');
+          assert.deepEqual((card as any).getPrimaryActionState(), { text: '继续刷课', stateClass: 'resume' });
+
+          // 暂停期间心跳 runPipeline 不得私自重开视频任务
+          await (sched as any).runPipeline();
+          assert.equal(store.isCourseRunning, false, '用户手动暂停期间心跳绝不可自动重启刷课');
+
+          // 用户点击【继续刷课】恢复
+          sched.togglePrimaryAction();
+          await new Promise((r) => setTimeout(r, 40));
+          assert.equal((sched as any).isCoursePausedByUser, false);
+          assert.equal(store.isCourseRunning, true, '点击继续刷课后必须恢复运行态');
+          (sched as any).watchdog.abort();
+          await new Promise((r) => setTimeout(r, 20));
+        } finally {
+          (sched as any).watchdog?.abort?.();
+        }
+
+        // 3. 当页面上挂着新版 AI随堂练习 时，手动触发 triggerManualQuiz() 应接管弹窗作答而非误报无任务
+        store.config.aiApiKey = '';
+        let manualSubmitClicks = 0;
+        const opt1: any = {
+          tagName: 'DIV',
+          innerText: 'A 第一项',
+          textContent: 'A 第一项',
+          style: { display: '', visibility: '' },
+          closest: () => null,
+          contains: () => false,
+          selected: false,
+          classList: { contains: (c: string) => opt1.selected && c === 'active' },
+          getAttribute: () => (opt1.selected ? 'true' : null),
+          click: () => {
+            opt1.selected = true;
+          }
+        };
+        const opt2: any = {
+          tagName: 'DIV',
+          innerText: 'B 第二项',
+          textContent: 'B 第二项',
+          style: { display: '', visibility: '' },
+          closest: () => null,
+          contains: () => false,
+          selected: false,
+          classList: { contains: () => false },
+          getAttribute: () => null,
+          click: () => {}
+        };
+        const manualSubmitBtn: any = {
+          tagName: 'BUTTON',
+          innerText: '提交作答',
+          textContent: '提交作答',
+          disabled: false,
+          style: { display: '', visibility: '' },
+          closest: () => null,
+          contains: () => false,
+          classList: { contains: () => false },
+          hasAttribute: () => false,
+          getAttribute: () => null,
+          click: () => {
+            manualSubmitClicks++;
+            manualPracticeModal.style.display = 'none';
+          }
+        };
+        const manualPracticeModal: any = {
+          tagName: 'DIV',
+          className: 'el-dialog',
+          style: { display: '', visibility: '' },
+          closest: () => null,
+          contains: (o: any) => o === opt1 || o === opt2 || o === manualSubmitBtn,
+          innerText: 'AI随堂练习\n1. [单选题]\n手动测试随堂练习题\nA 第一项\nB 第二项\n提交作答',
+          textContent: 'AI随堂练习\n1. [单选题]\n手动测试随堂练习题\nA 第一项\nB 第二项\n提交作答',
+          querySelector: () => null,
+          querySelectorAll: (sel: string) => {
+            if (sel.includes('li, div, p, label')) return [opt1, opt2, manualSubmitBtn];
+            if (sel.includes('button')) return [manualSubmitBtn];
+            return [];
+          }
+        };
+
+        (globalThis as any).document = {
+          readyState: 'complete',
+          location: (globalThis as any).window.location,
+          defaultView: {
+            getComputedStyle: (el: any) => ({
+              display: el?.style?.display || 'block',
+              visibility: el?.style?.visibility || 'visible'
+            })
+          },
+          documentElement: { querySelectorAll: () => [] },
+          querySelector: () => null,
+          querySelectorAll: (sel: string) => {
+            if (sel.includes('[role="dialog"]') || sel.includes('.el-dialog')) return [manualPracticeModal];
+            return [];
+          }
+        };
+
+        store.setActionMode('course');
+        store.updateProgress({ status: 'playing', title: '智慧树视频课程' });
+        const manualSched = new ChapterScheduler();
+        await manualSched.triggerManualQuiz();
+        assert.equal(manualSubmitClicks, 1, '手动点击按钮应能直接作答并提交当前可见的 AI随堂练习 弹窗');
+        assert.equal(opt1.selected, true);
+        assert.notEqual(store.progress.title, '未检测到作业/测验');
+      } finally {
+        clearZhihuishuCompletionSuppression();
+        store.setActionMode('quiz');
+        store.setQuizRunning(false);
+        store.setCourseRunning(false);
+        store.updateProgress({ status: 'idle', title: '等待任务开始...', percent: 0, currentTime: '00:00', duration: '00:00' });
+        (globalThis as any).window = prevWin;
+        (globalThis as any).document = prevDoc;
+        (globalThis as any).GM_xmlhttpRequest = prevXhr;
+        store.config.aiApiKey = prevKey;
+        store.acknowledgeAllErrors();
       }
     });
   });

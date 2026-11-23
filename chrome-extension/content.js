@@ -69,6 +69,8 @@
 		pinnedErrors = [];
 		questions = [];
 		isQuizRunning = false;
+		isCourseRunning = false;
+		actionMode = "quiz";
 		progress = {
 			title: "等待任务开始...",
 			percent: 0,
@@ -83,6 +85,18 @@
 		setQuizRunning(running) {
 			this.isQuizRunning = running;
 			this.notify();
+		}
+		setCourseRunning(running) {
+			if (this.isCourseRunning !== running) {
+				this.isCourseRunning = running;
+				this.notify();
+			}
+		}
+		setActionMode(mode) {
+			if (this.actionMode !== mode) {
+				this.actionMode = mode;
+				this.notify();
+			}
 		}
 		loadConfig() {
 			const sanitizeConfig = (parsed) => {
@@ -1770,9 +1784,7 @@ input:checked + .toggle-slider:before {
 				this.shadow.replaceChildren(styleEl, container);
 				this.setupDragging(container.querySelector("#drag-handle"), true);
 			} else {
-				const isRunning = store.isQuizRunning;
-				const isPaused = store.progress.status === "paused";
-				const btnText = isRunning ? "暂停答题" : isPaused ? "继续答题" : "开始答题";
+				const { text: btnText, stateClass: btnStateClass } = this.getPrimaryActionState();
 				container.innerHTML = `
         <div class="kasa-card">
           <div class="kasa-header" id="drag-handle">
@@ -1781,7 +1793,7 @@ input:checked + .toggle-slider:before {
               <span class="kasa-title">Kasa 学习通助手</span>
             </div>
             <div class="kasa-actions">
-              <button class="kasa-btn-quiz ${isRunning ? "pause" : isPaused ? "resume" : "start"}" id="btn-start-quiz" title="${btnText}">${btnText}</button>
+              <button class="kasa-btn-quiz ${btnStateClass}" id="btn-start-quiz" title="${btnText}">${btnText}</button>
               <button class="kasa-btn-icon" id="btn-minimize" title="最小化" aria-label="最小化面板">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                   <line x1="5" y1="12" x2="19" y2="12"></line>
@@ -1859,10 +1871,7 @@ input:checked + .toggle-slider:before {
 			if (progPercent) progPercent.textContent = `${store.progress.percent}%`;
 			const startQuizBtn = this.shadow.querySelector("#btn-start-quiz");
 			if (startQuizBtn) {
-				const isRunning = store.isQuizRunning;
-				const isPaused = store.progress.status === "paused";
-				const btnText = isRunning ? "暂停答题" : isPaused ? "继续答题" : "开始答题";
-				const btnStateClass = isRunning ? "pause" : isPaused ? "resume" : "start";
+				const { text: btnText, stateClass: btnStateClass } = this.getPrimaryActionState();
 				startQuizBtn.textContent = btnText;
 				startQuizBtn.title = btnText;
 				startQuizBtn.className = `kasa-btn-quiz ${btnStateClass}`;
@@ -1909,6 +1918,34 @@ input:checked + .toggle-slider:before {
 			const dur = (duration || "").trim();
 			if (dur) return `${cur} / ${dur}`;
 			return cur;
+		}
+		getPrimaryActionState() {
+			if (store.actionMode === "course") {
+				if (store.isCourseRunning) return {
+					text: "暂停刷课",
+					stateClass: "pause"
+				};
+				if (store.progress.status === "paused") return {
+					text: "继续刷课",
+					stateClass: "resume"
+				};
+				return {
+					text: "开始刷课",
+					stateClass: "start"
+				};
+			}
+			if (store.isQuizRunning) return {
+				text: "暂停答题",
+				stateClass: "pause"
+			};
+			if (store.progress.status === "paused") return {
+				text: "继续答题",
+				stateClass: "resume"
+			};
+			return {
+				text: "开始答题",
+				stateClass: "start"
+			};
 		}
 		getStatusLabel(status) {
 			switch (status) {
@@ -26585,7 +26622,7 @@ input:checked + .toggle-slider:before {
 		const examSel = ".examPaper_subject, .questionBox, .subject_item, .examQuestion_item";
 		const isRealExamNode = (el) => {
 			if (!el) return false;
-			if (typeof el.closest === "function" && el.closest(".dialog-test, .el-dialog__wrapper")) return false;
+			if (typeof el.closest === "function" && el.closest(".dialog-test, .el-dialog__wrapper, .el-dialog, [role=\"dialog\"]")) return false;
 			if (isElementOrAncestorHidden(el, targetDoc)) return false;
 			return true;
 		};
@@ -26607,68 +26644,203 @@ input:checked + .toggle-slider:before {
 	};
 	var findVisiblePopupTestDialog = (doc) => {
 		if (!doc || typeof doc.querySelectorAll !== "function") return null;
+		const isNotHelper = (el) => !(typeof el.closest === "function" && el.closest("kasa-helper-panel, .kasa-card"));
 		const primaryCandidates = Array.from(doc.querySelectorAll(".dialog-test, .el-dialog__wrapper.dialog-test, [class*=\"dialog-test\"]"));
 		for (const el of primaryCandidates) {
-			if (typeof el.closest === "function" && el.closest("kasa-helper-panel, .kasa-card")) continue;
+			if (!isNotHelper(el)) continue;
 			if (!isElementOrAncestorHidden(el, doc)) return el;
 		}
 		const wrapperCandidates = Array.from(doc.querySelectorAll(".el-dialog__wrapper"));
 		for (const wrapper of wrapperCandidates) {
-			if (typeof wrapper.closest === "function" && wrapper.closest("kasa-helper-panel, .kasa-card")) continue;
+			if (!isNotHelper(wrapper)) continue;
 			if (isElementOrAncestorHidden(wrapper, doc)) continue;
 			if (wrapper.querySelector(".topic-item, .topic-title, .topic-list")) return wrapper;
+		}
+		const aiModalCandidates = Array.from(doc.querySelectorAll(".el-dialog, [role=\"dialog\"], .el-overlay-dialog, .el-overlay, [class*=\"dialog\"], [class*=\"modal\"], [class*=\"popup\"], [class*=\"practice\"], [class*=\"exercise\"], [class*=\"quiz\"]")).filter((el) => {
+			if (!isNotHelper(el) || isElementOrAncestorHidden(el, doc)) return false;
+			const txt = (el.innerText || el.textContent || "").trim();
+			if (!txt) return false;
+			const hasPracticeHeader = /(?:AI随堂练习|随堂练习|随堂测验)/.test(txt);
+			const hasPracticeActionOrType = /\[(?:单选|多选|判断)题?\]/.test(txt) || /(?:提交作答|继续学习|继续观看)/.test(txt);
+			const hasTypeAndSubmit = /\[(?:单选|多选|判断)题?\]/.test(txt) && txt.includes("提交作答");
+			return hasPracticeHeader && hasPracticeActionOrType || hasTypeAndSubmit;
+		});
+		if (aiModalCandidates.length > 0) {
+			const withActionBtn = aiModalCandidates.filter((el) => {
+				const txt = el.innerText || el.textContent || "";
+				return /(?:提交作答|继续学习|继续观看|关闭|确定)/.test(txt) || !!el.querySelector?.("button");
+			});
+			const pool = withActionBtn.length > 0 ? withActionBtn : aiModalCandidates;
+			return pool.find((node, i, arr) => !arr.some((other, j) => i !== j && typeof node.contains === "function" && node.contains(other))) || pool[0];
 		}
 		return null;
 	};
 	var isPopupOptionSelected = (el) => {
-		if (el.classList?.contains("active") || el.classList?.contains("is-checked") || el.classList?.contains("selected") || el.getAttribute?.("aria-checked") === "true") return true;
-		return !!el.querySelector?.(".active, .is-checked, .selected, input:checked");
+		if (el.classList?.contains("active") || el.classList?.contains("is-active") || el.classList?.contains("is-checked") || el.classList?.contains("selected") || el.getAttribute?.("aria-checked") === "true") return true;
+		return !!el.querySelector?.(".active, .is-active, .is-checked, .selected, input:checked");
 	};
 	var isControlDisabled = (el) => el.disabled === true || typeof el.hasAttribute === "function" && el.hasAttribute("disabled") || el.classList?.contains("disabled") === true || el.classList?.contains("is-disabled") === true || typeof el.getAttribute === "function" && el.getAttribute("aria-disabled") === "true";
-	var findPopupCloseButton = (dialog, doc) => {
-		const allButtons = Array.from(dialog.querySelectorAll("button, a, .btn, [role=\"button\"], .el-dialog__headerbtn, .close-btn, [class*=\"close\"]"));
-		for (const btn of allButtons) {
-			if (isControlDisabled(btn) || isElementOrAncestorHidden(btn, doc)) continue;
-			const text = (btn.innerText || btn.textContent || "").replace(/\s+/g, "");
-			if (text.includes("关闭") || text.includes("确定") || text.includes("完成") || text.includes("提交") || text.includes("我知道了")) return btn;
+	var ACTION_LABEL_RE = /^(?:提交作答|确认作答|提交答案|提交|继续学习|继续观看|继续播放|关闭|确定|完成|我知道了|知道了|好的)$/;
+	var collectPopupActionCandidates = (container, doc) => {
+		if (typeof container.querySelectorAll !== "function") return [];
+		const raw = Array.from(container.querySelectorAll("button, a, [role=\"button\"], .btn, [class*=\"btn\"], [class*=\"button\"], [class*=\"submit\"], [class*=\"close\"], div, span"));
+		const unique = [];
+		for (const el of raw) if (!unique.includes(el)) unique.push(el);
+		return unique.filter((btn) => {
+			if (isControlDisabled(btn) || isElementOrAncestorHidden(btn, doc)) return false;
+			if (typeof btn.closest === "function" && btn.closest("kasa-helper-panel, .kasa-card")) return false;
+			const tag = (btn.tagName || "").toUpperCase();
+			const cls = typeof btn.className === "string" ? btn.className : "";
+			const role = btn.getAttribute?.("role") || "";
+			const hasButtonHint = tag === "BUTTON" || tag === "A" || role === "button" || /(?:btn|button|submit|close)/i.test(cls);
+			const compact = (btn.innerText || btn.textContent || "").replace(/\s+/g, "");
+			if (!hasButtonHint) return compact.length > 0 && compact.length <= 12 && ACTION_LABEL_RE.test(compact);
+			return true;
+		}).filter((node, i, arr) => {
+			const tag = (node.tagName || "").toUpperCase();
+			if (tag === "BUTTON" || tag === "A" || node.getAttribute?.("role") === "button") return true;
+			return !arr.some((other, j) => i !== j && typeof node.contains === "function" && node.contains(other));
+		});
+	};
+	var findPopupCloseButton = (dialog, doc, options) => {
+		const candidates = collectPopupActionCandidates(dialog, doc).filter((btn) => {
+			if (!options?.excludeEl) return true;
+			const ex = options.excludeEl;
+			if (btn === ex) return false;
+			if (typeof ex.contains === "function" && ex.contains(btn)) return false;
+			if (typeof btn.contains === "function" && btn.contains(ex)) return false;
+			return true;
+		});
+		const priorityKeywords = options?.postSubmit ? [
+			"继续学习",
+			"继续观看",
+			"继续播放",
+			"关闭",
+			"确定",
+			"完成",
+			"好的",
+			"我知道了",
+			"知道了"
+		] : [
+			"提交作答",
+			"确认作答",
+			"提交答案",
+			"关闭",
+			"确定",
+			"完成",
+			"提交",
+			"继续学习",
+			"继续观看",
+			"继续播放",
+			"我知道了"
+		];
+		for (const kw of priorityKeywords) for (const btn of candidates) {
+			const compact = (btn.innerText || btn.textContent || "").replace(/\s+/g, "");
+			if (options?.postSubmit && /提交作答|确认作答|提交答案|^提交$/.test(compact)) continue;
+			if (compact.includes(kw)) return btn;
 		}
-		const fallbackButtons = Array.from(dialog.querySelectorAll(".dialog-footer .el-button--primary, .dialog-footer .btn, .btn, .el-dialog__headerbtn, .close-btn, [class*=\"close\"]"));
-		for (const btn of fallbackButtons) {
-			if (isControlDisabled(btn) || isElementOrAncestorHidden(btn, doc)) continue;
-			return btn;
+		if (typeof dialog.querySelectorAll === "function") {
+			const fallbackSelector = options?.postSubmit ? ".el-dialog__headerbtn, .close-btn, [class*=\"close\"]" : ".dialog-footer .el-button--primary, .dialog-footer .btn, .btn, .el-dialog__headerbtn, .close-btn, [class*=\"close\"]";
+			const fallbackButtons = Array.from(dialog.querySelectorAll(fallbackSelector));
+			for (const btn of fallbackButtons) {
+				if (isControlDisabled(btn) || isElementOrAncestorHidden(btn, doc)) continue;
+				if (options?.excludeEl && btn === options.excludeEl) continue;
+				return btn;
+			}
 		}
 		return null;
+	};
+	var isHeaderOrNoiseLine = (text) => {
+		const compact = text.replace(/\s+/g, "");
+		if (!compact) return true;
+		return compact === "AI随堂练习" || compact === "随堂练习" || compact === "随堂测验" || compact.includes("以下所有内容均由AI生成") || compact.includes("请注意甄别") || ACTION_LABEL_RE.test(compact);
 	};
 	var findVisiblePopupTitleElement = (dialog, doc) => {
-		const titleSelector = ".topic-title, .question-title, .title, .subject_describe";
+		const titleSelector = ".topic-title, .question-title, .subject_describe, .question-stem, .stem, .topic-stem, .title";
 		const rawCandidates = typeof dialog.querySelectorAll === "function" ? Array.from(dialog.querySelectorAll(titleSelector)) : [];
-		if (rawCandidates.length > 0) return rawCandidates.find((el) => !isElementOrAncestorHidden(el, doc)) ?? null;
+		if (rawCandidates.length > 0) return rawCandidates.find((el) => !isElementOrAncestorHidden(el, doc) && !isHeaderOrNoiseLine((el.innerText || el.textContent || "").trim())) ?? null;
 		if (typeof dialog.querySelector === "function") {
 			const single = dialog.querySelector(titleSelector);
-			if (single && !isElementOrAncestorHidden(single, doc)) return single;
+			if (single && !isElementOrAncestorHidden(single, doc) && !isHeaderOrNoiseLine((single.innerText || single.textContent || "").trim())) return single;
 		}
 		return null;
 	};
+	var extractPopupQuestionTitle = (dialog, doc) => {
+		const el = findVisiblePopupTitleElement(dialog, doc);
+		const direct = (el?.innerText || el?.textContent || "").trim();
+		if (direct) return direct;
+		const rawLines = (dialog.innerText || dialog.textContent || "").split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+		const kept = [];
+		for (const line of rawLines) {
+			if (isHeaderOrNoiseLine(line)) continue;
+			if (/^[A-H]$/.test(line)) break;
+			if (/^[A-H](?:[\.、．:：\)\]\s]+)\S+/.test(line) && !/^AI/i.test(line)) break;
+			kept.push(line);
+			if (kept.length >= 2 && !/^\d+\.\s*\[.*\]$/.test(kept[kept.length - 1])) break;
+		}
+		return kept.join(" ").trim();
+	};
 	var getPopupDialogSignature = (dialog, doc) => {
-		const titleEl = findVisiblePopupTitleElement(dialog, doc);
-		const titleText = (titleEl?.innerText || titleEl?.textContent || "").trim().slice(0, 80);
+		const titleText = extractPopupQuestionTitle(dialog, doc).slice(0, 80);
 		const fallbackText = (dialog.innerText || dialog.textContent || "").trim().slice(0, 80);
 		return titleText || fallbackText || "popup-dialog";
 	};
+	var dismissZhihuishuTipDialog = (doc) => {
+		if (!doc || typeof doc.querySelectorAll !== "function") return false;
+		const activeQuizDialog = findVisiblePopupTestDialog(doc);
+		const candidates = Array.from(doc.querySelectorAll(".el-dialog, .el-dialog__wrapper, .el-message-box__wrapper, [role=\"dialog\"], [class*=\"dialog\"], [class*=\"modal\"], [class*=\"tip\"], [class*=\"popup\"]")).filter((el) => {
+			if (typeof el.closest === "function" && el.closest("kasa-helper-panel, .kasa-card")) return false;
+			if (isElementOrAncestorHidden(el, doc)) return false;
+			if (activeQuizDialog && (el === activeQuizDialog || typeof el.contains === "function" && el.contains(activeQuizDialog) || typeof activeQuizDialog.contains === "function" && activeQuizDialog.contains(el))) return false;
+			if (typeof el.querySelector === "function" && el.querySelector(".topic-item, .topic-title, .examPaper_subject, .questionBox")) return false;
+			const txt = (el.innerText || el.textContent || "").trim();
+			if (!txt || /提交作答|\[(?:单选|多选|判断)题?\]|AI随堂练习|随堂练习/.test(txt)) return false;
+			return /videoConfigTip/i.test(txt) || txt.length <= 220;
+		});
+		if (candidates.length === 0) return false;
+		const innermost = candidates.find((node, i, arr) => !arr.some((other, j) => i !== j && typeof node.contains === "function" && node.contains(other))) || candidates[0];
+		const tipText = (innermost.innerText || innermost.textContent || "").trim();
+		const isTipKeyMatch = /videoConfigTip/i.test(tipText);
+		const dismissLabels = [
+			"好的",
+			"我知道了",
+			"知道了",
+			"继续观看",
+			"继续学习"
+		];
+		const allLabels = isTipKeyMatch ? [
+			...dismissLabels,
+			"确定",
+			"关闭"
+		] : dismissLabels;
+		const actionButtons = collectPopupActionCandidates(innermost, doc);
+		for (const label of allLabels) {
+			const matched = actionButtons.find((btn) => {
+				const compact = (btn.innerText || btn.textContent || "").replace(/\s+/g, "");
+				return compact === label || isTipKeyMatch && compact.includes(label);
+			});
+			if (matched) {
+				matched.click();
+				store.addLog("已自动关闭智慧树提示弹窗", "info");
+				return true;
+			}
+		}
+		return false;
+	};
 	var parsePopupOptions = (dialog, doc) => {
-		const deduped = Array.from(dialog.querySelectorAll(".topic-item, ul.topic-list > li, .el-radio, .el-checkbox")).filter((node, i, arr) => !isElementOrAncestorHidden(node, doc) && !arr.some((other, j) => i !== j && node.contains(other)));
+		const deduped = Array.from(dialog.querySelectorAll(".topic-item, ul.topic-list > li, .el-radio, .el-checkbox, .option-item, [class*=\"option-item\"], [class*=\"answer-item\"]")).filter((node, i, arr) => !isElementOrAncestorHidden(node, doc) && !arr.some((other, j) => i !== j && typeof node.contains === "function" && node.contains(other)));
 		const parsed = [];
 		for (const optEl of deduped) {
-			const letterEl = optEl.querySelector(".topic-option, .option-letter, .node_Lab");
-			const textEl = optEl.querySelector(".topic-text, .el-radio__label, .el-checkbox__label, .option-detail, .node_detail");
+			const letterEl = optEl.querySelector(".topic-option, .option-letter, .node_Lab, [class*=\"letter\"], [class*=\"badge\"]");
+			const textEl = optEl.querySelector(".topic-text, .el-radio__label, .el-checkbox__label, .option-detail, .node_detail, [class*=\"text\"], [class*=\"label\"]");
 			const inputEl = optEl.querySelector("input[type=\"radio\"], input[type=\"checkbox\"]");
 			const rawOptText = (textEl?.innerText || textEl?.textContent || optEl.innerText || optEl.textContent || "").trim();
 			let letter = "";
-			const badgeMatch = (letterEl?.innerText || letterEl?.textContent || "").trim().match(/^([A-Z])[\.、．:：\s]?$/i);
+			const badgeMatch = (letterEl?.innerText || letterEl?.textContent || "").trim().match(/^([A-H])[\.、．:：\s]?$/i);
 			if (badgeMatch) letter = badgeMatch[1].toUpperCase();
-			else if (inputEl?.value && /^[A-Z]$/i.test(inputEl.value.trim())) letter = inputEl.value.trim().toUpperCase();
+			else if (inputEl?.value && /^[A-H]$/i.test(inputEl.value.trim())) letter = inputEl.value.trim().toUpperCase();
 			else {
-				const prefixMatch = rawOptText.match(/^([A-Z])[\.、．:：\s]+/);
+				const prefixMatch = rawOptText.match(/^([A-H])[\.、．:：\s]+/);
 				letter = prefixMatch ? prefixMatch[1].toUpperCase() : String.fromCharCode(65 + parsed.length);
 			}
 			const finalRawText = rawOptText.replace(new RegExp(`^${letter}[\\.、．:：\\s]*`, "i"), "").trim() || rawOptText;
@@ -26683,7 +26855,49 @@ input:checked + .toggle-slider:before {
 				dataValue: inputEl?.value?.trim() || void 0
 			});
 		}
-		return parsed;
+		if (parsed.length > 0) return parsed;
+		if (typeof dialog.querySelectorAll !== "function") return [];
+		const extractGenericOptionRow = (el) => {
+			const raw = (el.innerText || el.textContent || "").trim();
+			if (!raw || raw.length >= 180 || isHeaderOrNoiseLine(raw)) return null;
+			if (typeof el.closest === "function" && el.closest("kasa-helper-panel, .kasa-card")) return null;
+			const tag = (el.tagName || "").toUpperCase();
+			if (tag === "BUTTON" || tag === "A" || el.getAttribute?.("role") === "button") return null;
+			const sepMatch = raw.match(/^([A-H])(?:[\.、．:：\)\]]\s*|\s+)([\s\S]+)$/);
+			if (sepMatch) {
+				const text = sepMatch[2].trim();
+				if (text && !/^随堂练习/.test(text)) return {
+					letter: sepMatch[1].toUpperCase(),
+					text
+				};
+			}
+			const childNodes = el.children ? Array.from(el.children) : typeof el.querySelectorAll === "function" ? Array.from(el.querySelectorAll("span, div, p")) : [];
+			if (childNodes.length >= 2) {
+				const firstText = (childNodes[0]?.innerText || childNodes[0]?.textContent || "").trim();
+				if (/^[A-H]$/i.test(firstText)) {
+					const combinedRest = childNodes.slice(1).map((c) => (c.innerText || c.textContent || "").trim()).filter(Boolean).join(" ").trim();
+					if (combinedRest && !/^I随堂/.test(combinedRest)) return {
+						letter: firstText.toUpperCase(),
+						text: combinedRest
+					};
+				}
+			}
+			return null;
+		};
+		const innermostRows = Array.from(dialog.querySelectorAll("li, div, p, label")).filter((el) => !isElementOrAncestorHidden(el, doc) && !!extractGenericOptionRow(el)).filter((node, i, arr) => !arr.some((other, j) => i !== j && typeof node.contains === "function" && node.contains(other)));
+		const fallbackParsed = [];
+		for (const optEl of innermostRows) {
+			const info = extractGenericOptionRow(optEl);
+			if (!info) continue;
+			fallbackParsed.push({
+				el: optEl,
+				clickableEl: optEl,
+				rawText: info.text,
+				cleanText: normalizeText(info.text),
+				letter: info.letter
+			});
+		}
+		return new Set(fallbackParsed.map((o) => o.letter)).size >= 2 ? fallbackParsed : [];
 	};
 	var solveZhihuishuPopupTest = async (doc, signal, isCurrent, timing) => {
 		if (!findVisiblePopupTestDialog(doc)) return false;
@@ -26715,14 +26929,11 @@ input:checked + .toggle-slider:before {
 					if (!isCurrent() || signal.aborted) return false;
 				}
 			}
-			const titleEl = findVisiblePopupTitleElement(activeDialog, doc);
-			const rawTitle = (titleEl?.innerText || titleEl?.textContent || "").trim();
+			const rawTitle = extractPopupQuestionTitle(activeDialog, doc);
 			const cleanTitle = cleanQuestionTitle(rawTitle);
 			const parsedOptions = parsePopupOptions(activeDialog, doc);
 			if (parsedOptions.length > 0) {
-				const hasCheckboxes = !!activeDialog.querySelector("input[type=\"checkbox\"], .el-checkbox") || /多选/.test(rawTitle);
-				const radioCount = activeDialog.querySelectorAll("input[type=\"radio\"], .el-radio").length;
-				const qType = detectQuestionType(rawTitle, hasCheckboxes, radioCount, activeDialog.innerText || activeDialog.textContent || "");
+				const qType = detectQuestionType(rawTitle, typeof activeDialog.querySelector === "function" && !!activeDialog.querySelector("input[type=\"checkbox\"], .el-checkbox") || /多选/.test(rawTitle), typeof activeDialog.querySelectorAll === "function" ? activeDialog.querySelectorAll("input[type=\"radio\"], .el-radio").length : 0, activeDialog.innerText || activeDialog.textContent || "");
 				const questionObj = {
 					id: `zhs-popup-${Date.now()}-${qIdx}`,
 					index: qIdx + 1,
@@ -26790,11 +27001,12 @@ input:checked + .toggle-slider:before {
 			return false;
 		}
 		if (!isCurrent() || signal.aborted) return false;
-		const closeBtn = findPopupCloseButton(findVisiblePopupTestDialog(doc) || activeDialog, doc);
-		if (closeBtn) {
-			closeBtn.click();
-			store.addLog("已点击智慧树弹题关闭/确定按钮", "info");
-			const verifyCloseDelay = timing?.verifyCloseDelayMs ?? 300;
+		const primaryBtn = findPopupCloseButton(findVisiblePopupTestDialog(doc) || activeDialog, doc, { postSubmit: false });
+		const verifyCloseDelay = timing?.verifyCloseDelayMs ?? 350;
+		if (primaryBtn) {
+			primaryBtn.click();
+			const btnLabel = (primaryBtn.innerText || primaryBtn.textContent || "").replace(/\s+/g, "");
+			store.addLog(btnLabel.includes("提交") ? `已点击智慧树弹题【${btnLabel || "提交作答"}】按钮` : "已点击智慧树弹题关闭/确定按钮", "info");
 			if (verifyCloseDelay > 0) {
 				try {
 					await sleep(verifyCloseDelay, signal);
@@ -26802,6 +27014,25 @@ input:checked + .toggle-slider:before {
 					return false;
 				}
 				if (!isCurrent() || signal.aborted) return false;
+			}
+		}
+		const remainingDialog = findVisiblePopupTestDialog(doc);
+		if (remainingDialog && primaryBtn) {
+			const secondaryBtn = findPopupCloseButton(remainingDialog, doc, {
+				excludeEl: primaryBtn,
+				postSubmit: true
+			});
+			if (secondaryBtn) {
+				secondaryBtn.click();
+				store.addLog("已点击弹题提交后关闭/继续学习按钮", "info");
+				if (verifyCloseDelay > 0) {
+					try {
+						await sleep(verifyCloseDelay, signal);
+					} catch {
+						return false;
+					}
+					if (!isCurrent() || signal.aborted) return false;
+				}
 			}
 		}
 		return !findVisiblePopupTestDialog(doc);
@@ -26996,6 +27227,7 @@ input:checked + .toggle-slider:before {
 					}
 					if (settled || !context.isCurrent()) return finish(true);
 					if (isHandlingFinish || isCurrentVideoFinished() || !videoElement || !videoElement.paused || findVisiblePopupTestDialog(doc) || isSolvingPopup) return;
+					dismissZhihuishuTipDialog(doc);
 					try {
 						videoElement.playbackRate = 1;
 						videoElement.muted = true;
@@ -27027,6 +27259,7 @@ input:checked + .toggle-slider:before {
 						isStarted = false;
 					}
 					if (isSolvingPopup) return;
+					dismissZhihuishuTipDialog(doc);
 					const visibleDialog = findVisiblePopupTestDialog(doc);
 					if (visibleDialog) {
 						const dialogSig = getPopupDialogSignature(visibleDialog, doc);
@@ -27148,6 +27381,7 @@ input:checked + .toggle-slider:before {
 		isProcessing = false;
 		isAutoResuming = false;
 		isZhihuishuVideoRunning = false;
+		isCoursePausedByUser = false;
 		processedIframeDocs = new WeakSet();
 		scanDebounceTimer = null;
 		start() {
@@ -27158,8 +27392,7 @@ input:checked + .toggle-slider:before {
 				return;
 			}
 			window.addEventListener("kasa:toggle-quiz", () => {
-				if (store.isQuizRunning) this.pauseQuiz();
-				else this.triggerManualQuiz();
+				this.togglePrimaryAction();
 			});
 			window.addEventListener("kasa:manual-quiz", () => {
 				if (store.isQuizRunning) this.pauseQuiz();
@@ -27221,6 +27454,9 @@ input:checked + .toggle-slider:before {
 						if (!!document.querySelector(".questionLi, .TiMu.newTiMu, .TiMu, div[data-id], .singleQues, div[id^=\"question\"], .Zy_TItle, .examPaper_subject, .questionBox, .subject_item, .examQuestion_item")) {
 							processed = true;
 							await doQuizTask(null, document, context);
+						} else if (findVisiblePopupTestDialog(document)) {
+							processed = true;
+							if (!await solveZhihuishuPopupTest(document, signal, isCurrent)) store.addLog("随堂弹题未自动关闭，请检查页面弹窗", "warning");
 						} else {
 							clearExamAutoResumeState();
 							store.addLog("当前页面未检测到任何作业或测验任务点", "warning");
@@ -27242,10 +27478,44 @@ input:checked + .toggle-slider:before {
 					store.setQuizRunning(false);
 					if (processed && !signal.aborted) {
 						if (this.isStandaloneQuiz(document)) this.processedIframeDocs.add(document);
-						if (store.progress.status !== "paused") store.updateProgress({ status: "finished" });
+						if (store.progress.status !== "paused" && store.actionMode !== "course") store.updateProgress({ status: "finished" });
 					}
 				}
 			}
+		}
+		togglePrimaryAction() {
+			if (store.actionMode === "course") {
+				if (store.isCourseRunning) this.pauseCourse();
+				else if (store.progress.status === "paused" || this.isCoursePausedByUser) this.resumeCourse();
+				else {
+					this.isCoursePausedByUser = false;
+					Promise.resolve().then(() => this.triggerScan());
+				}
+				return;
+			}
+			if (store.isQuizRunning) this.pauseQuiz();
+			else this.triggerManualQuiz();
+		}
+		pauseCourse() {
+			this.isCoursePausedByUser = true;
+			this.isZhihuishuVideoRunning = false;
+			this.watchdog.renew();
+			try {
+				document.querySelector("#vjs_container_html5_api, video.vjs-tech, .videoArea video, video")?.pause?.();
+			} catch {}
+			store.setCourseRunning(false);
+			store.updateProgress({ status: "paused" });
+			store.addLog("已暂停刷课", "warning");
+		}
+		resumeCourse() {
+			this.isCoursePausedByUser = false;
+			clearZhihuishuCompletionSuppression();
+			this.processedIframeDocs = new WeakSet();
+			store.updateProgress({ status: "playing" });
+			store.addLog("已继续刷课，正在检测课程任务...", "info");
+			Promise.resolve().then(() => {
+				if (!this.isCoursePausedByUser) this.triggerScan();
+			});
 		}
 		pauseQuiz() {
 			clearExamAutoResumeState();
@@ -27264,7 +27534,7 @@ input:checked + .toggle-slider:before {
 			if (isZhihuishuHost() && isZhihuishuVideoPage(doc)) return false;
 			const questionSel = ".questionLi, .TiMu.newTiMu, .TiMu, div[data-id], .singleQues, div[id^=\"question\"], div[id^=\"q_\"], .examPaper_subject, .questionBox, .subject_item, .examQuestion_item";
 			const optionSel = "ul.Zy_ulTop, li.before-after, .num_option, input[type=\"radio\"], input[type=\"checkbox\"], textarea, .answerBg, .subject_node, .nodeLab, .el-radio, .el-checkbox, .el-textarea__inner";
-			const isOutsidePopup = (el) => !!el && !(typeof el.closest === "function" && el.closest(".dialog-test, .el-dialog__wrapper"));
+			const isOutsidePopup = (el) => !!el && !(typeof el.closest === "function" && el.closest(".dialog-test, .el-dialog__wrapper, .el-dialog, [role=\"dialog\"]"));
 			const rawQuestions = typeof doc.querySelectorAll === "function" ? Array.from(doc.querySelectorAll(questionSel)) : [];
 			const hasQuestions = rawQuestions.length > 0 ? rawQuestions.some((el) => isOutsidePopup(el)) : typeof doc.querySelector === "function" && isOutsidePopup(doc.querySelector(questionSel));
 			const rawOptions = typeof doc.querySelectorAll === "function" ? Array.from(doc.querySelectorAll(optionSel)) : [];
@@ -27287,6 +27557,7 @@ input:checked + .toggle-slider:before {
 			const signal = this.watchdog.signal;
 			const isCurrent = () => this.watchdog.isCurrent(taskId);
 			if (this.isStandaloneQuiz(document)) {
+				store.setActionMode("quiz");
 				const resumeState = getExamAutoResumeState();
 				if (resumeState && resumeState.active) {
 					if (!this.processedIframeDocs.has(document) && !this.isAutoResuming) {
@@ -27318,6 +27589,8 @@ input:checked + .toggle-slider:before {
 				if ((typeof document === "undefined" || document.readyState === void 0 || document.readyState === "complete") && !this.isQuizPageUrl() && !store.isQuizRunning && getExamAutoResumeState()?.active) clearExamAutoResumeState();
 			};
 			if (isZhihuishuVideoPage(document)) {
+				store.setActionMode("course");
+				if (this.isCoursePausedByUser) return;
 				clearStaleExamResumeIfSafe();
 				if (Date.now() < getZhihuishuSwitchCooldownUntil()) return;
 				const completedKey = getLastCompletedZhihuishuLessonKey();
@@ -27327,6 +27600,7 @@ input:checked + .toggle-slider:before {
 				}
 				if (!this.isZhihuishuVideoRunning) {
 					this.isZhihuishuVideoRunning = true;
+					store.setCourseRunning(true);
 					try {
 						await playZhihuishuVideoTask(document, {
 							signal,
@@ -27334,6 +27608,7 @@ input:checked + .toggle-slider:before {
 						});
 					} finally {
 						this.isZhihuishuVideoRunning = false;
+						if (isCurrent()) store.setCourseRunning(false);
 					}
 				}
 				return;
@@ -27360,6 +27635,7 @@ input:checked + .toggle-slider:before {
 				if (!(iframe.parentElement?.querySelector(".ans-job-icon") || src.includes("video") || src.includes("audio") || src.includes("work") || src.includes("quiz") || src.includes("exam") || src.includes("modules/") || iframe.classList.contains("ans-work-module") || iframe.parentElement?.classList.contains("ans-work-module") || this.isStandaloneQuiz(iframeDoc))) continue;
 				if (src.includes("work") || src.includes("quiz") || src.includes("exam") || iframe.classList.contains("ans-work-module") || iframe.parentElement?.classList.contains("ans-work-module") || this.isStandaloneQuiz(iframeDoc)) {
 					hasUnfinishedQuiz = true;
+					if (pendingTasksCount === 0 && !store.isCourseRunning) store.setActionMode("quiz");
 					const resumeState = getExamAutoResumeState();
 					if (resumeState && resumeState.active) {
 						if (!this.processedIframeDocs.has(iframeDoc) && !this.isAutoResuming) {
@@ -27386,20 +27662,27 @@ input:checked + .toggle-slider:before {
 					continue;
 				}
 				if (this.processedIframeDocs.has(iframeDoc)) continue;
+				store.setActionMode("course");
+				if (this.isCoursePausedByUser) continue;
 				pendingTasksCount++;
 				const context = {
 					signal,
 					isCurrent: () => isCurrent() && iframe.isConnected && iframe.contentDocument === iframeDoc
 				};
-				if (src.includes("video")) await playMediaTask("video", iframe, iframeDoc, context);
-				else if (src.includes("audio")) await playMediaTask("audio", iframe, iframeDoc, context);
-				else if ([
-					"ppt",
-					"doc",
-					"pptx",
-					"docx",
-					"pdf"
-				].some((t) => src.includes("modules/" + t))) await readDocumentTask(iframeWin, context);
+				store.setCourseRunning(true);
+				try {
+					if (src.includes("video")) await playMediaTask("video", iframe, iframeDoc, context);
+					else if (src.includes("audio")) await playMediaTask("audio", iframe, iframeDoc, context);
+					else if ([
+						"ppt",
+						"doc",
+						"pptx",
+						"docx",
+						"pdf"
+					].some((t) => src.includes("modules/" + t))) await readDocumentTask(iframeWin, context);
+				} finally {
+					if (isCurrent()) store.setCourseRunning(false);
+				}
 				this.processedIframeDocs.add(iframeDoc);
 			}
 			if (!hasUnfinishedQuiz) clearStaleExamResumeIfSafe();

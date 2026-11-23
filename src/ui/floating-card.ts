@@ -78,10 +78,7 @@ export class FloatingCard extends HTMLElement {
       this.shadow.replaceChildren(styleEl, container);
       this.setupDragging(container.querySelector('#drag-handle') as HTMLElement, true);
     } else {
-      const isRunning = store.isQuizRunning;
-      const isPaused = store.progress.status === 'paused';
-      const btnText = isRunning ? '暂停答题' : (isPaused ? '继续答题' : '开始答题');
-      const btnStateClass = isRunning ? 'pause' : (isPaused ? 'resume' : 'start');
+      const { text: btnText, stateClass: btnStateClass } = this.getPrimaryActionState();
 
       container.innerHTML = `
         <div class="kasa-card">
@@ -176,13 +173,10 @@ export class FloatingCard extends HTMLElement {
     if (progTime) progTime.textContent = this.formatProgressTime(store.progress.currentTime, store.progress.duration);
     if (progPercent) progPercent.textContent = `${store.progress.percent}%`;
 
-    // Update start/pause quiz button
+    // Update primary action button (quiz or course mode)
     const startQuizBtn = this.shadow.querySelector('#btn-start-quiz') as HTMLElement | null;
     if (startQuizBtn) {
-      const isRunning = store.isQuizRunning;
-      const isPaused = store.progress.status === 'paused';
-      const btnText = isRunning ? '暂停答题' : (isPaused ? '继续答题' : '开始答题');
-      const btnStateClass = isRunning ? 'pause' : (isPaused ? 'resume' : 'start');
+      const { text: btnText, stateClass: btnStateClass } = this.getPrimaryActionState();
       startQuizBtn.textContent = btnText;
       startQuizBtn.title = btnText;
       startQuizBtn.className = `kasa-btn-quiz ${btnStateClass}`;
@@ -243,6 +237,26 @@ export class FloatingCard extends HTMLElement {
       return `${cur} / ${dur}`;
     }
     return cur;
+  }
+
+  private getPrimaryActionState(): { text: string; stateClass: string } {
+    if (store.actionMode === 'course') {
+      if (store.isCourseRunning) {
+        return { text: '暂停刷课', stateClass: 'pause' };
+      }
+      if (store.progress.status === 'paused') {
+        return { text: '继续刷课', stateClass: 'resume' };
+      }
+      return { text: '开始刷课', stateClass: 'start' };
+    }
+
+    if (store.isQuizRunning) {
+      return { text: '暂停答题', stateClass: 'pause' };
+    }
+    if (store.progress.status === 'paused') {
+      return { text: '继续答题', stateClass: 'resume' };
+    }
+    return { text: '开始答题', stateClass: 'start' };
   }
 
   private getStatusLabel(status: string): string {

@@ -53,6 +53,8 @@ class Store {
   public pinnedErrors: LogItem[] = [];
   public questions: Question[] = [];
   public isQuizRunning: boolean = false;
+  public isCourseRunning: boolean = false;
+  public actionMode: 'quiz' | 'course' = 'quiz';
   public progress: TaskProgress = {
     title: '等待任务开始...',
     percent: 0,
@@ -69,6 +71,20 @@ class Store {
   public setQuizRunning(running: boolean) {
     this.isQuizRunning = running;
     this.notify();
+  }
+
+  public setCourseRunning(running: boolean) {
+    if (this.isCourseRunning !== running) {
+      this.isCourseRunning = running;
+      this.notify();
+    }
+  }
+
+  public setActionMode(mode: 'quiz' | 'course') {
+    if (this.actionMode !== mode) {
+      this.actionMode = mode;
+      this.notify();
+    }
   }
 
   private loadConfig(): AppConfig {
