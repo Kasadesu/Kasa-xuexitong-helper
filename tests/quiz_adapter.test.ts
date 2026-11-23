@@ -82,6 +82,7 @@ import {
   compressImageBlob,
   doQuizTask,
   findNextQuestionBtn,
+  findQuizActionButton,
   getExamScope,
   getExamAutoResumeState,
   setExamAutoResumeState,
@@ -7850,6 +7851,450 @@ C 是温迪（风神巴巴托斯）
         store.config.autoNextChapter = prevAutoNext;
         store.config.randomDelayBase = prevDelayBase;
         store.config.randomDelayJitter = prevDelayJitter;
+      }
+    });
+
+    it('25.12 新版智慧树单元测试页面：分离式题干提取、底部【保存】与【暂存作业/提交作业】定位及空题干防盲猜熔断', async () => {
+      const prevWin = (globalThis as any).window;
+      const prevSession = (globalThis as any).sessionStorage;
+      const prevXhr = (globalThis as any).GM_xmlhttpRequest;
+      const prevKey = store.config.aiApiKey;
+      const prevAutoSubmit = store.config.autoSubmitWork;
+
+      const sMap = new Map<string, string>();
+      (globalThis as any).sessionStorage = {
+        getItem: (k: string) => sMap.get(k) ?? null,
+        setItem: (k: string, v: string) => sMap.set(k, String(v)),
+        removeItem: (k: string) => sMap.delete(k),
+        clear: () => sMap.clear()
+      };
+
+      const splitSelector = (sel: string) => sel.split(',').map((s) => s.trim()).filter(Boolean);
+
+      const matchesUnitPart = (el: any, part: string): boolean => {
+        const cls = (el.className || '').split(/\s+/).filter(Boolean);
+        const tag = (el.tagName || '').toUpperCase();
+        if (part.startsWith('div[')) {
+          const m = part.match(/^div\[id\^="([^"]+)"\]$/);
+          if (m) return tag === 'DIV' && (el.id || '').startsWith(m[1]);
+          return false;
+        }
+        if (part.startsWith('a[') || part.startsWith('input[')) return false;
+        if (part.startsWith('.')) {
+          if (part.slice(1).includes('.')) {
+            return part
+              .slice(1)
+              .split('.')
+              .every((sub) => cls.includes(sub));
+          }
+          return cls.includes(part.slice(1));
+        }
+        const attrContains = part.match(/^\[class\*="([^"]+)"\]$/);
+        if (attrContains) return (el.className || '').includes(attrContains[1]);
+        const roleMatch = part.match(/^\[role="([^"]+)"\]$/);
+        if (roleMatch) return el.getAttribute?.('role') === roleMatch[1];
+        if (part === 'input[type="radio"]') return tag === 'INPUT' && el.type === 'radio';
+        if (part === 'input[type="checkbox"]') return tag === 'INPUT' && el.type === 'checkbox';
+        if (part === 'button[type="submit"]') return tag === 'BUTTON' && el.type === 'submit';
+        if (/^[a-z0-9]+$/i.test(part)) return tag === part.toUpperCase();
+        return false;
+      };
+
+      const matchChain = (el: any, chain: string): boolean => {
+        const tokens = chain.split(/\s+/).filter((t) => t && t !== '>');
+        if (tokens.length === 0) return false;
+        if (!matchesUnitPart(el, tokens[tokens.length - 1])) return false;
+        if (tokens.length === 1) return true;
+        let cur = el.parentElement;
+        for (let i = tokens.length - 2; i >= 0; i--) {
+          while (cur && !matchesUnitPart(cur, tokens[i])) {
+            cur = cur.parentElement;
+          }
+          if (!cur) return false;
+          cur = cur.parentElement;
+        }
+        return true;
+      };
+
+      const matchesAny = (el: any, sel: string): boolean =>
+        splitSelector(sel).some((chain) => matchChain(el, chain));
+
+      const makeDomNode = (opts: {
+        tagName: string;
+        className?: string;
+        id?: string;
+        type?: string;
+        value?: string;
+        disabled?: boolean;
+        attrs?: Record<string, string>;
+        style?: { display?: string; visibility?: string };
+        text?: string;
+        children?: any[];
+        onClick?: () => void;
+      }): any => {
+        const node: any = {
+          tagName: opts.tagName,
+          className: opts.className || '',
+          id: opts.id || '',
+          type: opts.type || '',
+          value: opts.value || '',
+          checked: false,
+          disabled: Boolean(opts.disabled),
+          style: opts.style || { display: '', visibility: '' },
+          parentElement: null as any,
+          children: opts.children || [],
+          _attrs: { ...(opts.attrs || {}) },
+          _rawText: opts.text,
+          classList: {
+            contains: (c: string) => (node.className || '').split(/\s+/).includes(c),
+            add: (c: string) => {
+              const parts = (node.className || '').split(/\s+/).filter(Boolean);
+              if (!parts.includes(c)) parts.push(c);
+              node.className = parts.join(' ');
+            },
+            remove: (c: string) => {
+              node.className = (node.className || '')
+                .split(/\s+/)
+                .filter((x: string) => x && x !== c)
+                .join(' ');
+            }
+          },
+          getAttribute: (k: string) => {
+            if (k === 'class') return node.className || '';
+            if (k === 'id') return node.id || null;
+            return k in node._attrs ? node._attrs[k] : null;
+          },
+          setAttribute: (k: string, v: string) => {
+            node._attrs[k] = v;
+          },
+          hasAttribute: (k: string) => k in node._attrs,
+          remove: () => {
+            if (node.parentElement && Array.isArray(node.parentElement.children)) {
+              node.parentElement.children = node.parentElement.children.filter((c: any) => c !== node);
+            }
+            node.parentElement = null;
+          },
+          scrollIntoView: () => {},
+          contains: (other: any): boolean => {
+            if (!other) return false;
+            if (node === other) return true;
+            return (node.children || []).some(
+              (c: any) => c === other || (typeof c.contains === 'function' && c.contains(other))
+            );
+          },
+          closest: (sel: string): any => {
+            let cur: any = node;
+            while (cur) {
+              if (matchesAny(cur, sel)) return cur;
+              cur = cur.parentElement;
+            }
+            return null;
+          },
+          matches: (sel: string): boolean => matchesAny(node, sel),
+          querySelectorAll: (sel: string): any[] => {
+            const res: any[] = [];
+            const walk = (n: any) => {
+              for (const ch of n.children || []) {
+                if (matchesAny(ch, sel)) res.push(ch);
+                walk(ch);
+              }
+            };
+            walk(node);
+            return res;
+          },
+          querySelector: (sel: string): any => node.querySelectorAll(sel)[0] || null,
+          cloneNode: (deep = false): any => {
+            const clonedChildren = deep ? (node.children || []).map((c: any) => c.cloneNode(true)) : [];
+            return makeDomNode({
+              tagName: node.tagName,
+              className: node.className,
+              id: node.id,
+              type: node.type,
+              value: node.value,
+              disabled: node.disabled,
+              attrs: { ...node._attrs },
+              style: { ...node.style },
+              text: node._rawText,
+              children: clonedChildren
+            });
+          },
+          click: () => {
+            opts.onClick?.();
+          },
+          get innerText(): string {
+            if (node._rawText !== undefined && (!node.children || node.children.length === 0)) {
+              return node._rawText;
+            }
+            return (node.children || [])
+              .map((c: any) => c.innerText || c.textContent || '')
+              .filter(Boolean)
+              .join('\n');
+          },
+          get textContent(): string {
+            return node.innerText;
+          }
+        };
+        for (const ch of node.children) {
+          ch.parentElement = node;
+        }
+        return node;
+      };
+
+      const buildUnitTestScene = (opts: { includeStem: boolean }) => {
+        const optionState = new Map<string, boolean>();
+        let tempSaveClicks = 0;
+        let bottomSaveClicks = 0;
+        let topSubmitClicks = 0;
+        let modalConfirmClicks = 0;
+
+        const mockWin: any = {
+          location: new URL('https://ai-smart-course-student-pro.zhihuishu.com/onlineexamh5new/doHomework?recruitId=301&homeworkId=402'),
+          confirm: () => false,
+          alert: () => undefined,
+          setTimeout,
+          clearTimeout,
+          setInterval,
+          clearInterval,
+          addEventListener: () => {},
+          removeEventListener: () => {},
+          getComputedStyle: (el: any) => ({
+            display: el?.style?.display || 'block',
+            visibility: el?.style?.visibility || 'visible'
+          })
+        };
+
+        const makeRadioOpt = (letter: string, labelText: string) => {
+          const inputEl = makeDomNode({ tagName: 'INPUT', type: 'radio', value: letter });
+          const letterSpan = makeDomNode({ tagName: 'SPAN', className: 'option-letter', text: `${letter}.` });
+          const textSpan = makeDomNode({ tagName: 'SPAN', className: 'el-radio__label', text: `${letter}. ${labelText}` });
+          const optNode = makeDomNode({
+            tagName: 'LABEL',
+            className: 'el-radio',
+            children: [inputEl, letterSpan, textSpan],
+            onClick: () => {
+              for (const k of optionState.keys()) optionState.set(k, false);
+              optionState.set(letter, true);
+              for (const o of radioOpts) {
+                const isSel = o === optNode;
+                o.classList[isSel ? 'add' : 'remove']('is-checked');
+                o._inputEl.checked = isSel;
+              }
+            }
+          });
+          optNode._inputEl = inputEl;
+          optionState.set(letter, false);
+          return optNode;
+        };
+
+        const radioOpts = [
+          makeRadioOpt('A', '鼓励人工智能在所有情况下都采取最优解'),
+          makeRadioOpt('B', '使人工智能能够自主决策而不受人类干预'),
+          makeRadioOpt('C', '确保人工智能的算法不带有任何偏见和歧视'),
+          makeRadioOpt('D', '在开发过程中优先考虑技术的创新性而非安全性')
+        ];
+        const radioGroup = makeDomNode({
+          tagName: 'DIV',
+          className: 'el-radio-group',
+          children: radioOpts
+        });
+
+        const headerDiv = makeDomNode({
+          tagName: 'DIV',
+          className: 'question-title',
+          text: '1.【单选题】(2分)'
+        });
+        const stemDiv = opts.includeStem
+          ? makeDomNode({
+              tagName: 'DIV',
+              className: 'stem-content',
+              text: '在人工智能的实际应用中，伦理问题日益受到关注。以下哪个选项最能体现人工智能应用中的伦理责任？（）'
+            })
+          : null;
+
+        const questionBox = makeDomNode({
+          tagName: 'DIV',
+          className: 'questionBox',
+          attrs: { 'data-id': opts.includeStem ? 'ai-unit-q1' : 'ai-unit-empty-q1' },
+          children: stemDiv ? [headerDiv, stemDiv, radioGroup] : [headerDiv, radioGroup]
+        });
+
+        const prevBtn = makeDomNode({ tagName: 'BUTTON', className: 'el-button is-disabled', disabled: true, text: '上一题' });
+        const bottomSaveBtn = makeDomNode({
+          tagName: 'BUTTON',
+          className: 'el-button el-button--primary',
+          text: '保存',
+          onClick: () => {
+            bottomSaveClicks++;
+          }
+        });
+        const confirmModalBtn = makeDomNode({
+          tagName: 'BUTTON',
+          className: 'el-button el-button--primary',
+          text: '确定',
+          onClick: () => {
+            modalConfirmClicks++;
+            confirmDialog.style.display = 'none';
+          }
+        });
+        const confirmDialog = makeDomNode({
+          tagName: 'DIV',
+          className: 'el-dialog',
+          style: { display: 'none', visibility: '' },
+          children: [
+            makeDomNode({ tagName: 'DIV', className: 'el-dialog__body', text: '确认提交作业吗？' }),
+            confirmModalBtn
+          ]
+        });
+        const topTempSaveBtn = makeDomNode({
+          tagName: 'BUTTON',
+          className: 'el-button',
+          text: '暂存作业',
+          onClick: () => {
+            tempSaveClicks++;
+          }
+        });
+        const topSubmitBtn = makeDomNode({
+          tagName: 'BUTTON',
+          className: 'el-button el-button--primary',
+          text: '提交作业',
+          onClick: () => {
+            topSubmitClicks++;
+            confirmDialog.style.display = '';
+          }
+        });
+
+        const pageTitle = makeDomNode({ tagName: 'H2', text: '绪论单元测试' });
+        const topBar = makeDomNode({ tagName: 'DIV', className: 'header-actions', children: [topTempSaveBtn, topSubmitBtn] });
+        const footerBar = makeDomNode({ tagName: 'DIV', className: 'switch-btn-box', children: [prevBtn, bottomSaveBtn] });
+        const root = makeDomNode({
+          tagName: 'DIV',
+          className: 'homework-page',
+          children: [pageTitle, topBar, questionBox, footerBar, confirmDialog]
+        });
+
+        const docObj: any = {
+          location: mockWin.location,
+          defaultView: mockWin,
+          title: '绪论单元测试',
+          querySelectorAll: (sel: string) => root.querySelectorAll(sel),
+          querySelector: (sel: string) => root.querySelector(sel)
+        };
+
+        return {
+          mockWin,
+          docObj,
+          optionState,
+          topTempSaveBtn,
+          topSubmitBtn,
+          bottomSaveBtn,
+          getCounts: () => ({
+            tempSaveClicks,
+            bottomSaveClicks,
+            topSubmitClicks,
+            modalConfirmClicks
+          })
+        };
+      };
+
+      try {
+        store.acknowledgeAllErrors();
+        clearExamAutoResumeState();
+        store.config.aiApiKey = 'sk-ai-unit-test';
+        store.config.enabledQuestionTypes = { single: true, multiple: true, judge: true, fill: true, essay: true };
+
+        // 1. 截图“绪论单元测试”自动暂存模式：分离题干完整提取 + 选 C + 点底部【保存】与右上角【暂存作业】
+        store.config.autoSubmitWork = false;
+        const s1 = buildUnitTestScene({ includeStem: true });
+        (globalThis as any).window = s1.mockWin;
+
+        assert.equal(findQuizActionButton(s1.docObj, 'save'), s1.topTempSaveBtn, '应精准定位【暂存作业】按钮');
+        assert.equal(findQuizActionButton(s1.docObj, 'save-current'), s1.bottomSaveBtn, '应精准定位底部【保存】按钮');
+        assert.equal(findQuizActionButton(s1.docObj, 'submit'), s1.topSubmitBtn, '应精准定位【提交作业】按钮');
+
+        let promptSent1 = '';
+        (globalThis as any).GM_xmlhttpRequest = (opts: any) => {
+          promptSent1 = JSON.stringify(JSON.parse(opts.data).messages);
+          setTimeout(() => {
+            opts.onload({
+              status: 200,
+              responseText: JSON.stringify({ choices: [{ message: { content: '["C"]' } }] })
+            });
+          }, 5);
+        };
+
+        await doQuizTask(null, s1.docObj, { signal: new AbortController().signal, isCurrent: () => true });
+
+        assert.ok(
+          promptSent1.includes('在人工智能的实际应用中，伦理问题日益受到关注'),
+          '发给 AI 的题干必须完整保留，绝不可为空'
+        );
+        assert.equal(store.questions[0].type, 'single');
+        assert.equal(s1.optionState.get('C'), true, '应精准选中选项 C');
+        assert.equal(s1.optionState.get('A'), false);
+        assert.deepEqual(s1.getCounts(), {
+          tempSaveClicks: 1,
+          bottomSaveClicks: 1,
+          topSubmitClicks: 0,
+          modalConfirmClicks: 0
+        });
+
+        // 2. 自动提交模式：先点底部【保存】，再点【提交作业】并确认二次弹窗【确定】
+        clearExamAutoResumeState();
+        store.config.autoSubmitWork = true;
+        const s2 = buildUnitTestScene({ includeStem: true });
+        (globalThis as any).window = s2.mockWin;
+        (globalThis as any).GM_xmlhttpRequest = (opts: any) => {
+          setTimeout(() => {
+            opts.onload({
+              status: 200,
+              responseText: JSON.stringify({ choices: [{ message: { content: '["C"]' } }] })
+            });
+          }, 5);
+        };
+
+        await doQuizTask(null, s2.docObj, { signal: new AbortController().signal, isCurrent: () => true });
+        assert.equal(s2.optionState.get('C'), true);
+        assert.deepEqual(s2.getCounts(), {
+          tempSaveClicks: 0,
+          bottomSaveClicks: 1,
+          topSubmitClicks: 1,
+          modalConfirmClicks: 1
+        });
+
+        // 3. 空题干防盲猜熔断：无正文且无图片时禁止调用 AI 与瞎选 A，写红字告警并取消自动提交
+        clearExamAutoResumeState();
+        store.acknowledgeAllErrors();
+        store.config.autoSubmitWork = true;
+        const s3 = buildUnitTestScene({ includeStem: false });
+        (globalThis as any).window = s3.mockWin;
+        let emptyStemAiCalls = 0;
+        (globalThis as any).GM_xmlhttpRequest = (opts: any) => {
+          emptyStemAiCalls++;
+          setTimeout(() => {
+            opts.onload?.({
+              status: 200,
+              responseText: JSON.stringify({ choices: [{ message: { content: '["A"]' } }] })
+            });
+          }, 5);
+        };
+
+        await doQuizTask(null, s3.docObj, { signal: new AbortController().signal, isCurrent: () => true });
+        assert.equal(emptyStemAiCalls, 0, '空题干绝不可调用 AI 乱猜');
+        assert.equal(s3.optionState.get('A'), false, '空题干绝不可保底瞎选 A');
+        assert.equal(store.questions[0].status, 'failed');
+        assert.ok(
+          store.pinnedErrors.some((e) => e.message.includes('未能提取到有效题干文本且无题目图片')),
+          '空题干熔断必须写入红色置顶告警'
+        );
+        assert.equal(s3.getCounts().topSubmitClicks, 0, '空题干触发熔断后绝不可自动提交作业');
+      } finally {
+        clearExamAutoResumeState();
+        (globalThis as any).window = prevWin;
+        (globalThis as any).sessionStorage = prevSession;
+        (globalThis as any).GM_xmlhttpRequest = prevXhr;
+        store.config.aiApiKey = prevKey;
+        store.config.autoSubmitWork = prevAutoSubmit;
+        store.acknowledgeAllErrors();
       }
     });
   });

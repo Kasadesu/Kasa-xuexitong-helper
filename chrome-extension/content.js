@@ -25954,7 +25954,7 @@ input:checked + .toggle-slider:before {
 	};
 	var findNextQuestionBtn = (quizDoc) => {
 		if (!quizDoc || typeof quizDoc.querySelectorAll !== "function") return null;
-		const selectorGroups = [".nextDiv a, .nextDiv button, a.nextBtn, #nextBtn, .nextQuestion, a[onclick*=\"getTheNextQuestion\"], button[onclick*=\"getTheNextQuestion\"], .switch-btn-box .el-button, .next-topic, .next-btn", "a, button, input[type=\"button\"], input[type=\"submit\"], span[onclick], div[onclick]"];
+		const selectorGroups = [".nextDiv a, .nextDiv button, a.nextBtn, #nextBtn, .nextQuestion, a[onclick*=\"getTheNextQuestion\"], button[onclick*=\"getTheNextQuestion\"], .switch-btn-box .el-button, .next-topic, .next-btn", "a, button, input[type=\"button\"], input[type=\"submit\"], .el-button, [role=\"button\"], [class*=\"btn\"], span[onclick], div[onclick]"];
 		const seen = new Set();
 		for (const groupSel of selectorGroups) {
 			let candidates = [];
@@ -25971,7 +25971,7 @@ input:checked + .toggle-slider:before {
 					if (el.closest(".nextChapter")) continue;
 				}
 				if (el.classList?.contains("nextChapter")) continue;
-				if (el.disabled === true || typeof el.hasAttribute === "function" && el.hasAttribute("disabled") || el.classList?.contains("disabled") || typeof el.getAttribute === "function" && el.getAttribute("aria-disabled") === "true") continue;
+				if (el.disabled === true || typeof el.hasAttribute === "function" && el.hasAttribute("disabled") || el.classList?.contains("disabled") || el.classList?.contains("is-disabled") || typeof el.getAttribute === "function" && el.getAttribute("aria-disabled") === "true") continue;
 				if (isElementOrAncestorHidden(el, quizDoc)) continue;
 				const compactText = ((el.tagName || "").toUpperCase() === "INPUT" ? String(el.value ?? el.getAttribute?.("value") ?? "") : String(el.innerText || el.textContent || "")).replace(/\s+/g, "");
 				const onclickAttr = String(el.getAttribute?.("onclick") || "");
@@ -25982,6 +25982,102 @@ input:checked + .toggle-slider:before {
 				const matchesOnclick = onclickAttr.includes("getTheNextQuestion(") && !hasNegativeNextArg;
 				if (matchesText || matchesOnclick) return el;
 			}
+		}
+		return null;
+	};
+	var EXPLICIT_SUBMIT_SELECTOR = "a.btnSubmit.workBtnIndex, a.btnSubmit, #submitBtn, a.btn-ok, .btn-submit, a[onclick*=\"submit\"], a[onclick*=\"Submit\"], input[value*=\"提交\"], button[type=\"submit\"], .submitBtn, .submit-btn, .exam-submit-btn";
+	var EXPLICIT_SAVE_SELECTOR = "a.btnSave.workBtnIndex, a.btnSave, #saveBtn, a.btn-save, a[onclick*=\"save\"], a[onclick*=\"Save\"], input[value*=\"暂存\"], button.save, .saveBtn, .save-btn, .temporary-save, .btn-temp-save";
+	var EXPLICIT_TOP_SAVE_CLASS_RE = /(?:^|\s)(?:btnSave|btn-save|saveBtn|save-btn|temporary-save|btn-temp-save)(?:$|\s)/i;
+	var isControlUsable = (el, doc) => {
+		if (!el) return false;
+		if (typeof el.closest === "function" && el.closest("kasa-helper-panel, .kasa-card")) return false;
+		if (el.disabled === true || typeof el.hasAttribute === "function" && el.hasAttribute("disabled") || el.classList?.contains("disabled") === true || el.classList?.contains("is-disabled") === true || typeof el.getAttribute === "function" && el.getAttribute("aria-disabled") === "true") return false;
+		if (isElementOrAncestorHidden(el, doc)) return false;
+		return true;
+	};
+	var getButtonCompactText = (el) => {
+		return ((el.tagName || "").toUpperCase() === "INPUT" ? String(el.value ?? el.getAttribute?.("value") ?? "") : String(el.innerText || el.textContent || "")).replace(/\s+/g, "");
+	};
+	var collectVisibleActionButtons = (doc, selector) => {
+		if (!doc || typeof doc.querySelectorAll !== "function") return [];
+		let raw = [];
+		try {
+			raw = Array.from(doc.querySelectorAll(selector));
+		} catch {
+			raw = [];
+		}
+		const usable = [];
+		for (const el of raw) {
+			if (!isControlUsable(el, doc)) continue;
+			if (typeof el.closest === "function" && el.closest(".el-dialog, .el-message-box, [role=\"dialog\"], .layui-layer, .ant-modal")) continue;
+			if (!usable.includes(el)) usable.push(el);
+		}
+		return usable.filter((node, i, arr) => {
+			const tag = (node.tagName || "").toUpperCase();
+			if (tag === "BUTTON" || tag === "A" || tag === "INPUT" || node.getAttribute?.("role") === "button" || node.classList?.contains("el-button") === true) return true;
+			return !arr.some((other, j) => i !== j && typeof node.contains === "function" && node.contains(other));
+		});
+	};
+	var findQuizActionButton = (quizDoc, kind) => {
+		if (!quizDoc) return null;
+		const findExplicit = (selector, excludeRe) => {
+			let matches = [];
+			if (typeof quizDoc.querySelectorAll === "function") try {
+				matches = Array.from(quizDoc.querySelectorAll(selector));
+			} catch {
+				matches = [];
+			}
+			for (const el of matches) {
+				if (!isControlUsable(el, quizDoc)) continue;
+				const compact = getButtonCompactText(el);
+				if (compact && excludeRe.test(compact)) continue;
+				return el;
+			}
+			if (matches.length === 0 && typeof quizDoc.querySelector === "function") try {
+				const single = quizDoc.querySelector(selector);
+				if (isControlUsable(single, quizDoc)) {
+					const compact = getButtonCompactText(single);
+					if (!compact || !excludeRe.test(compact)) return single;
+				}
+			} catch {}
+			return null;
+		};
+		if (kind === "submit") {
+			const explicitSubmit = findExplicit(EXPLICIT_SUBMIT_SELECTOR, /(?:暂存|取消|上一题|下一题|返回)/);
+			if (explicitSubmit) return explicitSubmit;
+			const candidates = collectVisibleActionButtons(quizDoc, "button, a, input[type=\"button\"], input[type=\"submit\"], .el-button, [role=\"button\"], [class*=\"btn\"], [class*=\"button\"], [class*=\"submit\"]");
+			const exactSubmitRe = /^(?:提交作业|提交试卷|提交考试|确认交卷|我要交卷|交卷|立即提交|完成并提交|提交测验|提交答案|提交)$/;
+			for (const btn of candidates) if (exactSubmitRe.test(getButtonCompactText(btn))) return btn;
+			for (const btn of candidates) {
+				const compact = getButtonCompactText(btn);
+				if (compact.length > 0 && compact.length <= 10 && /(?:提交|交卷)/.test(compact) && !/(?:暂存|取消|上一题|下一题|保存|返回|查看|已提交|提交记录)/.test(compact)) return btn;
+			}
+			return null;
+		}
+		if (kind === "save") {
+			const explicitSave = findExplicit(EXPLICIT_SAVE_SELECTOR, /(?:提交|交卷|取消|上一题|下一题)/);
+			const candidates = collectVisibleActionButtons(quizDoc, "button, a, input[type=\"button\"], .el-button, [role=\"button\"], [class*=\"btn\"], [class*=\"button\"], [class*=\"save\"]");
+			const exactTempSaveRe = /^(?:暂存作业|暂存试卷|暂存答案|暂时保存|暂存)$/;
+			const tempSaveMatch = candidates.find((btn) => exactTempSaveRe.test(getButtonCompactText(btn)));
+			if (explicitSave) {
+				if (getButtonCompactText(explicitSave) === "保存" && tempSaveMatch && tempSaveMatch !== explicitSave) return tempSaveMatch;
+				return explicitSave;
+			}
+			if (tempSaveMatch) return tempSaveMatch;
+			const exactSaveRe = /^(?:保存作业|保存答案|保存草稿|保存)$/;
+			for (const btn of candidates) if (exactSaveRe.test(getButtonCompactText(btn))) return btn;
+			for (const btn of candidates) {
+				const compact = getButtonCompactText(btn);
+				if (compact.length > 0 && compact.length <= 10 && /(?:暂存|保存)/.test(compact) && !/(?:下一题|上一题|提交|交卷|取消|已保存)/.test(compact)) return btn;
+			}
+			return null;
+		}
+		const currentCandidates = collectVisibleActionButtons(quizDoc, "button, a, input[type=\"button\"], .el-button, [role=\"button\"], [class*=\"btn\"], [class*=\"button\"]");
+		const exactCurrentSaveRe = /^(?:保存|保存本题|保存答案|保存当前题)$/;
+		for (const btn of currentCandidates) {
+			const cls = typeof btn.className === "string" ? btn.className : btn.getAttribute?.("class") || "";
+			if (btn.id === "saveBtn" || EXPLICIT_TOP_SAVE_CLASS_RE.test(cls)) continue;
+			if (exactCurrentSaveRe.test(getButtonCompactText(btn))) return btn;
 		}
 		return null;
 	};
@@ -26011,45 +26107,140 @@ input:checked + .toggle-slider:before {
 			});
 			return;
 		}
-		const extractRawTitleFromTimu = (timuEl) => {
-			const typeBadgeEl = timuEl.querySelector(".subject_type, .type-title, .question-type");
-			const typeBadgeText = (typeBadgeEl?.innerText || typeBadgeEl?.textContent || "").trim();
-			const withTypePrefix = (titleText) => {
-				if (!titleText) return titleText;
-				if (typeBadgeText && !titleText.includes(typeBadgeText)) return `${typeBadgeText} ${titleText}`.trim();
-				return titleText;
+		const STEM_TITLE_SELECTORS = [
+			"h3.mark_name",
+			".mark_name",
+			".Zy_TItle .fontLabel",
+			".Zy_TItle .Py_TItle_p",
+			".Zy_TItle",
+			".Cy_TItle",
+			".TiMu_head",
+			".timu-title",
+			".fontLabel",
+			".subject_describe",
+			".smallStem_describe",
+			".subject-describe",
+			".subject_stem",
+			".stem-describe",
+			".stem-content",
+			".stem_content",
+			".question-stem",
+			".questionStem",
+			".question-content",
+			".questionContent",
+			".topic-stem",
+			".exam-stem",
+			".subject_content",
+			".ques-stem",
+			".question-title",
+			".subject_title"
+		];
+		const STEM_COMBINED_SELECTOR = STEM_TITLE_SELECTORS.join(", ");
+		const OPTION_CONTAINER_SELECTOR = "ul, .stem_answer, .answerBg, .mark_letter, .option-item, .subject_node_list, .subject_node, .ul-Lists, .el-radio-group, .el-checkbox-group, .el-radio, .el-checkbox, .switch-btn-box, button, .el-button";
+		const OPTION_ANCESTOR_SELECTOR = "ul, .stem_answer, .answerBg, .subject_node_list, .subject_node, .el-radio-group, .el-checkbox-group";
+		const extractStemBySafeClone = (container) => {
+			if (typeof container.cloneNode !== "function") return {
+				supported: false,
+				text: ""
 			};
-			for (const sel of [
-				"h3.mark_name",
-				".mark_name",
-				".Zy_TItle .fontLabel",
-				".Zy_TItle .Py_TItle_p",
-				".Zy_TItle",
-				".Cy_TItle",
-				".TiMu_head",
-				".timu-title",
-				".fontLabel",
-				".subject_describe",
-				".smallStem_describe",
-				".question-title",
-				".subject_title",
-				".stem-describe"
-			]) {
-				const found = timuEl.querySelector(sel);
-				if (found) {
-					const text = (found.innerText || found.textContent || "").trim();
-					if (text) return withTypePrefix(text);
-				}
-			}
 			try {
-				const clone = timuEl.cloneNode(true);
-				clone.querySelectorAll("ul, .stem_answer, .answerBg, .mark_letter, .option-item, .subject_node, .ul-Lists, .el-radio-group, .el-checkbox-group").forEach((el) => el.remove());
-				return withTypePrefix((clone.innerText || clone.textContent || "").trim());
+				const clone = container.cloneNode(true);
+				if (!clone || clone === container || typeof clone.querySelectorAll !== "function") return {
+					supported: false,
+					text: ""
+				};
+				clone.querySelectorAll(OPTION_CONTAINER_SELECTOR).forEach((el) => el.remove?.());
+				return {
+					supported: true,
+					text: (clone.innerText || clone.textContent || "").trim()
+				};
 			} catch {
-				return withTypePrefix((timuEl.innerText || timuEl.textContent || "").trim());
+				return {
+					supported: false,
+					text: ""
+				};
 			}
 		};
 		const isNodeHidden = (el) => isElementOrAncestorHidden(el, quizDoc);
+		const extractRawTitleFromTimu = (timuEl) => {
+			const typeBadgeEl = typeof timuEl.querySelector === "function" ? timuEl.querySelector(".subject_type, .type-title, .question-type, .topic-type") : null;
+			const typeBadgeText = (typeBadgeEl?.innerText || typeBadgeEl?.textContent || "").trim();
+			const scanStemInContainer = (container, allowCloneFallback = true) => {
+				let headerHint = "";
+				for (const sel of STEM_TITLE_SELECTORS) {
+					let candidates = [];
+					if (typeof container.querySelectorAll === "function") try {
+						candidates = Array.from(container.querySelectorAll(sel));
+					} catch {
+						candidates = [];
+					}
+					if (candidates.length === 0 && typeof container.querySelector === "function") {
+						const single = container.querySelector(sel);
+						if (single) candidates = [single];
+					}
+					for (const found of candidates) {
+						if (!found || isNodeHidden(found)) continue;
+						if (typeof found.closest === "function" && found.closest(OPTION_ANCESTOR_SELECTOR)) continue;
+						const text = (found.innerText || found.textContent || "").trim();
+						if (!text) continue;
+						if (cleanQuestionTitle(text).length > 0) return {
+							headerHint,
+							stemText: text,
+							cloneSupported: false
+						};
+						if (!headerHint) headerHint = text;
+					}
+				}
+				if (!allowCloneFallback) return {
+					headerHint,
+					stemText: "",
+					cloneSupported: false
+				};
+				const cloned = extractStemBySafeClone(container);
+				if (cloned.supported && cleanQuestionTitle(cloned.text).length > 0) return {
+					headerHint,
+					stemText: cloned.text,
+					cloneSupported: true
+				};
+				return {
+					headerHint,
+					stemText: "",
+					cloneSupported: cloned.supported
+				};
+			};
+			const primaryScan = scanStemInContainer(timuEl, true);
+			let headerHint = primaryScan.headerHint;
+			let stemText = primaryScan.stemText;
+			let cloneSupported = primaryScan.cloneSupported;
+			if (!stemText && timuEl.parentElement) {
+				const parentEl = timuEl.parentElement;
+				const pTag = (parentEl.tagName || "").toUpperCase();
+				if (pTag !== "BODY" && pTag !== "HTML") {
+					let parentOptionListCount = 0;
+					if (typeof parentEl.querySelectorAll === "function") try {
+						parentOptionListCount = Array.from(parentEl.querySelectorAll("ul.Zy_ulTop, ul.Zy_ulBottom, ul.options, ul.mark_letter, .stem_answer, .ul-Lists, .el-radio-group, .el-checkbox-group, .subject_node_list")).filter((listEl, i, arr) => !arr.some((other, j) => i !== j && typeof other.contains === "function" && other.contains(listEl))).length;
+					} catch {
+						parentOptionListCount = 0;
+					}
+					if (parentOptionListCount <= 1) {
+						const parentScan = scanStemInContainer(parentEl, false);
+						if (!headerHint && parentScan.headerHint) headerHint = parentScan.headerHint;
+						if (parentScan.stemText) stemText = parentScan.stemText;
+						if (parentScan.cloneSupported) cloneSupported = true;
+					}
+				}
+			}
+			const effectivePrefix = headerHint || typeBadgeText;
+			const withTypePrefix = (titleText) => {
+				if (!titleText) return titleText;
+				if (effectivePrefix && !titleText.includes(effectivePrefix)) return `${effectivePrefix} ${titleText}`.trim();
+				if (typeBadgeText && !titleText.includes(typeBadgeText)) return `${typeBadgeText} ${titleText}`.trim();
+				return titleText;
+			};
+			if (stemText) return withTypePrefix(stemText);
+			if (cloneSupported) return headerHint || typeBadgeText;
+			return withTypePrefix(headerHint || (timuEl.innerText || timuEl.textContent || "").trim());
+		};
 		const discoverTimuNodes = (doc) => {
 			const rawCandidates = Array.from(doc.querySelectorAll(".questionLi, .TiMu.newTiMu, .TiMu, div[data-id], .singleQues, div[id^=\"question\"], div[id^=\"q_\"], .examPaper_subject, .questionBox, .subject_item, .examQuestion_item"));
 			const isExcludedArea = (node) => typeof node.closest === "function" && !!node.closest("kasa-helper-panel, .kasa-card, .topicNumber, .topicNumber_list, .answerSheet, .right_card, .card_list, .exam-card, .answerCard, .question-card, .topic-card");
@@ -26059,7 +26250,26 @@ input:checked + .toggle-slider:before {
 				if (Array.from(node.querySelectorAll("ul.Zy_ulTop, ul.Zy_ulBottom, ul.options, ul.mark_letter, .stem_answer, .ul-Lists, .el-radio-group, .el-checkbox-group, .subject_node_list")).filter((listEl, i, arr) => !arr.some((other, j) => i !== j && typeof other.contains === "function" && other.contains(listEl))).length > 1) return false;
 				return true;
 			});
-			const hasOwnStem = (el) => !!el.querySelector("h3.mark_name, .mark_name, .Zy_TItle, .Cy_TItle, .TiMu_head, .timu-title, .subject_describe, .smallStem_describe, .question-title, .subject_title, .stem-describe");
+			const hasOwnStem = (el) => {
+				let matched = [];
+				if (typeof el.querySelectorAll === "function") try {
+					matched = Array.from(el.querySelectorAll(STEM_COMBINED_SELECTOR));
+				} catch {
+					matched = [];
+				}
+				if (matched.length === 0 && typeof el.querySelector === "function") {
+					const single = el.querySelector(STEM_COMBINED_SELECTOR);
+					if (single) matched = [single];
+				}
+				for (const m of matched) {
+					const raw = m.innerText ?? m.textContent;
+					if (raw === void 0) return true;
+					if (cleanQuestionTitle(String(raw)).length > 0) return true;
+				}
+				const cloned = extractStemBySafeClone(el);
+				if (cloned.supported && cleanQuestionTitle(cloned.text).length > 0) return true;
+				return false;
+			};
 			const prunedNodes = validNodes.filter((node) => {
 				if (hasOwnStem(node)) return true;
 				return !validNodes.some((parent) => parent !== node && typeof parent.contains === "function" && parent.contains(node) && hasOwnStem(parent));
@@ -26255,6 +26465,20 @@ input:checked + .toggle-slider:before {
 				};
 				questionList.push(questionObj);
 				store.setQuestions([...questionList]);
+				if (!cleanTitle && images.length === 0) {
+					questionObj.status = "failed";
+					store.setQuestions([...questionList]);
+					cancelAutoSubmit = true;
+					store.addLog(`${shortLabel}未能提取到有效题干文本且无题目图片，为防止乱选已跳过该题并取消自动提交，请人工核对！`, "error");
+					const emptyStemPct = Math.round((idx + 1) / timuNodes.length * 100);
+					store.updateProgress({
+						percent: emptyStemPct,
+						currentTime: progressText,
+						status: "playing"
+					});
+					await sleep(300, signal);
+					continue;
+				}
 				const imgTag = images.length > 0 ? `（含 ${images.length} 张图片）` : "";
 				store.addLog(`${questionLabel} [${qType}]: "${cleanTitle.slice(0, 24)}..." ${imgTag}正在查询答案`, "info");
 				let answers = await queryAiAnswer(questionObj, paperContext, signal);
@@ -26513,6 +26737,7 @@ input:checked + .toggle-slider:before {
 		}
 		store.addLog("所有题目已作答完毕，准备保存或提交", "success");
 		const { autoSubmitWork } = store.config;
+		const currentSaveBtn = findQuizActionButton(quizDoc, "save-current");
 		if (autoSubmitWork && !cancelAutoSubmit) {
 			const origTargetConfirm = targetWin?.confirm;
 			const origTargetAlert = targetWin?.alert;
@@ -26533,18 +26758,41 @@ input:checked + .toggle-slider:before {
 					targetWin.btnBlueSubmit();
 					store.addLog("已触发超星原生 btnBlueSubmit 提交方法", "success");
 				} catch (e) {}
-				const submitBtn = quizDoc.querySelector("a.btnSubmit.workBtnIndex, a.btnSubmit, #submitBtn, a.btn-ok, .btn-submit, a[onclick*=\"submit\"], a[onclick*=\"Submit\"], input[value*=\"提交\"], button[type=\"submit\"], .submitBtn, .submit-btn, .exam-submit-btn");
+				const submitBtn = findQuizActionButton(quizDoc, "submit");
 				if (submitBtn) {
+					if (currentSaveBtn && currentSaveBtn !== submitBtn) {
+						currentSaveBtn.click();
+						store.addLog("已点击底部【保存】按钮保存当前题目作答", "info");
+						await sleep(400, signal);
+						if (!isCurrent() || signal.aborted) return;
+					}
 					submitBtn.click();
 					store.addLog("已点击提交按钮，正在确认提交弹窗", "success");
 					await sleep(600, signal);
+					if (!isCurrent() || signal.aborted) return;
 					const confirmBtns = Array.from(quizDoc.querySelectorAll(".layui-layer-btn0, .layui-layer-btn a, .dialog-ok, .blue-btn, a.okBtn, .el-message-box__btns .el-button--primary, .el-dialog__footer .el-button--primary"));
+					let confirmClicked = false;
 					for (const btn of confirmBtns) {
-						if (isElementOrAncestorHidden(btn, quizDoc)) continue;
+						if (!isControlUsable(btn, quizDoc)) continue;
 						const text = btn.innerText || btn.textContent || "";
-						if (text.includes("确") || text.includes("是") || text.includes("提交") || btn.classList.contains("layui-layer-btn0") || btn.classList.contains("el-button--primary")) {
+						if (text.includes("确") || text.includes("是") || text.includes("提交") || btn.classList?.contains("layui-layer-btn0") || btn.classList?.contains("el-button--primary")) {
 							btn.click();
+							confirmClicked = true;
 							break;
+						}
+					}
+					if (!confirmClicked) {
+						const dialogContainers = Array.from(quizDoc.querySelectorAll(".el-dialog, .el-message-box, [role=\"dialog\"], .ant-modal")).filter((dlg) => !isElementOrAncestorHidden(dlg, quizDoc));
+						for (const dlg of dialogContainers) {
+							if (typeof dlg.querySelectorAll !== "function") continue;
+							const matchedConfirm = Array.from(dlg.querySelectorAll("button, a, .el-button, [role=\"button\"]")).find((btn) => {
+								if (!isControlUsable(btn, quizDoc)) return false;
+								return /^(?:确定|确认|确认提交|确定提交|提交|提交作业|是)$/.test(getButtonCompactText(btn));
+							});
+							if (matchedConfirm) {
+								matchedConfirm.click();
+								break;
+							}
 						}
 					}
 					store.addLog("作业已成功自动提交！", "success");
@@ -26568,11 +26816,21 @@ input:checked + .toggle-slider:before {
 				targetWin.noSubmit();
 				store.addLog("已触发超星原生 noSubmit 暂存方法", "success");
 			} catch (e) {}
-			const saveBtn = quizDoc.querySelector("a.btnSave.workBtnIndex, a.btnSave, #saveBtn, a.btn-save, a[onclick*=\"save\"], a[onclick*=\"Save\"], input[value*=\"暂存\"], button.save, .saveBtn, .save-btn, .temporary-save, .btn-temp-save");
+			const saveBtn = findQuizActionButton(quizDoc, "save");
+			if (currentSaveBtn && saveBtn && currentSaveBtn !== saveBtn) {
+				currentSaveBtn.click();
+				store.addLog("已点击底部【保存】按钮保存当前题目作答", "info");
+				await sleep(400, signal);
+				if (!isCurrent() || signal.aborted) return;
+			}
 			if (saveBtn) {
 				saveBtn.click();
 				store.addLog("已自动点击暂存按钮，答案已成功保存！", "success");
-			} else store.addLog("未找到暂存按钮，答案已填写在页面中", "info");
+			} else if (!currentSaveBtn) store.addLog("未找到暂存按钮，答案已填写在页面中", "info");
+			else {
+				currentSaveBtn.click();
+				store.addLog("已点击底部【保存】按钮，答案已成功保存！", "success");
+			}
 		}
 		store.updateProgress({
 			title: "章节自测作业",
