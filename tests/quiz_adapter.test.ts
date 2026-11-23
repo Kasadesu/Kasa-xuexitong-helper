@@ -96,6 +96,9 @@ import {
   dismissZhihuishuTipDialog,
   solveZhihuishuPopupTest,
   findNextZhihuishuVideoItem,
+  findOrExpandNextZhihuishuVideoItem,
+  findZhihuishuChapterHeaders,
+  findZhihuishuAiLessonItems,
   playZhihuishuVideoTask,
   getZhihuishuSwitchCooldownUntil,
   getLastCompletedZhihuishuLessonKey,
@@ -7415,6 +7418,438 @@ C 是温迪（风神巴巴托斯）
         (globalThis as any).GM_xmlhttpRequest = prevXhr;
         store.config.aiApiKey = prevKey;
         store.acknowledgeAllErrors();
+      }
+    });
+
+    it('25.11 新版智慧树 AI 课程：路由识别、跳过测试项与已完成小节、自动展开折叠章节并端到端完播跨章切换', async () => {
+      const prevAutoNext = store.config.autoNextChapter;
+      const prevDelayBase = store.config.randomDelayBase;
+      const prevDelayJitter = store.config.randomDelayJitter;
+
+      type MockNode = {
+        tagName: string;
+        className?: string;
+        attrs?: Record<string, string>;
+        style?: { display?: string; visibility?: string };
+        bg?: string;
+        text?: string;
+        parentElement?: any;
+        children?: any[];
+        onClick?: () => void;
+        clicked?: number;
+        [k: string]: any;
+      };
+
+      const makeMockEl = (opts: MockNode): any => {
+        const node: any = {
+          tagName: opts.tagName,
+          className: opts.className || '',
+          style: opts.style || { display: '', visibility: '' },
+          parentElement: opts.parentElement || null,
+          children: opts.children || [],
+          _bg: opts.bg || 'transparent',
+          _attrs: { ...(opts.attrs || {}) },
+          clicked: 0,
+          classList: {
+            contains: (c: string) => (node.className || '').split(/\s+/).includes(c)
+          },
+          getAttribute: (k: string) => {
+            if (k === 'class') return node.className || '';
+            return k in node._attrs ? node._attrs[k] : null;
+          },
+          setAttribute: (k: string, v: string) => {
+            node._attrs[k] = v;
+          },
+          hasAttribute: (k: string) => k in node._attrs,
+          contains: (other: any): boolean => {
+            if (!other) return false;
+            if (node === other) return true;
+            for (const ch of node.children || []) {
+              if (ch === other || (typeof ch.contains === 'function' && ch.contains(other))) {
+                return true;
+              }
+            }
+            return false;
+          },
+          closest: (sel: string): any => {
+            const parts = sel.split(',').map((s) => s.trim()).filter(Boolean);
+            let cur: any = node;
+            while (cur) {
+              if (matchesSelector(cur, parts)) return cur;
+              cur = cur.parentElement;
+            }
+            return null;
+          },
+          matches: (sel: string): boolean => {
+            const parts = sel.split(',').map((s) => s.trim()).filter(Boolean);
+            return matchesSelector(node, parts);
+          },
+          querySelectorAll: (sel: string): any[] => {
+            const parts = sel.split(',').map((s) => s.trim()).filter(Boolean);
+            const res: any[] = [];
+            const walk = (n: any) => {
+              for (const ch of n.children || []) {
+                if (matchesSelector(ch, parts)) res.push(ch);
+                walk(ch);
+              }
+            };
+            walk(node);
+            return res;
+          },
+          querySelector: (sel: string): any => node.querySelectorAll(sel)[0] || null,
+          click: () => {
+            node.clicked++;
+            opts.onClick?.();
+          },
+          get innerText(): string {
+            if (opts.text !== undefined && (!node.children || node.children.length === 0)) {
+              return opts.text;
+            }
+            if (!node.children || node.children.length === 0) return '';
+            return node.children
+              .map((c: any) => c.innerText || c.textContent || '')
+              .filter(Boolean)
+              .join('\n');
+          },
+          get textContent(): string {
+            return node.innerText;
+          }
+        };
+        for (const ch of node.children) {
+          ch.parentElement = node;
+        }
+        return node;
+      };
+
+      const matchesSimplePart = (el: any, part: string): boolean => {
+        const cls = (el.className || '').split(/\s+/).filter(Boolean);
+        const tag = (el.tagName || '').toUpperCase();
+        if (part.startsWith('.')) {
+          return cls.includes(part.slice(1));
+        }
+        const attrContains = part.match(/^\[class\*="([^"]+)"\]$/);
+        if (attrContains) {
+          return (el.className || '').includes(attrContains[1]);
+        }
+        const roleMatch = part.match(/^\[role="([^"]+)"\]$/);
+        if (roleMatch) {
+          return el.getAttribute?.('role') === roleMatch[1];
+        }
+        if (part === '[onclick]') {
+          return el.hasAttribute?.('onclick');
+        }
+        if (/^[a-z0-9]+$/i.test(part)) {
+          return tag === part.toUpperCase();
+        }
+        return false;
+      };
+
+      const matchesSelector = (el: any, parts: string[]): boolean =>
+        parts.some((p) => {
+          // Handle compound like ".active.video"
+          if (p.includes('.') && !p.startsWith('[') && !p.startsWith('.')) return false;
+          if (p.startsWith('.') && p.slice(1).includes('.')) {
+            return p
+              .slice(1)
+              .split('.')
+              .every((sub) => (el.className || '').split(/\s+/).includes(sub));
+          }
+          return matchesSimplePart(el, p);
+        });
+
+      const attachChildren = (parent: any, children: any[]) => {
+        parent.children = children;
+        for (const ch of children) ch.parentElement = parent;
+      };
+
+      const buildAiCourseDom = (opts: {
+        accordionMode?: boolean;
+        ch1Finished?: boolean;
+        videoEl?: any;
+        onLessonActivate?: (lessonTitle: string) => void;
+      }) => {
+        const docUrl = 'https://ai-smart-course-student-pro.zhihuishu.com/learnPage/99001';
+        let activeTitle = '0.1 引言';
+
+        const makeFinishSvg = () =>
+          makeMockEl({
+            tagName: 'svg',
+            className: '_check_x12',
+            attrs: { 'aria-label': '已完成' }
+          });
+
+        const makeLessonRow = (
+          title: string,
+          cfg: { finished?: boolean; active?: boolean; highlightBg?: string; isTest?: boolean } = {}
+        ) => {
+          const textNode = makeMockEl({ tagName: 'p', text: title });
+          const kids = cfg.finished ? [makeFinishSvg(), textNode] : [textNode];
+          const row = makeMockEl({
+            tagName: 'div',
+            className: cfg.active ? '_row_k9 _active_k9' : '_row_k9',
+            bg: cfg.active ? cfg.highlightBg || 'rgb(237, 233, 254)' : 'transparent',
+            children: kids,
+            onClick: () => {
+              if (cfg.isTest) return;
+              for (const r of allRows) {
+                r.className = '_row_k9';
+                r._bg = 'transparent';
+              }
+              row.className = '_row_k9 _active_k9';
+              row._bg = 'rgb(237, 233, 254)';
+              activeTitle = title;
+              opts.onLessonActivate?.(title);
+            }
+          });
+          return row;
+        };
+
+        const row01 = makeLessonRow('0.1 引言', { finished: true, active: true });
+        const row0Test = makeLessonRow('测试', { isTest: true });
+        const row11 = makeLessonRow('1.1 什么是人工智能', { finished: Boolean(opts.ch1Finished) });
+        const row12 = makeLessonRow('1.2 发展历程', { finished: Boolean(opts.ch1Finished) });
+        const row21 = makeLessonRow('2.1 数据预处理');
+        const allRows = [row01, row0Test, row11, row12, row21];
+
+        const makeChapterBox = (
+          prefix: string,
+          subtitle: string,
+          expandedInit: boolean,
+          lessonRows: any[]
+        ) => {
+          let expanded = expandedInit;
+          const prefixDiv = makeMockEl({ tagName: 'div', text: prefix });
+          const subDiv = makeMockEl({ tagName: 'div', text: subtitle });
+          const bodyDiv = makeMockEl({
+            tagName: 'div',
+            className: '_chap_body',
+            style: { display: expandedInit ? '' : 'none', visibility: '' },
+            children: expandedInit ? lessonRows : []
+          });
+          const headerDiv = makeMockEl({
+            tagName: 'div',
+            className: '_chap_hdr',
+            attrs: { 'aria-expanded': expandedInit ? 'true' : 'false' },
+            children: [prefixDiv, subDiv],
+            onClick: () => {
+              if (opts.accordionMode && !expanded) {
+                for (const box of chapterBoxes) {
+                  box.setExpanded(false);
+                }
+              }
+              box.setExpanded(!expanded);
+            }
+          });
+          const box: any = makeMockEl({
+            tagName: 'div',
+            className: '_chap_wrap',
+            children: [headerDiv, bodyDiv]
+          });
+          box.header = headerDiv;
+          box.body = bodyDiv;
+          box.setExpanded = (nextVal: boolean) => {
+            expanded = nextVal;
+            headerDiv.setAttribute('aria-expanded', nextVal ? 'true' : 'false');
+            bodyDiv.style.display = nextVal ? '' : 'none';
+            attachChildren(bodyDiv, nextVal ? lessonRows : []);
+          };
+          box.isExpanded = () => expanded;
+          return box;
+        };
+
+        const ch0 = makeChapterBox('第零章:', '绪论', true, [row01, row0Test]);
+        const ch1 = makeChapterBox('第一章:', '初识人工智能', false, [row11, row12]);
+        const ch2 = makeChapterBox('第二章:', '人工智能的系统数据基础', false, [row21]);
+        const chapterBoxes = [ch0, ch1, ch2];
+
+        const sidebar = makeMockEl({
+          tagName: 'aside',
+          className: '_course_outline',
+          children: chapterBoxes
+        });
+
+        const docObj: any = {
+          location: new URL(docUrl),
+          defaultView: {
+            getComputedStyle: (el: any) => ({
+              display: el?.style?.display || 'block',
+              visibility: el?.style?.visibility || 'visible',
+              backgroundColor: el?._bg || 'transparent'
+            })
+          },
+          querySelectorAll: (sel: string) => {
+            const parts = sel.split(',').map((s) => s.trim()).filter(Boolean);
+            const matched: any[] = [];
+            const walk = (n: any) => {
+              if (matchesSelector(n, parts)) matched.push(n);
+              for (const ch of n.children || []) walk(ch);
+            };
+            walk(sidebar);
+            return matched;
+          },
+          querySelector: (sel: string) => {
+            if (sel.includes('video') && opts.videoEl) return opts.videoEl;
+            return docObj.querySelectorAll(sel)[0] || null;
+          },
+          getActiveTitle: () => activeTitle
+        };
+
+        return { doc: docObj, ch0, ch1, ch2, row01, row0Test, row11, row12, row21 };
+      };
+
+      try {
+        clearZhihuishuCompletionSuppression();
+
+        // 1. 新版 AI 课程 URL 识别与 /portal / exam 排除
+        assert.equal(
+          isZhihuishuVideoPage(undefined, 'https://ai-smart-course-student-pro.zhihuishu.com/learnPage/99001'),
+          true,
+          '应识别新版 AI 课程 learnPage 视频页'
+        );
+        assert.equal(
+          isZhihuishuVideoPage(
+            undefined,
+            'https://ai-smart-course-student-pro.zhihuishu.com/singleCourse/knowledgeStudy/123'
+          ),
+          true,
+          '应识别新版 AI 课程 knowledgeStudy 学习页'
+        );
+        assert.equal(
+          isZhihuishuVideoPage(
+            undefined,
+            'https://ai-smart-course-student-pro.zhihuishu.com/onlineexamh5new/doExam'
+          ),
+          false,
+          '考试页路由必须被排除在视频页外'
+        );
+        assert.equal(
+          isZhihuishuVideoPage(
+            { querySelector: () => null } as any,
+            'https://ai-smart-course-student-pro.zhihuishu.com/portal'
+          ),
+          false,
+          '无视频元素的 /portal 门户页不应判定为视频页'
+        );
+
+        // 2. 截图还原场景：第零章仅剩已完成 0.1 引言与非视频测试 -> 展开第一章 -> 定位 1.1 什么是人工智能
+        const s2 = buildAiCourseDom({ accordionMode: false, ch1Finished: false });
+        const headers2 = findZhihuishuChapterHeaders(s2.doc);
+        assert.equal(headers2.length, 3, '语义回退应识别第零章~第二章 3 个折叠章节标题');
+        const initialLessons = findZhihuishuAiLessonItems(s2.doc);
+        assert.deepEqual(
+          initialLessons.map((el) => (el.innerText || '').trim()),
+          ['0.1 引言'],
+          '应识别 0.1 引言 并过滤非视频项【测试】'
+        );
+        assert.equal(
+          findNextZhihuishuVideoItem(s2.doc),
+          null,
+          '折叠未展开时当前可见目录无更多未完成视频，同步查找应返回 null'
+        );
+
+        const expandedNext = await findOrExpandNextZhihuishuVideoItem(
+          s2.doc,
+          new AbortController().signal,
+          () => true,
+          { expandDelayMs: 15 }
+        );
+        assert.equal(s2.ch0.header.clicked, 0, '已展开的第零章绝不可误点导致折叠');
+        assert.equal(s2.ch1.header.clicked, 1, '必须点击折叠的【第一章】展开目录');
+        assert.equal(expandedNext, s2.row11, '展开后必须选中 1.1 什么是人工智能');
+
+        // 3. 手风琴自动折叠模式 + 第一章全部完成 -> 自动跨过第一章继续展开第二章
+        clearZhihuishuCompletionSuppression();
+        const s3 = buildAiCourseDom({ accordionMode: true, ch1Finished: true });
+        const accNext = await findOrExpandNextZhihuishuVideoItem(
+          s3.doc,
+          new AbortController().signal,
+          () => true,
+          { expandDelayMs: 15 }
+        );
+        assert.equal(s3.ch0.isExpanded(), false, '手风琴模式下第零章随新章展开自动收起');
+        assert.equal(s3.ch1.header.clicked, 1, '应先展开第一章检查');
+        assert.equal(s3.ch2.header.clicked, 1, '第一章全部完成后必须继续展开第二章');
+        assert.equal(s3.ch2.isExpanded(), true);
+        assert.equal(accNext, s3.row21, '应最终命中第二章的 2.1 数据预处理');
+
+        // 4. 端到端 playZhihuishuVideoTask：0.1 引言完播 -> 自动展开第一章并点击 1.1 -> SPA 重置视频 -> 保持 1.0x 静音并重置冷却
+        clearZhihuishuCompletionSuppression();
+        store.config.autoNextChapter = true;
+        store.config.randomDelayBase = 0.5;
+        store.config.randomDelayJitter = 0;
+
+        const vidListeners = new Map<string, Set<Function>>();
+        const aiVideo: any = {
+          playbackRate: 2.0,
+          muted: false,
+          duration: 193,
+          currentTime: 0,
+          paused: true,
+          ended: false,
+          isConnected: true,
+          src: 'https://cdn.zhihuishu.com/0_1.mp4',
+          currentSrc: 'https://cdn.zhihuishu.com/0_1.mp4',
+          play: async () => {
+            aiVideo.paused = false;
+          },
+          pause: () => {
+            aiVideo.paused = true;
+          },
+          addEventListener: (ev: string, fn: Function) => {
+            if (!vidListeners.has(ev)) vidListeners.set(ev, new Set());
+            vidListeners.get(ev)!.add(fn);
+          },
+          removeEventListener: (ev: string, fn: Function) => {
+            vidListeners.get(ev)?.delete(fn);
+          }
+        };
+
+        let activatedLesson = '';
+        const s4 = buildAiCourseDom({
+          accordionMode: true,
+          ch1Finished: false,
+          videoEl: aiVideo,
+          onLessonActivate: (title) => {
+            activatedLesson = title;
+            setTimeout(() => {
+              aiVideo.src = 'https://cdn.zhihuishu.com/1_1.mp4';
+              aiVideo.currentSrc = 'https://cdn.zhihuishu.com/1_1.mp4';
+              aiVideo.ended = false;
+              aiVideo.currentTime = 0;
+              aiVideo.paused = true;
+            }, 15);
+          }
+        });
+
+        const e2eCtrl = new AbortController();
+        const e2eTask = playZhihuishuVideoTask(
+          s4.doc,
+          { signal: e2eCtrl.signal, isCurrent: () => true },
+          { pollIntervalMs: 20, chapterExpandDelayMs: 15, switchWaitTimeoutMs: 120 }
+        );
+        try {
+          await new Promise((r) => setTimeout(r, 45));
+          assert.equal(aiVideo.playbackRate, 1.0, '新版 AI 课程必须强制 1.0x 原速');
+          assert.equal(aiVideo.muted, true, '新版 AI 课程必须强制静音');
+
+          aiVideo.currentTime = 193;
+          aiVideo.ended = true;
+          for (const fn of vidListeners.get('ended') || []) fn();
+
+          await e2eTask;
+          assert.equal(s4.ch1.header.clicked, 1, '完播后应自动点击展开第一章');
+          assert.equal(activatedLesson, '1.1 什么是人工智能', '应自动点击进入 1.1 什么是人工智能');
+          assert.equal(getLastCompletedZhihuishuLessonKey(), null, 'SPA 成功切集后不得保留完播抑制键');
+          assert.equal(getZhihuishuSwitchCooldownUntil(), 0, 'SPA 成功切集后不得进入切集冷却期');
+        } finally {
+          e2eCtrl.abort();
+          await e2eTask.catch(() => {});
+        }
+      } finally {
+        clearZhihuishuCompletionSuppression();
+        store.config.autoNextChapter = prevAutoNext;
+        store.config.randomDelayBase = prevDelayBase;
+        store.config.randomDelayJitter = prevDelayJitter;
       }
     });
   });
