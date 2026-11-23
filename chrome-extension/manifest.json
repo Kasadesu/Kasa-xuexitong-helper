@@ -4,13 +4,18 @@
   "version": "1.4.0",
   "description": "超星学习通与知到智慧树双平台课程与作业辅助扩展",
   "permissions": [
-    "storage"
+    "storage",
+    "tabs"
   ],
   "host_permissions": [
     "*://*.chaoxing.com/*",
     "*://*.mti100.com/*",
-    "*://*.zhihuishu.com/*"
+    "*://*.zhihuishu.com/*",
+    "<all_urls>"
   ],
+  "background": {
+    "service_worker": "background.js"
+  },
   "content_scripts": [
     {
       "matches": [

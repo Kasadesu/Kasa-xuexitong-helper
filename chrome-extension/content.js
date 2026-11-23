@@ -63,6 +63,22 @@
 			y: 120
 		}
 	};
+	var sanitizeConfig = (parsed) => {
+		const provider = parsed?.aiProvider === "deepseek" || parsed?.aiProvider === "custom" ? parsed.aiProvider : "custom";
+		return {
+			...DEFAULT_CONFIG,
+			...parsed,
+			aiProvider: provider
+		};
+	};
+	var getChromeStorageLocal = () => {
+		try {
+			if (typeof GM_getValue === "function") return null;
+			const chromeApi = globalThis?.chrome;
+			if (chromeApi?.storage?.local && typeof chromeApi.storage.local.get === "function" && typeof chromeApi.storage.local.set === "function") return chromeApi.storage.local;
+		} catch {}
+		return null;
+	};
 	var Store = class {
 		config;
 		logs = [];
@@ -79,8 +95,10 @@
 			status: "idle"
 		};
 		listeners = new Set();
+		configDirty = false;
 		constructor() {
 			this.config = this.loadConfig();
+			this.hydrateChromeStorage();
 		}
 		setQuizRunning(running) {
 			this.isQuizRunning = running;
@@ -98,15 +116,27 @@
 				this.notify();
 			}
 		}
+		hydrateChromeStorage() {
+			const storageLocal = getChromeStorageLocal();
+			if (!storageLocal) return;
+			try {
+				storageLocal.get([STORAGE_KEY], (result) => {
+					try {
+						if (globalThis?.chrome?.runtime?.lastError) return;
+						if (this.configDirty) return;
+						const raw = result?.[STORAGE_KEY];
+						if (!raw) return;
+						const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+						if (parsed && typeof parsed === "object") {
+							this.config = sanitizeConfig(parsed);
+							if (typeof localStorage !== "undefined") localStorage.setItem(STORAGE_KEY, JSON.stringify(this.config));
+							this.notify();
+						}
+					} catch {}
+				});
+			} catch {}
+		}
 		loadConfig() {
-			const sanitizeConfig = (parsed) => {
-				const provider = parsed.aiProvider === "deepseek" || parsed.aiProvider === "custom" ? parsed.aiProvider : "custom";
-				return {
-					...DEFAULT_CONFIG,
-					...parsed,
-					aiProvider: provider
-				};
-			};
 			const keysToTry = [STORAGE_KEY, ...LEGACY_STORAGE_KEYS];
 			try {
 				if (typeof GM_getValue === "function") for (const key of keysToTry) {
@@ -167,13 +197,20 @@
 			}
 		}
 		reloadConfig() {
+			this.configDirty = false;
 			this.config = this.loadConfig();
+			this.hydrateChromeStorage();
 		}
 		saveConfig() {
+			this.configDirty = true;
 			try {
 				const serialized = JSON.stringify(this.config);
 				if (typeof GM_setValue === "function") GM_setValue(STORAGE_KEY, serialized);
 				if (typeof localStorage !== "undefined") localStorage.setItem(STORAGE_KEY, serialized);
+				const storageLocal = getChromeStorageLocal();
+				if (storageLocal) storageLocal.set({ [STORAGE_KEY]: serialized }, () => {
+					globalThis?.chrome?.runtime?.lastError;
+				});
 			} catch (e) {
 				console.warn("[KasaStore] Failed to save config", e);
 			}
@@ -1018,7 +1055,8 @@ input:checked + .toggle-slider:before {
 				break;
 			default: userTail = "";
 		}
-		const userText = `${contextPrefix}题目：${stem.trim()}${formattedOptions}${userTail}`;
+		const trimmedStem = stem.trim();
+		const userText = `${contextPrefix}题目：${trimmedStem ? trimmedStem : images && images.length > 0 ? "（题干文字位于附图中，请仔细阅读附图中的完整题干内容，再结合下方选项列表作答）" : ""}${formattedOptions}${userTail}`;
 		const userContent = images && images.length > 0 ? [{
 			type: "text",
 			text: userText
@@ -1231,6 +1269,504 @@ input:checked + .toggle-slider:before {
 		const cleanParagraphs = (Array.isArray(content) ? content.flatMap((item) => item ? String(item).split(/\r?\n/) : []) : String(content).split(/\r?\n/)).map((line) => cleanRichTextAnswer(line).trim()).filter((line) => line.length > 0).map((line) => `<p>${escapeHtml(line)}</p>`);
 		return cleanParagraphs.length > 0 ? cleanParagraphs.join("") : "<p></p>";
 	};
+	var sleep = (ms, signal) => {
+		return new Promise((resolve, reject) => {
+			if (signal?.aborted) return reject(new DOMException("Aborted", "AbortError"));
+			const timer = setTimeout(() => {
+				signal?.removeEventListener("abort", onAbort);
+				resolve();
+			}, ms);
+			const onAbort = () => {
+				clearTimeout(timer);
+				reject(new DOMException("Aborted", "AbortError"));
+			};
+			signal?.addEventListener("abort", onAbort, { once: true });
+		});
+	};
+	var getHumanJitterDelay = (baseSeconds, jitterSeconds) => {
+		const min = Math.max(.5, baseSeconds - jitterSeconds);
+		const max = baseSeconds + jitterSeconds;
+		const random = Math.random() * (max - min) + min;
+		return Math.round(random * 1e3);
+	};
+	var LifecycleWatchdog = class {
+		controller = new AbortController();
+		currentTaskId = 0;
+		get signal() {
+			return this.controller.signal;
+		}
+		get taskId() {
+			return this.currentTaskId;
+		}
+		renew() {
+			this.controller.abort();
+			this.controller = new AbortController();
+			return ++this.currentTaskId;
+		}
+		isCurrent(taskId) {
+			return !this.controller.signal.aborted && this.currentTaskId === taskId;
+		}
+		abort() {
+			this.controller.abort();
+		}
+	};
+	var getChromeApi = () => globalThis?.chrome;
+	var isChromeExtensionRuntime = () => {
+		const chromeApi = getChromeApi();
+		return Boolean(chromeApi && chromeApi.runtime && chromeApi.runtime.id && typeof chromeApi.runtime.sendMessage === "function");
+	};
+	var captureVisibleTabViaExtension = (signal) => {
+		if (!isChromeExtensionRuntime()) return Promise.resolve({
+			ok: false,
+			code: "NOT_EXTENSION",
+			error: "当前非 Chrome 扩展运行环境"
+		});
+		if (signal?.aborted) return Promise.resolve({
+			ok: false,
+			code: "ABORTED",
+			error: "任务已中止"
+		});
+		const chromeApi = getChromeApi();
+		return new Promise((resolve) => {
+			let settled = false;
+			let timer = null;
+			const cleanup = () => {
+				if (timer !== null) {
+					clearTimeout(timer);
+					timer = null;
+				}
+				if (signal) signal.removeEventListener("abort", onAbort);
+			};
+			const safeResolve = (res) => {
+				if (settled) return;
+				settled = true;
+				cleanup();
+				resolve(res);
+			};
+			const onAbort = () => {
+				safeResolve({
+					ok: false,
+					code: "ABORTED",
+					error: "截屏请求已中止"
+				});
+			};
+			if (signal) signal.addEventListener("abort", onAbort, { once: true });
+			timer = setTimeout(() => {
+				safeResolve({
+					ok: false,
+					code: "CAPTURE_TIMEOUT",
+					error: "扩展后台截屏响应超时"
+				});
+			}, 8e3);
+			try {
+				chromeApi.runtime.sendMessage({ type: "KASA_CAPTURE_VISIBLE_TAB" }, (response) => {
+					const lastErr = chromeApi.runtime?.lastError;
+					if (lastErr) {
+						safeResolve({
+							ok: false,
+							code: "RUNTIME_ERROR",
+							error: lastErr.message || String(lastErr)
+						});
+						return;
+					}
+					if (response && response.ok && typeof response.dataUrl === "string" && response.dataUrl) {
+						safeResolve({
+							ok: true,
+							dataUrl: response.dataUrl
+						});
+						return;
+					}
+					safeResolve({
+						ok: false,
+						code: response?.code || "CAPTURE_FAILED",
+						error: response?.error || "扩展截屏未返回图像"
+					});
+				});
+			} catch (err) {
+				safeResolve({
+					ok: false,
+					code: "CAPTURE_ERROR",
+					error: String(err)
+				});
+			}
+		});
+	};
+	var cropDataUrlToElementRect = async (fullDataUrl, rect, dpr, viewport) => {
+		if (!fullDataUrl || typeof Image === "undefined" || typeof document === "undefined" || typeof document.createElement !== "function") return {
+			dataUrl: null,
+			reason: "NO_CANVAS_ENV"
+		};
+		return new Promise((resolve) => {
+			let settled = false;
+			let timer = null;
+			const img = new Image();
+			const cleanup = () => {
+				if (timer !== null) {
+					clearTimeout(timer);
+					timer = null;
+				}
+				img.onload = null;
+				img.onerror = null;
+			};
+			const finish = (res) => {
+				if (settled) return;
+				settled = true;
+				cleanup();
+				resolve(res);
+			};
+			timer = setTimeout(() => {
+				finish({
+					dataUrl: null,
+					reason: "IMAGE_LOAD_TIMEOUT"
+				});
+			}, 5e3);
+			img.onload = () => {
+				try {
+					const imgW = img.naturalWidth || img.width || 0;
+					const imgH = img.naturalHeight || img.height || 0;
+					if (imgW <= 0 || imgH <= 0) return finish({
+						dataUrl: null,
+						reason: "EMPTY_IMAGE"
+					});
+					const scaleX = viewport.width > 0 ? imgW / viewport.width : dpr || 1;
+					const scaleY = viewport.height > 0 ? imgH / viewport.height : dpr || 1;
+					const padCss = 8;
+					const sx = Math.max(0, Math.floor((rect.left - padCss) * scaleX));
+					const sy = Math.max(0, Math.floor((rect.top - padCss) * scaleY));
+					const ex = Math.min(imgW, Math.ceil((rect.left + rect.width + padCss) * scaleX));
+					const ey = Math.min(imgH, Math.ceil((rect.top + rect.height + padCss) * scaleY));
+					const sw = ex - sx;
+					const sh = ey - sy;
+					if (sw <= 4 || sh <= 4) return finish({
+						dataUrl: null,
+						reason: "OUT_OF_VIEWPORT"
+					});
+					const MAX_SIDE = 1280;
+					let outW = sw;
+					let outH = sh;
+					if (outW > MAX_SIDE || outH > MAX_SIDE) {
+						if (outW >= outH) {
+							outH = Math.max(1, Math.round(outH * MAX_SIDE / outW));
+							outW = MAX_SIDE;
+						} else {
+							outW = Math.max(1, Math.round(outW * MAX_SIDE / outH));
+							outH = MAX_SIDE;
+						}
+					}
+					const canvas = document.createElement("canvas");
+					canvas.width = outW;
+					canvas.height = outH;
+					const ctx = canvas.getContext("2d");
+					if (!ctx) return finish({
+						dataUrl: null,
+						reason: "NO_2D_CONTEXT"
+					});
+					ctx.fillStyle = "#ffffff";
+					ctx.fillRect(0, 0, outW, outH);
+					ctx.drawImage(img, sx, sy, sw, sh, 0, 0, outW, outH);
+					if (typeof ctx.getImageData === "function") try {
+						const data = ctx.getImageData(0, 0, outW, outH)?.data;
+						if (data && data.length >= 4) {
+							const cols = Math.min(8, outW);
+							const rows = Math.min(8, outH);
+							let baseR = -1;
+							let baseG = -1;
+							let baseB = -1;
+							let hasVariance = false;
+							for (let gy = 0; gy < rows && !hasVariance; gy++) {
+								const py = Math.min(outH - 1, Math.floor((gy + .5) * outH / rows));
+								for (let gx = 0; gx < cols && !hasVariance; gx++) {
+									const px = Math.min(outW - 1, Math.floor((gx + .5) * outW / cols));
+									const offset = (py * outW + px) * 4;
+									if (offset + 2 >= data.length) continue;
+									const r = data[offset];
+									const g = data[offset + 1];
+									const b = data[offset + 2];
+									if (baseR === -1) {
+										baseR = r;
+										baseG = g;
+										baseB = b;
+									} else if (r !== baseR || g !== baseG || b !== baseB) hasVariance = true;
+								}
+							}
+							if (!hasVariance && baseR !== -1) return finish({
+								dataUrl: null,
+								reason: "BLANK_CAPTURE"
+							});
+						}
+					} catch {}
+					const outDataUrl = canvas.toDataURL("image/jpeg", .9);
+					if (!outDataUrl || !outDataUrl.startsWith("data:image/")) return finish({
+						dataUrl: null,
+						reason: "EXPORT_FAILED"
+					});
+					finish({ dataUrl: outDataUrl });
+				} catch (err) {
+					finish({
+						dataUrl: null,
+						reason: "CROP_ERROR",
+						error: String(err)
+					});
+				}
+			};
+			img.onerror = () => {
+				finish({
+					dataUrl: null,
+					reason: "IMAGE_LOAD_ERROR"
+				});
+			};
+			try {
+				img.src = fullDataUrl;
+			} catch (err) {
+				finish({
+					dataUrl: null,
+					reason: "IMAGE_SRC_ERROR",
+					error: String(err)
+				});
+			}
+		});
+	};
+	var captureClosedStemImage = async (timuEl, doc, signal) => {
+		if (!isChromeExtensionRuntime()) return {
+			dataUrl: null,
+			reason: "NOT_EXTENSION"
+		};
+		if (signal?.aborted) return {
+			dataUrl: null,
+			reason: "ABORTED"
+		};
+		const stemCandidates = [];
+		if (typeof timuEl?.querySelectorAll === "function") try {
+			stemCandidates.push(...Array.from(timuEl.querySelectorAll(".subject_describe, .smallStem_describe, .subject_stem, .question-stem, .stem-content, .question-title, .subject_title")));
+		} catch {}
+		else if (typeof timuEl?.querySelector === "function") {
+			const single = timuEl.querySelector(".subject_describe, .smallStem_describe, .subject_stem, .question-stem, .stem-content, .question-title, .subject_title");
+			if (single) stemCandidates.push(single);
+		}
+		if (timuEl) stemCandidates.push(timuEl);
+		const isValidRect = (el) => {
+			if (!el || typeof el.getBoundingClientRect !== "function") return false;
+			try {
+				const r = el.getBoundingClientRect();
+				return Boolean(r && r.width > 20 && r.height > 10);
+			} catch {
+				return false;
+			}
+		};
+		const targetEl = stemCandidates.find((el) => isValidRect(el));
+		if (!targetEl) return {
+			dataUrl: null,
+			reason: "NO_RECT"
+		};
+		try {
+			targetEl.scrollIntoView?.({
+				behavior: "instant",
+				block: "center"
+			});
+		} catch {
+			try {
+				targetEl.scrollIntoView?.({ block: "center" });
+			} catch {}
+		}
+		try {
+			await sleep(100, signal);
+		} catch {
+			return {
+				dataUrl: null,
+				reason: "ABORTED"
+			};
+		}
+		if (signal?.aborted) return {
+			dataUrl: null,
+			reason: "ABORTED"
+		};
+		let rawRect;
+		try {
+			rawRect = targetEl.getBoundingClientRect();
+		} catch {
+			return {
+				dataUrl: null,
+				reason: "NO_RECT"
+			};
+		}
+		let rectLeft = rawRect.left;
+		let rectTop = rawRect.top;
+		const rectWidth = rawRect.width;
+		const rectHeight = rawRect.height;
+		const topWin = typeof window !== "undefined" ? window.top || window : null;
+		let topDoc = doc;
+		try {
+			if (topWin?.document) topDoc = topWin.document;
+		} catch {
+			topDoc = doc;
+		}
+		try {
+			let curWin = doc?.defaultView || (typeof window !== "undefined" ? window : null);
+			for (let depth = 0; depth < 5 && curWin && curWin !== curWin.top; depth++) {
+				const frameEl = curWin.frameElement;
+				if (!frameEl || typeof frameEl.getBoundingClientRect !== "function") break;
+				const frameRect = frameEl.getBoundingClientRect();
+				rectLeft += frameRect.left;
+				rectTop += frameRect.top;
+				curWin = curWin.parent;
+			}
+		} catch {}
+		const viewportWidth = Number(topWin?.innerWidth || topDoc?.documentElement?.clientWidth || doc?.documentElement?.clientWidth || 1280);
+		const viewportHeight = Number(topWin?.innerHeight || topDoc?.documentElement?.clientHeight || doc?.documentElement?.clientHeight || 800);
+		const dpr = Number(topWin?.devicePixelRatio || 1) || 1;
+		const clampedLeft = Math.max(0, rectLeft);
+		const clampedTop = Math.max(0, rectTop);
+		const clampedRight = Math.min(viewportWidth, rectLeft + rectWidth);
+		const clampedBottom = Math.min(viewportHeight, rectTop + rectHeight);
+		const clampedWidth = clampedRight - clampedLeft;
+		const clampedHeight = clampedBottom - clampedTop;
+		if (clampedWidth <= 10 || clampedHeight <= 10) return {
+			dataUrl: null,
+			reason: "OUT_OF_VIEWPORT"
+		};
+		const savedPanels = [];
+		const collectPanels = (targetDoc) => {
+			if (!targetDoc || typeof targetDoc.querySelectorAll !== "function") return;
+			try {
+				const els = Array.from(targetDoc.querySelectorAll("kasa-helper-panel, .kasa-card"));
+				for (const el of els) if (!savedPanels.some((p) => p.el === el) && el?.style) {
+					savedPanels.push({
+						el,
+						visibility: el.style.visibility || "",
+						opacity: el.style.opacity || ""
+					});
+					el.style.visibility = "hidden";
+					el.style.opacity = "0";
+				}
+			} catch {}
+		};
+		let captureRes;
+		try {
+			collectPanels(topDoc);
+			if (doc !== topDoc) collectPanels(doc);
+			try {
+				await sleep(60, signal);
+			} catch {
+				return {
+					dataUrl: null,
+					reason: "ABORTED"
+				};
+			}
+			if (signal?.aborted) return {
+				dataUrl: null,
+				reason: "ABORTED"
+			};
+			captureRes = await captureVisibleTabViaExtension(signal);
+		} finally {
+			for (const saved of savedPanels) try {
+				saved.el.style.visibility = saved.visibility;
+				saved.el.style.opacity = saved.opacity;
+			} catch {}
+		}
+		if (!captureRes.ok || !captureRes.dataUrl) return {
+			dataUrl: null,
+			reason: captureRes.code || "CAPTURE_FAILED",
+			error: captureRes.error
+		};
+		return cropDataUrlToElementRect(captureRes.dataUrl, {
+			left: clampedLeft,
+			top: clampedTop,
+			width: clampedWidth,
+			height: clampedHeight
+		}, dpr, {
+			width: viewportWidth,
+			height: viewportHeight
+		});
+	};
+	var fetchViaExtensionBackground = (url, init, signal) => {
+		if (!isChromeExtensionRuntime()) return Promise.resolve(null);
+		if (signal?.aborted) return Promise.resolve({
+			ok: false,
+			status: 0,
+			text: "",
+			error: "请求已中止"
+		});
+		const chromeApi = getChromeApi();
+		const innerTimeout = init.timeoutMs ?? 6e4;
+		const hardTimeoutMs = innerTimeout + 5e3;
+		return new Promise((resolve) => {
+			let settled = false;
+			let timer = null;
+			const cleanup = () => {
+				if (timer !== null) {
+					clearTimeout(timer);
+					timer = null;
+				}
+				if (signal) signal.removeEventListener("abort", onAbort);
+			};
+			const safeResolve = (res) => {
+				if (settled) return;
+				settled = true;
+				cleanup();
+				resolve(res);
+			};
+			const onAbort = () => {
+				safeResolve({
+					ok: false,
+					status: 0,
+					text: "",
+					error: "请求已中止"
+				});
+			};
+			if (signal) signal.addEventListener("abort", onAbort, { once: true });
+			timer = setTimeout(() => {
+				safeResolve({
+					ok: false,
+					status: 0,
+					text: "",
+					error: `扩展后台请求硬超时（${Math.round(hardTimeoutMs / 1e3)}秒）`
+				});
+			}, hardTimeoutMs);
+			try {
+				chromeApi.runtime.sendMessage({
+					type: "KASA_EXT_FETCH",
+					url,
+					method: init.method,
+					headers: init.headers,
+					body: init.body,
+					timeoutMs: innerTimeout
+				}, (response) => {
+					const lastErr = chromeApi.runtime?.lastError;
+					if (lastErr) {
+						safeResolve({
+							ok: false,
+							status: 0,
+							text: "",
+							error: lastErr.message || String(lastErr)
+						});
+						return;
+					}
+					if (response && typeof response === "object") {
+						safeResolve({
+							ok: Boolean(response.ok),
+							status: Number(response.status) || 0,
+							text: String(response.text || ""),
+							...response.error ? { error: String(response.error) } : {}
+						});
+						return;
+					}
+					safeResolve({
+						ok: false,
+						status: 0,
+						text: "",
+						error: "扩展后台未返回响应"
+					});
+				});
+			} catch (err) {
+				safeResolve({
+					ok: false,
+					status: 0,
+					text: "",
+					error: String(err)
+				});
+			}
+		});
+	};
 	var DEFAULT_REASONING_EFFORTS = [
 		"none",
 		"low",
@@ -1331,6 +1867,29 @@ input:checked + .toggle-slider:before {
 		const headers = { Accept: "application/json" };
 		if (apiKey.trim()) headers["Authorization"] = `Bearer ${apiKey.trim()}`;
 		const xhr = typeof GM_xmlhttpRequest !== "undefined" ? GM_xmlhttpRequest : null;
+		if (!xhr && isChromeExtensionRuntime()) {
+			const extRes = await fetchViaExtensionBackground(endpoint, {
+				method: "GET",
+				headers,
+				timeoutMs: 15e3
+			});
+			if (extRes) {
+				if (extRes.ok) try {
+					const parsed = parseModelsFromJson(extRes.text);
+					if (parsed.ids.length > 0) store.updateConfig({
+						cachedModelList: parsed.ids,
+						cachedModelItems: parsed.items
+					});
+					return parsed.ids;
+				} catch (err) {
+					store.addLog(`解析模型列表失败: ${String(err)}`, "error");
+					return [];
+				}
+				if (extRes.status > 0) store.addLog(`拉取模型列表失败 HTTP ${extRes.status}: ${extRes.text.slice(0, 100)}`, "error");
+				else store.addLog(`拉取模型列表失败 (扩展后台): ${extRes.error || "网络错误"}`, "error");
+				return [];
+			}
+		}
 		if (!xhr) {
 			const controller = new AbortController();
 			const timer = window.setTimeout(() => controller.abort(), 15e3);
@@ -1489,6 +2048,52 @@ input:checked + .toggle-slider:before {
 				errText: ""
 			};
 			const xhr = typeof GM_xmlhttpRequest !== "undefined" ? GM_xmlhttpRequest : null;
+			if (!xhr && isChromeExtensionRuntime()) {
+				const extRes = await fetchViaExtensionBackground(endpoint, {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						Authorization: `Bearer ${aiApiKey.trim()}`
+					},
+					body: bodyStr,
+					timeoutMs: 6e4
+				}, signal);
+				if (signal?.aborted) return {
+					ok: false,
+					status: 0,
+					answers: [],
+					rawContent: "",
+					errText: ""
+				};
+				if (extRes) {
+					if (extRes.ok) try {
+						const data = JSON.parse(extRes.text);
+						const extracted = extractAnswersFromData(data);
+						return {
+							ok: true,
+							status: extRes.status,
+							answers: extracted.answers,
+							rawContent: extracted.rawContent,
+							errText: ""
+						};
+					} catch (err) {
+						return {
+							ok: false,
+							status: extRes.status,
+							answers: [],
+							rawContent: "",
+							errText: `解析响应失败: ${String(err)}`
+						};
+					}
+					return {
+						ok: false,
+						status: extRes.status,
+						answers: [],
+						rawContent: "",
+						errText: extRes.error || extRes.text || ""
+					};
+				}
+			}
 			if (!xhr) {
 				const controller = new AbortController();
 				const onExternalAbort = () => controller.abort();
@@ -1691,18 +2296,23 @@ input:checked + .toggle-slider:before {
 			return false;
 		};
 		const hasImages = Boolean(question.images && question.images.length > 0);
+		const isVisionOnlyStem = !question.title.trim() && hasImages;
 		let forcePlainText = false;
 		let firstRes = await sendSingleRequest(buildPayload(true, void 0, forcePlainText));
 		if (signal?.aborted) return [];
 		if (firstRes.ok && firstRes.answers.length > 0) return await recheckMultipleChoiceIfSingle(firstRes, forcePlainText);
 		if (hasImages && !forcePlainText && (firstRes.status === 413 || isMultimodalError(firstRes.status, firstRes.errText) || firstRes.status === 400 || firstRes.status === 422)) {
+			if (isVisionOnlyStem) {
+				store.addLog("当前配置的 AI 模型不支持图片输入，无法识别封闭题干截图；请在【AI 设置】中切换支持视觉识图的多模态模型（如 Gemini / GPT-4o / Qwen-VL）！", "error");
+				return [];
+			}
 			store.addLog("检测到图片过大或当前模型不支持多模态识图，自动降级为纯文本重试", "warning");
 			forcePlainText = true;
 			firstRes = await sendSingleRequest(buildPayload(true, void 0, forcePlainText));
 			if (signal?.aborted) return [];
 			if (firstRes.ok && firstRes.answers.length > 0) return await recheckMultipleChoiceIfSingle(firstRes, forcePlainText);
 		}
-		if (hasImages && (firstRes.status === 413 || firstRes.status === 400 || firstRes.status === 422 || isMultimodalError(firstRes.status, firstRes.errText))) forcePlainText = true;
+		if (hasImages && !isVisionOnlyStem && (firstRes.status === 413 || firstRes.status === 400 || firstRes.status === 422 || isMultimodalError(firstRes.status, firstRes.errText))) forcePlainText = true;
 		const isParamError = firstRes.status === 400 || firstRes.status === 422 || firstRes.status === 413;
 		const hasEffort = Boolean(reasoningEffort && reasoningEffort !== "none");
 		const secondIncludeEffort = isParamError && hasEffort ? reasoningEffort === "max" : !isParamError;
@@ -1710,7 +2320,7 @@ input:checked + .toggle-slider:before {
 		let secondRes = await sendSingleRequest(buildPayload(secondIncludeEffort, secondFallbackEffort, forcePlainText));
 		if (signal?.aborted) return [];
 		if (secondRes.ok && secondRes.answers.length > 0) return await recheckMultipleChoiceIfSingle(secondRes, forcePlainText, secondIncludeEffort, secondFallbackEffort ?? reasoningEffort);
-		const ultimateForcePlain = hasImages ? true : forcePlainText;
+		const ultimateForcePlain = hasImages && !isVisionOnlyStem ? true : forcePlainText;
 		const thirdRes = await sendSingleRequest(buildPayload(false, "none", ultimateForcePlain));
 		if (signal?.aborted) return [];
 		if (thirdRes.ok && thirdRes.answers.length > 0) return await recheckMultipleChoiceIfSingle(thirdRes, ultimateForcePlain, false, "none");
@@ -2494,47 +3104,6 @@ input:checked + .toggle-slider:before {
 				}
 			}, 300);
 		});
-	};
-	var sleep = (ms, signal) => {
-		return new Promise((resolve, reject) => {
-			if (signal?.aborted) return reject(new DOMException("Aborted", "AbortError"));
-			const timer = setTimeout(() => {
-				signal?.removeEventListener("abort", onAbort);
-				resolve();
-			}, ms);
-			const onAbort = () => {
-				clearTimeout(timer);
-				reject(new DOMException("Aborted", "AbortError"));
-			};
-			signal?.addEventListener("abort", onAbort, { once: true });
-		});
-	};
-	var getHumanJitterDelay = (baseSeconds, jitterSeconds) => {
-		const min = Math.max(.5, baseSeconds - jitterSeconds);
-		const max = baseSeconds + jitterSeconds;
-		const random = Math.random() * (max - min) + min;
-		return Math.round(random * 1e3);
-	};
-	var LifecycleWatchdog = class {
-		controller = new AbortController();
-		currentTaskId = 0;
-		get signal() {
-			return this.controller.signal;
-		}
-		get taskId() {
-			return this.currentTaskId;
-		}
-		renew() {
-			this.controller.abort();
-			this.controller = new AbortController();
-			return ++this.currentTaskId;
-		}
-		isCurrent(taskId) {
-			return !this.controller.signal.aborted && this.currentTaskId === taskId;
-		}
-		abort() {
-			this.controller.abort();
-		}
 	};
 	var playMediaTask = async (mediaType, iframe, iframeDocument, context) => {
 		return new Promise((resolve, reject) => {
@@ -26453,6 +27022,7 @@ input:checked + .toggle-slider:before {
 				}
 				const subType = detectQuestionSubType(rawTitleText);
 				const images = await extractQuestionImages(timuEl, signal);
+				const hasClosedStemContainer = typeof timuEl.querySelector === "function" && !!timuEl.querySelector(".subject_describe, .dynamic-fonts, .smallStem_describe");
 				const questionObj = {
 					id: timuEl.getAttribute("data-id") || `timu-${displayIndex}`,
 					index: displayIndex,
@@ -26465,11 +27035,25 @@ input:checked + .toggle-slider:before {
 				};
 				questionList.push(questionObj);
 				store.setQuestions([...questionList]);
+				let captureFailReason = "";
+				if (!cleanTitle && images.length === 0 && isChromeExtensionRuntime()) {
+					store.addLog(`${shortLabel}检测到封闭/不可读题干，正在通过 Chrome 扩展自动截取题干区域进行视觉识题...`, "info");
+					const cap = await captureClosedStemImage(timuEl, quizDoc, signal);
+					if (!isCurrent() || signal.aborted) return;
+					if (cap.dataUrl) {
+						images.push(cap.dataUrl);
+						questionObj.images = [...images];
+						store.setQuestions([...questionList]);
+						store.addLog(`${shortLabel}题干区域截图成功，将结合文字选项交由多模态 AI 识题`, "success");
+					} else captureFailReason = cap.error || cap.reason || "未知截屏错误";
+				}
 				if (!cleanTitle && images.length === 0) {
 					questionObj.status = "failed";
 					store.setQuestions([...questionList]);
 					cancelAutoSubmit = true;
-					store.addLog(`${shortLabel}未能提取到有效题干文本且无题目图片，为防止乱选已跳过该题并取消自动提交，请人工核对！`, "error");
+					if (captureFailReason) store.addLog(`${shortLabel}自动截取封闭题干失败（${captureFailReason}），为防止乱选已跳过该题并取消自动提交，请人工核对！`, "error");
+					else if (hasClosedStemContainer && !isChromeExtensionRuntime()) store.addLog(`${shortLabel}检测到智慧树封闭防复制题干（closed Shadow DOM），油猴环境无权静默截屏，已安全跳过并取消自动提交；请加载本项目 Chrome 扩展版（chrome-extension）配合多模态视觉模型自动识题，或手动勾选！`, "error");
+					else store.addLog(`${shortLabel}未能提取到有效题干文本且无题目图片，为防止乱选已跳过该题并取消自动提交，请人工核对！`, "error");
 					const emptyStemPct = Math.round((idx + 1) / timuNodes.length * 100);
 					store.updateProgress({
 						percent: emptyStemPct,
@@ -26480,7 +27064,8 @@ input:checked + .toggle-slider:before {
 					continue;
 				}
 				const imgTag = images.length > 0 ? `（含 ${images.length} 张图片）` : "";
-				store.addLog(`${questionLabel} [${qType}]: "${cleanTitle.slice(0, 24)}..." ${imgTag}正在查询答案`, "info");
+				const displayStem = cleanTitle ? `"${cleanTitle.slice(0, 24)}..."` : "[附图题干识别]";
+				store.addLog(`${questionLabel} [${qType}]: ${displayStem} ${imgTag}正在查询答案`, "info");
 				let answers = await queryAiAnswer(questionObj, paperContext, signal);
 				if (!isCurrent() || signal.aborted) return;
 				if (!answers || answers.length === 0) {

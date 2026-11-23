@@ -8297,5 +8297,555 @@ C 是温迪（风神巴巴托斯）
         store.acknowledgeAllErrors();
       }
     });
+
+    it('25.13 Chrome MV3 扩展封闭题干自动截图识题（零 Hook）、隐私保护门控与纯视觉模型降级熔断', async () => {
+      const prevWin = (globalThis as any).window;
+      const prevDoc = (globalThis as any).document;
+      const prevSession = (globalThis as any).sessionStorage;
+      const prevXhr = (globalThis as any).GM_xmlhttpRequest;
+      const prevChrome = (globalThis as any).chrome;
+      const prevImage = (globalThis as any).Image;
+      const prevKey = store.config.aiApiKey;
+      const prevModel = store.config.aiModel;
+      const prevBaseUrl = store.config.aiBaseUrl;
+      const prevAutoSubmit = store.config.autoSubmitWork;
+
+      const sMap = new Map<string, string>();
+      (globalThis as any).sessionStorage = {
+        getItem: (k: string) => sMap.get(k) ?? null,
+        setItem: (k: string, v: string) => sMap.set(k, String(v)),
+        removeItem: (k: string) => sMap.delete(k),
+        clear: () => sMap.clear()
+      };
+
+      const splitSel = (sel: string) => sel.split(',').map((s) => s.trim()).filter(Boolean);
+      const matchSimple = (el: any, part: string): boolean => {
+        const cls = (el.className || '').split(/\s+/).filter(Boolean);
+        const tag = (el.tagName || '').toUpperCase();
+        if (part.startsWith('.')) {
+          if (part.slice(1).includes('.')) {
+            return part
+              .slice(1)
+              .split('.')
+              .every((sub) => cls.includes(sub));
+          }
+          return cls.includes(part.slice(1));
+        }
+        const attrContains = part.match(/^\[class\*="([^"]+)"\]$/);
+        if (attrContains) return (el.className || '').includes(attrContains[1]);
+        const roleMatch = part.match(/^\[role="([^"]+)"\]$/);
+        if (roleMatch) return el.getAttribute?.('role') === roleMatch[1];
+        if (part === 'input[type="radio"]') return tag === 'INPUT' && el.type === 'radio';
+        if (part === 'input[type="checkbox"]') return tag === 'INPUT' && el.type === 'checkbox';
+        if (part === 'kasa-helper-panel') return tag === 'KASA-HELPER-PANEL';
+        if (/^[a-z0-9-]+$/i.test(part)) return tag === part.toUpperCase();
+        return false;
+      };
+      const matchChain = (el: any, chain: string): boolean => {
+        const tokens = chain.split(/\s+/).filter((t) => t && t !== '>');
+        if (tokens.length === 0) return false;
+        if (!matchSimple(el, tokens[tokens.length - 1])) return false;
+        if (tokens.length === 1) return true;
+        let cur = el.parentElement;
+        for (let i = tokens.length - 2; i >= 0; i--) {
+          while (cur && !matchSimple(cur, tokens[i])) cur = cur.parentElement;
+          if (!cur) return false;
+          cur = cur.parentElement;
+        }
+        return true;
+      };
+      const matchAny = (el: any, sel: string): boolean =>
+        splitSel(sel).some((chain) => matchChain(el, chain));
+
+      const createMockNode = (opts: {
+        tagName: string;
+        className?: string;
+        type?: string;
+        value?: string;
+        disabled?: boolean;
+        text?: string;
+        rect?: { left: number; top: number; width: number; height: number };
+        children?: any[];
+        onClick?: () => void;
+      }): any => {
+        const node: any = {
+          tagName: opts.tagName,
+          className: opts.className || '',
+          type: opts.type || '',
+          value: opts.value || '',
+          checked: false,
+          disabled: Boolean(opts.disabled),
+          style: { display: '', visibility: '', opacity: '' },
+          parentElement: null as any,
+          children: opts.children || [],
+          _attrs: {} as Record<string, string>,
+          _rawText: opts.text,
+          _rect: opts.rect || { left: 100, top: 150, width: 640, height: 80 },
+          classList: {
+            contains: (c: string) => (node.className || '').split(/\s+/).includes(c),
+            add: (c: string) => {
+              const parts = (node.className || '').split(/\s+/).filter(Boolean);
+              if (!parts.includes(c)) parts.push(c);
+              node.className = parts.join(' ');
+            },
+            remove: (c: string) => {
+              node.className = (node.className || '')
+                .split(/\s+/)
+                .filter((x: string) => x && x !== c)
+                .join(' ');
+            }
+          },
+          getAttribute: (k: string) => {
+            if (k === 'class') return node.className || '';
+            return k in node._attrs ? node._attrs[k] : null;
+          },
+          setAttribute: (k: string, v: string) => {
+            node._attrs[k] = v;
+          },
+          hasAttribute: (k: string) => k in node._attrs,
+          getBoundingClientRect: () => ({ ...node._rect }),
+          scrollIntoView: () => {},
+          remove: () => {
+            if (node.parentElement && Array.isArray(node.parentElement.children)) {
+              node.parentElement.children = node.parentElement.children.filter((c: any) => c !== node);
+            }
+            node.parentElement = null;
+          },
+          contains: (other: any): boolean => {
+            if (!other) return false;
+            if (node === other) return true;
+            return (node.children || []).some(
+              (c: any) => c === other || (typeof c.contains === 'function' && c.contains(other))
+            );
+          },
+          closest: (sel: string): any => {
+            let cur: any = node;
+            while (cur) {
+              if (matchAny(cur, sel)) return cur;
+              cur = cur.parentElement;
+            }
+            return null;
+          },
+          matches: (sel: string): boolean => matchAny(node, sel),
+          querySelectorAll: (sel: string): any[] => {
+            const res: any[] = [];
+            const walk = (n: any) => {
+              for (const ch of n.children || []) {
+                if (matchAny(ch, sel)) res.push(ch);
+                walk(ch);
+              }
+            };
+            walk(node);
+            return res;
+          },
+          querySelector: (sel: string): any => node.querySelectorAll(sel)[0] || null,
+          cloneNode: (deep = false): any => {
+            const kids = deep ? (node.children || []).map((c: any) => c.cloneNode(true)) : [];
+            return createMockNode({
+              tagName: node.tagName,
+              className: node.className,
+              type: node.type,
+              value: node.value,
+              disabled: node.disabled,
+              text: node._rawText,
+              rect: node._rect,
+              children: kids
+            });
+          },
+          click: () => {
+            opts.onClick?.();
+          },
+          get innerText(): string {
+            if (node._rawText !== undefined && (!node.children || node.children.length === 0)) {
+              return node._rawText;
+            }
+            return (node.children || [])
+              .map((c: any) => c.innerText || c.textContent || '')
+              .filter(Boolean)
+              .join('\n');
+          },
+          get textContent(): string {
+            return node.innerText;
+          }
+        };
+        for (const ch of node.children) {
+          ch.parentElement = node;
+        }
+        return node;
+      };
+
+      const buildClosedShadowScene = () => {
+        const selectedState = new Map<string, boolean>();
+        let bottomSaveClicks = 0;
+        let topTempSaveClicks = 0;
+        let topSubmitClicks = 0;
+
+        const makeOpt = (letter: string, text: string) => {
+          const inp = createMockNode({ tagName: 'INPUT', type: 'radio', value: letter });
+          const node = createMockNode({
+            tagName: 'DIV',
+            className: 'nodeLab',
+            children: [
+              inp,
+              createMockNode({ tagName: 'SPAN', className: 'node_detail', text: `${letter}. ${text}` })
+            ],
+            onClick: () => {
+              for (const k of selectedState.keys()) selectedState.set(k, false);
+              selectedState.set(letter, true);
+              for (const o of optNodes) {
+                const isSel = o === node;
+                o.classList[isSel ? 'add' : 'remove']('active');
+                o._inp.checked = isSel;
+              }
+            }
+          });
+          node._inp = inp;
+          selectedState.set(letter, false);
+          return node;
+        };
+
+        const optNodes = [
+          makeOpt('A', '在开发过程中优先考虑技术的创新性而非安全性'),
+          makeOpt('B', '确保人工智能的算法不带有任何偏见和歧视'),
+          makeOpt('C', '鼓励人工智能在所有情况下都采取最优解'),
+          makeOpt('D', '使人工智能能够自主决策而不受人类干预')
+        ];
+
+        const closedShadowDiv = createMockNode({
+          tagName: 'DIV',
+          className: 'subject_describe dynamic-fonts',
+          rect: { left: 320, top: 260, width: 700, height: 64 },
+          children: [createMockNode({ tagName: 'DIV', text: '' })]
+        });
+
+        const typeSpan = createMockNode({
+          tagName: 'SPAN',
+          className: 'subject_type',
+          text: '【单选题】 (2分)'
+        });
+
+        const subjectEl = createMockNode({
+          tagName: 'DIV',
+          className: 'examPaper_subject mt20',
+          rect: { left: 300, top: 200, width: 760, height: 320 },
+          children: [
+            createMockNode({
+              tagName: 'DIV',
+              className: 'subject_stem',
+              children: [typeSpan, closedShadowDiv]
+            }),
+            createMockNode({
+              tagName: 'DIV',
+              className: 'subject_node_list',
+              children: optNodes.map((o) =>
+                createMockNode({ tagName: 'DIV', className: 'subject_node', children: [o] })
+              )
+            })
+          ]
+        });
+
+        const panelEl = createMockNode({ tagName: 'KASA-HELPER-PANEL' });
+        const bottomSaveBtn = createMockNode({
+          tagName: 'BUTTON',
+          className: 'el-button el-button--primary',
+          text: '保存',
+          onClick: () => {
+            bottomSaveClicks++;
+          }
+        });
+        const topTempSaveBtn = createMockNode({
+          tagName: 'BUTTON',
+          className: 'el-button',
+          text: '暂存作业',
+          onClick: () => {
+            topTempSaveClicks++;
+          }
+        });
+        const topSubmitBtn = createMockNode({
+          tagName: 'BUTTON',
+          className: 'el-button el-button--primary',
+          text: '提交作业',
+          onClick: () => {
+            topSubmitClicks++;
+          }
+        });
+
+        const root = createMockNode({
+          tagName: 'DIV',
+          className: 'exam-page',
+          children: [panelEl, topTempSaveBtn, topSubmitBtn, subjectEl, bottomSaveBtn]
+        });
+
+        const mockWin: any = {
+          innerWidth: 1280,
+          innerHeight: 800,
+          devicePixelRatio: 2,
+          location: new URL('https://onlineexamh5new.zhihuishu.com/stuExamWeb.html?recruitId=431511&examId=5j9oNEVe'),
+          confirm: () => false,
+          alert: () => undefined,
+          setTimeout,
+          clearTimeout,
+          setInterval,
+          clearInterval,
+          addEventListener: () => {},
+          removeEventListener: () => {},
+          getComputedStyle: (el: any) => ({
+            display: el?.style?.display || 'block',
+            visibility: el?.style?.visibility || 'visible'
+          })
+        };
+        mockWin.top = mockWin;
+
+        const mockCanvas = {
+          width: 0,
+          height: 0,
+          getContext: () => ({
+            fillStyle: '',
+            fillRect: () => {},
+            drawImage: () => {},
+            getImageData: () => ({
+              // Contains varying pixel colors -> passes blank/occluded frame detector
+              data: new Uint8ClampedArray([
+                255, 255, 255, 255, 20, 20, 20, 255, 255, 255, 255, 255, 30, 30, 30, 255,
+                255, 255, 255, 255, 40, 40, 40, 255, 255, 255, 255, 255, 50, 50, 50, 255
+              ])
+            })
+          }),
+          toDataURL: () => 'data:image/jpeg;base64,/9j/croppedClosedStem'
+        };
+
+        const mockDoc: any = {
+          title: '绪论单元测试',
+          location: mockWin.location,
+          defaultView: mockWin,
+          documentElement: { clientWidth: 1280, clientHeight: 800 },
+          createElement: (tag: string) => (tag === 'canvas' ? mockCanvas : createMockNode({ tagName: tag })),
+          querySelectorAll: (sel: string) => root.querySelectorAll(sel),
+          querySelector: (sel: string) => root.querySelector(sel)
+        };
+        mockWin.document = mockDoc;
+
+        return {
+          mockWin,
+          mockDoc,
+          panelEl,
+          selectedState,
+          getCounts: () => ({ bottomSaveClicks, topTempSaveClicks, topSubmitClicks })
+        };
+      };
+
+      try {
+        // 1. 静态检查 manifest.json 与 background.js 契约
+        const rootDir = path.resolve(process.cwd());
+        const manifest = JSON.parse(
+          fs.readFileSync(path.join(rootDir, 'chrome-extension', 'manifest.json'), 'utf8')
+        );
+        assert.equal(manifest.background?.service_worker, 'background.js');
+        assert.ok(manifest.permissions?.includes('storage'));
+        assert.ok(manifest.permissions?.includes('tabs'));
+        assert.ok(manifest.host_permissions?.includes('<all_urls>'));
+        assert.ok(manifest.host_permissions?.includes('*://*.zhihuishu.com/*'));
+
+        const bgSrc = fs.readFileSync(path.join(rootDir, 'chrome-extension', 'background.js'), 'utf8');
+        assert.ok(bgSrc.includes('KASA_CAPTURE_VISIBLE_TAB'));
+        assert.ok(bgSrc.includes('KASA_EXT_FETCH'));
+        assert.ok(bgSrc.includes('tab.active !== true'));
+        assert.ok(bgSrc.includes("'minimized'"));
+
+        // 2. buildAiPrompt 无文字仅附图提示词校验
+        const visionPrompt = buildAiPrompt('single', '', ['选项A', '选项B'], undefined, [
+          'data:image/jpeg;base64,abc'
+        ]);
+        const userParts = visionPrompt[1].content as any[];
+        assert.ok(
+          Array.isArray(userParts) &&
+            String(userParts[0]?.text || '').includes('题干文字位于附图中'),
+          '纯附图题目 Prompt 必须明确指引 AI 阅读附图中的题干'
+        );
+
+        // 3. 场景 A：Chrome 扩展运行环境 + 激活标签页 -> 隐身面板截题干图 + 扩展后台发多模态 AI -> 选中 B + 保存 & 暂存
+        store.acknowledgeAllErrors();
+        clearExamAutoResumeState();
+        (globalThis as any).GM_xmlhttpRequest = undefined;
+        store.config.aiApiKey = 'sk-ext-vision-key';
+        store.config.aiBaseUrl = 'https://api.example.com/v1';
+        store.config.aiModel = 'gpt-4o-mini';
+        store.config.autoSubmitWork = false;
+        store.config.enabledQuestionTypes = { single: true, multiple: true, judge: true, fill: true, essay: true };
+
+        (globalThis as any).Image = class MockImage {
+          naturalWidth = 2560;
+          naturalHeight = 1600;
+          onload: any = null;
+          onerror: any = null;
+          set src(_val: string) {
+            setTimeout(() => this.onload?.(), 5);
+          }
+        };
+
+        const sceneA = buildClosedShadowScene();
+        (globalThis as any).window = sceneA.mockWin;
+        (globalThis as any).document = sceneA.mockDoc;
+
+        let panelVisDuringCapture = '';
+        let panelOpacityDuringCapture = '';
+        let capturedRequestPayload: any = null;
+
+        (globalThis as any).chrome = {
+          runtime: {
+            id: 'kasa-ext-test-id',
+            lastError: null,
+            sendMessage: (msg: any, cb: (res: any) => void) => {
+              if (msg?.type === 'KASA_CAPTURE_VISIBLE_TAB') {
+                panelVisDuringCapture = sceneA.panelEl.style.visibility;
+                panelOpacityDuringCapture = sceneA.panelEl.style.opacity;
+                setTimeout(() => {
+                  cb({ ok: true, dataUrl: 'data:image/png;base64,fullScreenPng' });
+                }, 5);
+                return;
+              }
+              if (msg?.type === 'KASA_EXT_FETCH') {
+                capturedRequestPayload = JSON.parse(msg.body);
+                setTimeout(() => {
+                  cb({
+                    ok: true,
+                    status: 200,
+                    text: JSON.stringify({ choices: [{ message: { content: '["B"]' } }] })
+                  });
+                }, 5);
+              }
+            }
+          }
+        };
+
+        await doQuizTask(null, sceneA.mockDoc, {
+          signal: new AbortController().signal,
+          isCurrent: () => true
+        });
+
+        assert.equal(panelVisDuringCapture, 'hidden', '截屏瞬间必须临时隐藏脚本悬浮面板防遮挡题干');
+        assert.equal(panelOpacityDuringCapture, '0');
+        assert.equal(sceneA.panelEl.style.visibility, '', '截屏后必须 100% 恢复悬浮面板显示');
+        assert.equal(sceneA.panelEl.style.opacity, '');
+
+        const sentUserMsg = capturedRequestPayload?.messages?.[1]?.content;
+        assert.ok(Array.isArray(sentUserMsg), '发给 AI 的消息必须包含多模态内容数组');
+        assert.ok(
+          sentUserMsg.some(
+            (p: any) => p.type === 'image_url' && p.image_url?.url === 'data:image/jpeg;base64,/9j/croppedClosedStem'
+          ),
+          '必须把裁剪后的封闭题干 JPEG 图发送给多模态 AI'
+        );
+        assert.ok(
+          String(sentUserMsg[0]?.text || '').includes('B. 确保人工智能的算法不带有任何偏见和歧视'),
+          '附图同时必须携带全部明文选项文本'
+        );
+        assert.equal(sceneA.selectedState.get('B'), true, '扩展视觉识题后应准确选中 B');
+        assert.deepEqual(sceneA.getCounts(), {
+          bottomSaveClicks: 1,
+          topTempSaveClicks: 1,
+          topSubmitClicks: 0
+        });
+
+        // 4. 场景 B：标签页不在激活状态（TAB_NOT_ACTIVE）-> 隐私保护跳过截屏、零 AI 请求、触发红字告警且阻断自动提交
+        clearExamAutoResumeState();
+        store.acknowledgeAllErrors();
+        store.config.autoSubmitWork = true;
+        const sceneB = buildClosedShadowScene();
+        (globalThis as any).window = sceneB.mockWin;
+        (globalThis as any).document = sceneB.mockDoc;
+
+        let extFetchCallsB = 0;
+        (globalThis as any).chrome = {
+          runtime: {
+            id: 'kasa-ext-test-id',
+            lastError: null,
+            sendMessage: (msg: any, cb: (res: any) => void) => {
+              if (msg?.type === 'KASA_CAPTURE_VISIBLE_TAB') {
+                setTimeout(() => {
+                  cb({
+                    ok: false,
+                    code: 'TAB_NOT_ACTIVE',
+                    error: '当前网课标签页未处于所在窗口激活状态，为防误截其他标签页已跳过截屏'
+                  });
+                }, 5);
+                return;
+              }
+              if (msg?.type === 'KASA_EXT_FETCH') {
+                extFetchCallsB++;
+                cb({ ok: true, status: 200, text: '{"choices":[]}' });
+              }
+            }
+          }
+        };
+
+        await doQuizTask(null, sceneB.mockDoc, {
+          signal: new AbortController().signal,
+          isCurrent: () => true
+        });
+        assert.equal(extFetchCallsB, 0, '非激活标签跳过截屏后绝不可调用 AI');
+        assert.equal(sceneB.selectedState.get('A'), false);
+        assert.equal(sceneB.getCounts().topSubmitClicks, 0, '截屏跳过触发熔断后绝不可提交作业');
+        assert.ok(
+          store.pinnedErrors.some((e) => e.message.includes('未处于所在窗口激活状态')),
+          'pinnedErrors 必须记录具体失败原因'
+        );
+
+        // 5. 场景 C：纯视觉题干配纯文本模型（后台返回 HTTP 400）-> 严禁剥离唯一图片重试，直接告警返回 []
+        store.acknowledgeAllErrors();
+        let visionModelFetchCalls = 0;
+        (globalThis as any).chrome = {
+          runtime: {
+            id: 'kasa-ext-test-id',
+            lastError: null,
+            sendMessage: (msg: any, cb: (res: any) => void) => {
+              if (msg?.type === 'KASA_EXT_FETCH') {
+                visionModelFetchCalls++;
+                setTimeout(() => {
+                  cb({
+                    ok: false,
+                    status: 400,
+                    text: '{"error":{"message":"image_url is not supported by this text-only model"}}'
+                  });
+                }, 5);
+              }
+            }
+          }
+        };
+
+        const qRes = await queryAiAnswer(
+          {
+            id: 'vision-only-1',
+            index: 1,
+            type: 'single',
+            title: '',
+            options: ['选项A', '选项B'],
+            images: ['data:image/jpeg;base64,/9j/croppedClosedStem'],
+            status: 'searching'
+          },
+          '',
+          new AbortController().signal
+        );
+        assert.deepEqual(qRes, []);
+        assert.equal(visionModelFetchCalls, 1, '纯视觉题干遭模型拒图时绝不可剥离唯一图片退回纯文本重试');
+        assert.ok(
+          store.pinnedErrors.some((e) => e.message.includes('当前配置的 AI 模型不支持图片输入')),
+          '必须在 pinnedErrors 提示切换支持视觉识图的多模态模型'
+        );
+      } finally {
+        clearExamAutoResumeState();
+        (globalThis as any).chrome = prevChrome;
+        (globalThis as any).Image = prevImage;
+        (globalThis as any).GM_xmlhttpRequest = prevXhr;
+        (globalThis as any).document = prevDoc;
+        (globalThis as any).window = prevWin;
+        (globalThis as any).sessionStorage = prevSession;
+        store.config.aiApiKey = prevKey;
+        store.config.aiModel = prevModel;
+        store.config.aiBaseUrl = prevBaseUrl;
+        store.config.autoSubmitWork = prevAutoSubmit;
+        store.acknowledgeAllErrors();
+      }
+    });
   });
 });

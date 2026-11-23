@@ -10,6 +10,7 @@ import {
   decryptDomElement,
   clearChaoxingFontMap
 } from './font-decoder';
+import { isChromeExtensionRuntime, captureClosedStemImage } from './extension-bridge';
 
 declare function GM_getValue<T>(key: string, defaultValue: T): T;
 declare function GM_setValue<T>(key: string, value: T): void;
@@ -2117,6 +2118,9 @@ export async function doQuizTask(
 
       const subType = detectQuestionSubType(rawTitleText);
       const images = await extractQuestionImages(timuEl, signal);
+      const hasClosedStemContainer =
+        typeof timuEl.querySelector === 'function' &&
+        !!timuEl.querySelector('.subject_describe, .dynamic-fonts, .smallStem_describe');
 
       const questionObj: Question = {
         id: timuEl.getAttribute('data-id') || `timu-${displayIndex}`,
@@ -2131,14 +2135,47 @@ export async function doQuizTask(
       questionList.push(questionObj);
       store.setQuestions([...questionList]);
 
+      let captureFailReason = '';
+      if (!cleanTitle && images.length === 0 && isChromeExtensionRuntime()) {
+        store.addLog(
+          `${shortLabel}检测到封闭/不可读题干，正在通过 Chrome 扩展自动截取题干区域进行视觉识题...`,
+          'info'
+        );
+        const cap = await captureClosedStemImage(timuEl, quizDoc, signal);
+        if (!isCurrent() || signal.aborted) return;
+        if (cap.dataUrl) {
+          images.push(cap.dataUrl);
+          questionObj.images = [...images];
+          store.setQuestions([...questionList]);
+          store.addLog(
+            `${shortLabel}题干区域截图成功，将结合文字选项交由多模态 AI 识题`,
+            'success'
+          );
+        } else {
+          captureFailReason = cap.error || cap.reason || '未知截屏错误';
+        }
+      }
+
       if (!cleanTitle && images.length === 0) {
         questionObj.status = 'failed';
         store.setQuestions([...questionList]);
         cancelAutoSubmit = true;
-        store.addLog(
-          `${shortLabel}未能提取到有效题干文本且无题目图片，为防止乱选已跳过该题并取消自动提交，请人工核对！`,
-          'error'
-        );
+        if (captureFailReason) {
+          store.addLog(
+            `${shortLabel}自动截取封闭题干失败（${captureFailReason}），为防止乱选已跳过该题并取消自动提交，请人工核对！`,
+            'error'
+          );
+        } else if (hasClosedStemContainer && !isChromeExtensionRuntime()) {
+          store.addLog(
+            `${shortLabel}检测到智慧树封闭防复制题干（closed Shadow DOM），油猴环境无权静默截屏，已安全跳过并取消自动提交；请加载本项目 Chrome 扩展版（chrome-extension）配合多模态视觉模型自动识题，或手动勾选！`,
+            'error'
+          );
+        } else {
+          store.addLog(
+            `${shortLabel}未能提取到有效题干文本且无题目图片，为防止乱选已跳过该题并取消自动提交，请人工核对！`,
+            'error'
+          );
+        }
         const emptyStemPct = Math.round(((idx + 1) / timuNodes.length) * 100);
         store.updateProgress({
           percent: emptyStemPct,
@@ -2150,8 +2187,9 @@ export async function doQuizTask(
       }
 
       const imgTag = images.length > 0 ? `（含 ${images.length} 张图片）` : '';
+      const displayStem = cleanTitle ? `"${cleanTitle.slice(0, 24)}..."` : '[附图题干识别]';
       store.addLog(
-        `${questionLabel} [${qType}]: "${cleanTitle.slice(0, 24)}..." ${imgTag}正在查询答案`,
+        `${questionLabel} [${qType}]: ${displayStem} ${imgTag}正在查询答案`,
         'info'
       );
 

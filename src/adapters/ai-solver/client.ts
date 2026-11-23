@@ -3,6 +3,7 @@ import { Question, RemoteModelItem } from '../../types';
 import { buildAiPrompt, ChatMessage } from './prompt';
 import { parseAiResponse } from './parser';
 import { isAiRefusalOrApology } from '../../utils/text-sanitizer';
+import { isChromeExtensionRuntime, fetchViaExtensionBackground } from '../extension-bridge';
 
 export const DEFAULT_REASONING_EFFORTS = ['none', 'low', 'medium', 'high', 'max'];
 
@@ -147,6 +148,37 @@ export const fetchRemoteModels = async (baseUrl: string, apiKey: string): Promis
 
   // @ts-ignore
   const xhr = typeof GM_xmlhttpRequest !== 'undefined' ? GM_xmlhttpRequest : null;
+
+  if (!xhr && isChromeExtensionRuntime()) {
+    const extRes = await fetchViaExtensionBackground(endpoint, {
+      method: 'GET',
+      headers,
+      timeoutMs: 15000
+    });
+    if (extRes) {
+      if (extRes.ok) {
+        try {
+          const parsed = parseModelsFromJson(extRes.text);
+          if (parsed.ids.length > 0) {
+            store.updateConfig({
+              cachedModelList: parsed.ids,
+              cachedModelItems: parsed.items
+            });
+          }
+          return parsed.ids;
+        } catch (err) {
+          store.addLog(`解析模型列表失败: ${String(err)}`, 'error');
+          return [];
+        }
+      }
+      if (extRes.status > 0) {
+        store.addLog(`拉取模型列表失败 HTTP ${extRes.status}: ${extRes.text.slice(0, 100)}`, 'error');
+      } else {
+        store.addLog(`拉取模型列表失败 (扩展后台): ${extRes.error || '网络错误'}`, 'error');
+      }
+      return [];
+    }
+  }
 
   if (!xhr) {
     const controller = new AbortController();
@@ -412,6 +444,55 @@ export const queryAiAnswer = async (
     // @ts-ignore
     const xhr = typeof GM_xmlhttpRequest !== 'undefined' ? GM_xmlhttpRequest : null;
 
+    if (!xhr && isChromeExtensionRuntime()) {
+      const extRes = await fetchViaExtensionBackground(
+        endpoint,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${aiApiKey.trim()}`
+          },
+          body: bodyStr,
+          timeoutMs: 60000
+        },
+        signal
+      );
+      if (signal?.aborted) {
+        return { ok: false, status: 0, answers: [], rawContent: '', errText: '' };
+      }
+      if (extRes) {
+        if (extRes.ok) {
+          try {
+            const data = JSON.parse(extRes.text);
+            const extracted = extractAnswersFromData(data);
+            return {
+              ok: true,
+              status: extRes.status,
+              answers: extracted.answers,
+              rawContent: extracted.rawContent,
+              errText: ''
+            };
+          } catch (err) {
+            return {
+              ok: false,
+              status: extRes.status,
+              answers: [],
+              rawContent: '',
+              errText: `解析响应失败: ${String(err)}`
+            };
+          }
+        }
+        return {
+          ok: false,
+          status: extRes.status,
+          answers: [],
+          rawContent: '',
+          errText: extRes.error || extRes.text || ''
+        };
+      }
+    }
+
     if (!xhr) {
       const controller = new AbortController();
       const onExternalAbort = () => controller.abort();
@@ -605,6 +686,7 @@ export const queryAiAnswer = async (
   };
 
   const hasImages = Boolean(question.images && question.images.length > 0);
+  const isVisionOnlyStem = !question.title.trim() && hasImages;
   let forcePlainText = false;
 
   // Attempt 1: Full configured request
@@ -624,6 +706,13 @@ export const queryAiAnswer = async (
       firstRes.status === 400 ||
       firstRes.status === 422)
   ) {
+    if (isVisionOnlyStem) {
+      store.addLog(
+        '当前配置的 AI 模型不支持图片输入，无法识别封闭题干截图；请在【AI 设置】中切换支持视觉识图的多模态模型（如 Gemini / GPT-4o / Qwen-VL）！',
+        'error'
+      );
+      return [];
+    }
     store.addLog('检测到图片过大或当前模型不支持多模态识图，自动降级为纯文本重试', 'warning');
     forcePlainText = true;
     firstRes = await sendSingleRequest(buildPayload(true, undefined, forcePlainText));
@@ -634,9 +723,10 @@ export const queryAiAnswer = async (
   }
 
   // Attempt 2: Automatic fallback retry if Attempt 1 failed or returned empty
-  // 若包含图片且仍遭遇 413 或 400/422，立即强制纯文本
+  // 若包含图片且仍遭遇 413 或 400/422，立即强制纯文本（纯视觉题干绝不可剥离唯一题干图片）
   if (
     hasImages &&
+    !isVisionOnlyStem &&
     (firstRes.status === 413 ||
       firstRes.status === 400 ||
       firstRes.status === 422 ||
@@ -663,8 +753,8 @@ export const queryAiAnswer = async (
     );
   }
 
-  // Attempt 3: 终极保底重试（无论 Attempt 2 还是 Attempt 1，若带图或参数冲突失败，彻底强制纯文本 + 零 reasoning_effort）
-  const ultimateForcePlain = hasImages ? true : forcePlainText;
+  // Attempt 3: 终极保底重试（无论 Attempt 2 还是 Attempt 1，若带图或参数冲突失败，彻底强制纯文本 + 零 reasoning_effort；纯视觉题干仍保留图片）
+  const ultimateForcePlain = hasImages && !isVisionOnlyStem ? true : forcePlainText;
   const thirdRes = await sendSingleRequest(buildPayload(false, 'none', ultimateForcePlain));
   if (signal?.aborted) return [];
   if (thirdRes.ok && thirdRes.answers.length > 0) {

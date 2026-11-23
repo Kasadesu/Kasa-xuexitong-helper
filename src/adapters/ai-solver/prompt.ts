@@ -103,7 +103,13 @@ export const buildAiPrompt = (
       break;
   }
 
-  const userText = `${contextPrefix}题目：${stem.trim()}${formattedOptions}${userTail}`;
+  const trimmedStem = stem.trim();
+  const stemBlock = trimmedStem
+    ? trimmedStem
+    : images && images.length > 0
+      ? '（题干文字位于附图中，请仔细阅读附图中的完整题干内容，再结合下方选项列表作答）'
+      : '';
+  const userText = `${contextPrefix}题目：${stemBlock}${formattedOptions}${userTail}`;
 
   const userContent: string | ContentPart[] =
     images && images.length > 0

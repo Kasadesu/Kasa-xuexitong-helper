@@ -47,6 +47,34 @@ const DEFAULT_CONFIG: AppConfig = {
 
 type Listener = () => void;
 
+const sanitizeConfig = (parsed: any): AppConfig => {
+  const provider: AppConfig['aiProvider'] =
+    parsed?.aiProvider === 'deepseek' || parsed?.aiProvider === 'custom'
+      ? parsed.aiProvider
+      : 'custom';
+  return {
+    ...DEFAULT_CONFIG,
+    ...parsed,
+    aiProvider: provider
+  };
+};
+
+const getChromeStorageLocal = (): any => {
+  try {
+    // @ts-ignore
+    if (typeof GM_getValue === 'function') return null;
+    const chromeApi = (globalThis as any)?.chrome;
+    if (
+      chromeApi?.storage?.local &&
+      typeof chromeApi.storage.local.get === 'function' &&
+      typeof chromeApi.storage.local.set === 'function'
+    ) {
+      return chromeApi.storage.local;
+    }
+  } catch {}
+  return null;
+};
+
 class Store {
   public config: AppConfig;
   public logs: LogItem[] = [];
@@ -63,9 +91,11 @@ class Store {
     status: 'idle'
   };
   private listeners: Set<Listener> = new Set();
+  private configDirty = false;
 
   constructor() {
     this.config = this.loadConfig();
+    this.hydrateChromeStorage();
   }
 
   public setQuizRunning(running: boolean) {
@@ -87,18 +117,30 @@ class Store {
     }
   }
 
-  private loadConfig(): AppConfig {
-    const sanitizeConfig = (parsed: any): AppConfig => {
-      const provider: AppConfig['aiProvider'] = (parsed.aiProvider === 'deepseek' || parsed.aiProvider === 'custom')
-        ? parsed.aiProvider
-        : 'custom';
-      return {
-        ...DEFAULT_CONFIG,
-        ...parsed,
-        aiProvider: provider
-      };
-    };
+  private hydrateChromeStorage() {
+    const storageLocal = getChromeStorageLocal();
+    if (!storageLocal) return;
+    try {
+      storageLocal.get([STORAGE_KEY], (result: any) => {
+        try {
+          if ((globalThis as any)?.chrome?.runtime?.lastError) return;
+          if (this.configDirty) return;
+          const raw = result?.[STORAGE_KEY];
+          if (!raw) return;
+          const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+          if (parsed && typeof parsed === 'object') {
+            this.config = sanitizeConfig(parsed);
+            if (typeof localStorage !== 'undefined') {
+              localStorage.setItem(STORAGE_KEY, JSON.stringify(this.config));
+            }
+            this.notify();
+          }
+        } catch {}
+      });
+    } catch {}
+  }
 
+  private loadConfig(): AppConfig {
     const keysToTry = [STORAGE_KEY, ...LEGACY_STORAGE_KEYS];
     try {
       // @ts-ignore
@@ -174,10 +216,13 @@ class Store {
   }
 
   public reloadConfig() {
+    this.configDirty = false;
     this.config = this.loadConfig();
+    this.hydrateChromeStorage();
   }
 
   public saveConfig() {
+    this.configDirty = true;
     try {
       const serialized = JSON.stringify(this.config);
       // @ts-ignore
@@ -187,6 +232,12 @@ class Store {
       }
       if (typeof localStorage !== 'undefined') {
         localStorage.setItem(STORAGE_KEY, serialized);
+      }
+      const storageLocal = getChromeStorageLocal();
+      if (storageLocal) {
+        storageLocal.set({ [STORAGE_KEY]: serialized }, () => {
+          void (globalThis as any)?.chrome?.runtime?.lastError;
+        });
       }
     } catch (e) {
       console.warn('[KasaStore] Failed to save config', e);
