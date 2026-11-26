@@ -7,6 +7,60 @@ import { isChromeExtensionRuntime, fetchViaExtensionBackground } from '../extens
 
 export const DEFAULT_REASONING_EFFORTS = ['none', 'low', 'medium', 'high', 'max'];
 
+export type AiQueryFailureKind =
+  | 'none'
+  | 'network'
+  | 'timeout'
+  | 'api'
+  | 'no_key'
+  | 'aborted'
+  | 'vision_unsupported';
+
+let lastAiQueryFailure: { kind: AiQueryFailureKind; message: string } = {
+  kind: 'none',
+  message: ''
+};
+
+export const getLastAiQueryFailure = (): { kind: AiQueryFailureKind; message: string } => ({
+  ...lastAiQueryFailure
+});
+
+export const clearLastAiQueryFailure = (): void => {
+  lastAiQueryFailure = { kind: 'none', message: '' };
+};
+
+export const formatRequestError = (err: any): string => {
+  if (err == null) {
+    return typeof navigator !== 'undefined' && navigator.onLine === false
+      ? '浏览器当前处于离线状态（无网络连接）'
+      : '无法连接到 AI 接口（网络中断或目标不可达）';
+  }
+  if (typeof err === 'string') {
+    const trimmed = err.trim();
+    return trimmed && trimmed !== '[object Object]' ? trimmed : '网络连接失败';
+  }
+  if (err instanceof Error) {
+    return (err.message || err.name || '网络连接失败').trim();
+  }
+  if (typeof err === 'object') {
+    const candidates = [err.error, err.statusText, err.message, err.reason]
+      .map((v) => (typeof v === 'string' ? v.trim() : ''))
+      .filter((v) => v && v !== '[object Object]');
+    if (candidates.length > 0) {
+      return candidates[0];
+    }
+    if (typeof err.status === 'number' && err.status > 0) {
+      return `HTTP ${err.status}`;
+    }
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      return '浏览器当前处于离线状态（无网络连接）';
+    }
+    return '无法连接到 AI 接口（网络中断、DNS 失败或目标地址不可达）';
+  }
+  const str = String(err).trim();
+  return str && str !== '[object Object]' ? str : '网络连接失败';
+};
+
 /**
  * Parses raw JSON from /models endpoint, preserving full metadata for each model.
  */
@@ -209,7 +263,7 @@ export const fetchRemoteModels = async (baseUrl: string, apiKey: string): Promis
       if (err?.name === 'AbortError') {
         store.addLog('拉取模型列表超时（15秒）', 'error');
       } else {
-        store.addLog(`拉取模型列表失败 (fetch): ${String(err)}`, 'error');
+        store.addLog(`拉取模型列表失败 (fetch): ${formatRequestError(err)}`, 'error');
       }
       return [];
     } finally {
@@ -251,7 +305,7 @@ export const fetchRemoteModels = async (baseUrl: string, apiKey: string): Promis
           }
         },
         onerror: (err: any) => {
-          store.addLog(`拉取模型列表失败，网络错误: ${String(err)}`, 'error');
+          store.addLog(`拉取模型列表失败，网络错误: ${formatRequestError(err)}`, 'error');
           safeResolve([]);
         },
         ontimeout: () => {
@@ -348,7 +402,10 @@ export const queryAiAnswer = async (
   paperContext?: string,
   signal?: AbortSignal
 ): Promise<string[]> => {
+  clearLastAiQueryFailure();
+
   if (signal?.aborted) {
+    lastAiQueryFailure = { kind: 'aborted', message: '' };
     return [];
   }
   if (!store.config.aiApiKey.trim()) {
@@ -357,7 +414,15 @@ export const queryAiAnswer = async (
   const { aiApiKey, aiBaseUrl, aiModel, reasoningEffort } = store.config;
 
   if (!aiApiKey.trim()) {
+    lastAiQueryFailure = { kind: 'no_key', message: '未配置 AI API Key' };
     store.addLog('未配置 AI API Key，请点击面板右上角齿轮填入后答题', 'warning');
+    return [];
+  }
+
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    const offlineMsg = '浏览器当前处于离线状态（无网络连接）';
+    lastAiQueryFailure = { kind: 'network', message: offlineMsg };
+    store.addLog(`AI 请求失败: ${offlineMsg}`, 'error');
     return [];
   }
 
@@ -434,6 +499,8 @@ export const queryAiAnswer = async (
     answers: string[];
     rawContent: string;
     errText: string;
+    isNetworkError?: boolean;
+    isTimeout?: boolean;
   }
 
   const sendSingleRequest = async (bodyStr: string): Promise<SingleReqResult> => {
@@ -479,16 +546,21 @@ export const queryAiAnswer = async (
               status: extRes.status,
               answers: [],
               rawContent: '',
-              errText: `解析响应失败: ${String(err)}`
+              errText: `解析响应失败: ${formatRequestError(err)}`
             };
           }
         }
+        const errMsg = extRes.error || extRes.text || '';
+        const isTimeout = extRes.status === 0 && /超时|timeout|abort/i.test(errMsg);
+        const isNetworkError = extRes.status === 0 && !isTimeout;
         return {
           ok: false,
           status: extRes.status,
           answers: [],
           rawContent: '',
-          errText: extRes.error || extRes.text || ''
+          errText: errMsg,
+          isNetworkError,
+          isTimeout
         };
       }
     }
@@ -531,8 +603,17 @@ export const queryAiAnswer = async (
         if (signal?.aborted) {
           return { ok: false, status: 0, answers: [], rawContent: '', errText: '' };
         }
-        const errMsg = err?.name === 'AbortError' ? 'AI 请求超时（60秒）' : String(err);
-        return { ok: false, status: 0, answers: [], rawContent: '', errText: errMsg };
+        if (err?.name === 'AbortError') {
+          return { ok: false, status: 0, answers: [], rawContent: '', errText: 'AI 请求超时（60秒）', isTimeout: true };
+        }
+        return {
+          ok: false,
+          status: 0,
+          answers: [],
+          rawContent: '',
+          errText: `网络错误: ${formatRequestError(err)}`,
+          isNetworkError: true
+        };
       } finally {
         window.clearTimeout(timer);
         signal?.removeEventListener('abort', onExternalAbort);
@@ -543,7 +624,14 @@ export const queryAiAnswer = async (
       signal,
       hardTimeoutMs: 65000,
       onAbortResult: () => ({ ok: false, status: 0, answers: [], rawContent: '', errText: '' }),
-      onTimeoutResult: () => ({ ok: false, status: 0, answers: [], rawContent: '', errText: 'AI 请求硬超时（65秒）' }),
+      onTimeoutResult: () => ({
+        ok: false,
+        status: 0,
+        answers: [],
+        rawContent: '',
+        errText: 'AI 请求硬超时（65秒）',
+        isTimeout: true
+      }),
       execute: (safeResolve, setReq) => {
         const req = xhr({
           url: endpoint,
@@ -584,7 +672,7 @@ export const queryAiAnswer = async (
                 status: res.status || 0,
                 answers: [],
                 rawContent: '',
-                errText: `解析响应失败: ${String(err)}`
+                errText: `解析响应失败: ${formatRequestError(err)}`
               });
             }
           },
@@ -592,13 +680,27 @@ export const queryAiAnswer = async (
             if (signal?.aborted) {
               return safeResolve({ ok: false, status: 0, answers: [], rawContent: '', errText: '' });
             }
-            safeResolve({ ok: false, status: 0, answers: [], rawContent: '', errText: `网络错误: ${String(err)}` });
+            safeResolve({
+              ok: false,
+              status: 0,
+              answers: [],
+              rawContent: '',
+              errText: `网络错误: ${formatRequestError(err)}`,
+              isNetworkError: true
+            });
           },
           ontimeout: () => {
             if (signal?.aborted) {
               return safeResolve({ ok: false, status: 0, answers: [], rawContent: '', errText: '' });
             }
-            safeResolve({ ok: false, status: 0, answers: [], rawContent: '', errText: 'AI 请求超时（60秒）' });
+            safeResolve({
+              ok: false,
+              status: 0,
+              answers: [],
+              rawContent: '',
+              errText: 'AI 请求超时（60秒）',
+              isTimeout: true
+            });
           },
           onabort: () => {
             safeResolve({ ok: false, status: 0, answers: [], rawContent: '', errText: '' });
@@ -707,6 +809,7 @@ export const queryAiAnswer = async (
       firstRes.status === 422)
   ) {
     if (isVisionOnlyStem) {
+      lastAiQueryFailure = { kind: 'vision_unsupported', message: '当前模型不支持图片输入' };
       store.addLog(
         '当前配置的 AI 模型不支持图片输入，无法识别封闭题干截图；请在【AI 设置】中切换支持视觉识图的多模态模型（如 Gemini / GPT-4o / Qwen-VL）！',
         'error'
@@ -722,52 +825,83 @@ export const queryAiAnswer = async (
     }
   }
 
-  // Attempt 2: Automatic fallback retry if Attempt 1 failed or returned empty
-  // 若包含图片且仍遭遇 413 或 400/422，立即强制纯文本（纯视觉题干绝不可剥离唯一题干图片）
-  if (
-    hasImages &&
-    !isVisionOnlyStem &&
-    (firstRes.status === 413 ||
-      firstRes.status === 400 ||
-      firstRes.status === 422 ||
-      isMultimodalError(firstRes.status, firstRes.errText))
-  ) {
-    forcePlainText = true;
+  let secondRes: SingleReqResult | null = null;
+  let thirdRes: SingleReqResult | null = null;
+
+  const isOfflineNow = typeof navigator !== 'undefined' && navigator.onLine === false;
+  if (!(firstRes.isNetworkError && isOfflineNow)) {
+    // Attempt 2: Automatic fallback retry if Attempt 1 failed or returned empty
+    // 若包含图片且仍遭遇 413 或 400/422，立即强制纯文本（纯视觉题干绝不可剥离唯一题干图片）
+    if (
+      hasImages &&
+      !isVisionOnlyStem &&
+      (firstRes.status === 413 ||
+        firstRes.status === 400 ||
+        firstRes.status === 422 ||
+        isMultimodalError(firstRes.status, firstRes.errText))
+    ) {
+      forcePlainText = true;
+    }
+
+    const isParamError = firstRes.status === 400 || firstRes.status === 422 || firstRes.status === 413;
+    const hasEffort = Boolean(reasoningEffort && reasoningEffort !== 'none');
+    const secondIncludeEffort = isParamError && hasEffort ? reasoningEffort === 'max' : !isParamError;
+    const secondFallbackEffort =
+      isParamError && hasEffort && reasoningEffort === 'max' ? 'high' : undefined;
+    const retryBody = buildPayload(secondIncludeEffort, secondFallbackEffort, forcePlainText);
+
+    secondRes = await sendSingleRequest(retryBody);
+    if (signal?.aborted) {
+      lastAiQueryFailure = { kind: 'aborted', message: '' };
+      return [];
+    }
+    if (secondRes.ok && secondRes.answers.length > 0) {
+      return await recheckMultipleChoiceIfSingle(
+        secondRes,
+        forcePlainText,
+        secondIncludeEffort,
+        secondFallbackEffort ?? reasoningEffort
+      );
+    }
+
+    // Attempt 3: 终极保底重试（无论 Attempt 2 还是 Attempt 1，若带图或参数冲突失败，彻底强制纯文本 + 零 reasoning_effort；纯视觉题干仍保留图片）
+    const ultimateForcePlain = hasImages && !isVisionOnlyStem ? true : forcePlainText;
+    thirdRes = await sendSingleRequest(buildPayload(false, 'none', ultimateForcePlain));
+    if (signal?.aborted) {
+      lastAiQueryFailure = { kind: 'aborted', message: '' };
+      return [];
+    }
+    if (thirdRes.ok && thirdRes.answers.length > 0) {
+      return await recheckMultipleChoiceIfSingle(thirdRes, ultimateForcePlain, false, 'none');
+    }
   }
 
-  const isParamError = firstRes.status === 400 || firstRes.status === 422 || firstRes.status === 413;
-  const hasEffort = Boolean(reasoningEffort && reasoningEffort !== 'none');
-  const secondIncludeEffort = isParamError && hasEffort ? reasoningEffort === 'max' : !isParamError;
-  const secondFallbackEffort =
-    isParamError && hasEffort && reasoningEffort === 'max' ? 'high' : undefined;
-  const retryBody = buildPayload(secondIncludeEffort, secondFallbackEffort, forcePlainText);
-
-  let secondRes = await sendSingleRequest(retryBody);
-  if (signal?.aborted) return [];
-  if (secondRes.ok && secondRes.answers.length > 0) {
-    return await recheckMultipleChoiceIfSingle(
-      secondRes,
-      forcePlainText,
-      secondIncludeEffort,
-      secondFallbackEffort ?? reasoningEffort
-    );
+  if (signal?.aborted) {
+    lastAiQueryFailure = { kind: 'aborted', message: '' };
+    return [];
   }
 
-  // Attempt 3: 终极保底重试（无论 Attempt 2 还是 Attempt 1，若带图或参数冲突失败，彻底强制纯文本 + 零 reasoning_effort；纯视觉题干仍保留图片）
-  const ultimateForcePlain = hasImages && !isVisionOnlyStem ? true : forcePlainText;
-  const thirdRes = await sendSingleRequest(buildPayload(false, 'none', ultimateForcePlain));
-  if (signal?.aborted) return [];
-  if (thirdRes.ok && thirdRes.answers.length > 0) {
-    return await recheckMultipleChoiceIfSingle(thirdRes, ultimateForcePlain, false, 'none');
-  }
+  const finalErr = thirdRes?.errText || secondRes?.errText || firstRes.errText;
+  const finalStatus = thirdRes?.status || secondRes?.status || firstRes.status;
+  const anyTimeout = Boolean(thirdRes?.isTimeout || secondRes?.isTimeout || firstRes.isTimeout);
+  const anyNetworkErr = Boolean(
+    thirdRes?.isNetworkError || secondRes?.isNetworkError || firstRes.isNetworkError
+  );
 
-  if (signal?.aborted) return [];
-
-  const finalErr = thirdRes.errText || secondRes.errText || firstRes.errText;
-  const finalStatus = thirdRes.status || secondRes.status || firstRes.status;
   if (finalStatus > 0) {
-    store.addLog(`AI 接口返回错误 HTTP ${finalStatus}: ${finalErr.slice(0, 100)}`, 'error');
+    const apiErrMsg = `HTTP ${finalStatus}: ${finalErr.slice(0, 100)}`;
+    lastAiQueryFailure = { kind: 'api', message: apiErrMsg };
+    store.addLog(`AI 接口返回错误 ${apiErrMsg}`, 'error');
+  } else if (anyTimeout) {
+    const timeoutMsg = finalErr || 'AI 请求超时';
+    lastAiQueryFailure = { kind: 'timeout', message: timeoutMsg };
+    store.addLog(`AI 请求失败: ${timeoutMsg.slice(0, 100)}`, 'error');
+  } else if (anyNetworkErr) {
+    const netMsg = finalErr || '网络连接失败';
+    lastAiQueryFailure = { kind: 'network', message: netMsg };
+    store.addLog(`AI 请求失败: ${netMsg.slice(0, 100)}`, 'error');
   } else if (finalErr) {
+    lastAiQueryFailure = { kind: 'api', message: finalErr };
     store.addLog(`AI 请求失败: ${finalErr.slice(0, 100)}`, 'error');
   }
 

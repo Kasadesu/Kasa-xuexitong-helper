@@ -120,7 +120,9 @@ import {
   fetchRemoteModels,
   detectModelReasoningCapability,
   getModelSupportedReasoningEfforts,
-  queryAiAnswer
+  queryAiAnswer,
+  formatRequestError,
+  getLastAiQueryFailure
 } from '../src/adapters/ai-solver/client';
 import { store } from '../src/store';
 import { isFinishedTask, isInternalChildOfTask } from '../src/core/iframe';
@@ -4482,8 +4484,10 @@ C 是温迪（风神巴巴托斯）
         await doQuizTask(null, mockDoc, { signal: new AbortController().signal, isCurrent: () => true });
 
         assert.equal(page, 3);
-        assert.equal(submitClicks, 0, '含缺图拒答或保底猜选后绝不可触发自动提交');
+        assert.equal(submitClicks, 0, '含缺图拒答或未匹配题后绝不可触发自动提交');
         assert.equal(saveClicks, 1, '取消自动提交后必须转为点击暂存');
+        assert.equal(p2.optStates[0]._getClickCount(), 0, '未精准匹配选项时绝不可盲选 A');
+        assert.equal(p2.optStates[1]._getClickCount(), 0, '未精准匹配选项时必须保持空白');
         assert.equal(p3.optStates[1]._getClickCount(), 1, '命中 .active/.selected 后绝不可二次点击反选取消');
         assert.equal(p3.optStates[1]._isActive(), true, '选项 B 必须维持选中态');
         assert.equal(answertypeHidden.value, '1', 'answertype12345 绝不可被误改');
@@ -8844,6 +8848,280 @@ C 是温迪（风神巴巴托斯）
         store.config.aiModel = prevModel;
         store.config.aiBaseUrl = prevBaseUrl;
         store.config.autoSubmitWork = prevAutoSubmit;
+        store.acknowledgeAllErrors();
+      }
+    });
+
+    it('25.14 断网自动暂停续答 + 禁用保底题库/盲选 A + 错误对象格式化 + 红色告警自动关闭自动提交并同步设置勾选框', async () => {
+      const prevXhr = (globalThis as any).GM_xmlhttpRequest;
+      const prevSession = (globalThis as any).sessionStorage;
+      const prevKey = store.config.aiApiKey;
+      const prevAutoSubmit = store.config.autoSubmitWork;
+      const prevProgress = { ...store.progress };
+      const navObj = (globalThis as any).navigator;
+      const prevOnLineDesc = navObj ? Object.getOwnPropertyDescriptor(navObj, 'onLine') : undefined;
+
+      const sMap = new Map<string, string>();
+      (globalThis as any).sessionStorage = {
+        getItem: (k: string) => sMap.get(k) ?? null,
+        setItem: (k: string, v: string) => sMap.set(k, String(v)),
+        removeItem: (k: string) => sMap.delete(k),
+        clear: () => sMap.clear()
+      };
+
+      const makeRadioTimu = (id: string, title: string, opts: string[]) => {
+        let selectedIdx = -1;
+        const clickCounts = opts.map(() => 0);
+        const optEls = opts.map((txt, idx) => {
+          const letter = String.fromCharCode(65 + idx);
+          const inputEl = {
+            type: 'radio',
+            get checked() {
+              return selectedIdx === idx;
+            },
+            set checked(v: boolean) {
+              if (v) selectedIdx = idx;
+            },
+            dispatchEvent: () => true
+          };
+          const el: any = {
+            innerText: `${letter}. ${txt}`,
+            textContent: `${letter}. ${txt}`,
+            getAttribute: () => null,
+            setAttribute: () => {},
+            contains: () => false,
+            scrollIntoView: () => {},
+            classList: {
+              contains: (c: string) => selectedIdx === idx && (c === 'check_answer' || c === 'cur' || c === 'active'),
+              add: () => {},
+              remove: () => {}
+            },
+            click: () => {
+              clickCounts[idx]++;
+              selectedIdx = idx;
+            },
+            querySelector: (sel: string) => {
+              if (sel.includes('input[type="radio"]')) return inputEl;
+              if (sel.includes('num_option')) {
+                return {
+                  getAttribute: () => letter,
+                  innerText: letter,
+                  textContent: letter,
+                  classList: { contains: () => false, add: () => {}, remove: () => {} }
+                };
+              }
+              return null;
+            },
+            _getClickCount: () => clickCounts[idx]
+          };
+          return el;
+        });
+
+        const timu: any = {
+          style: {},
+          getAttribute: (k: string) => (k === 'data-id' ? id : null),
+          closest: () => null,
+          contains: () => false,
+          cloneNode: function() { return this; },
+          querySelector: (sel: string) => {
+            if (sel.includes('mark_name') || sel.includes('Zy_TItle')) {
+              return { innerText: title, textContent: title };
+            }
+            if (sel.includes(':checked') || sel.includes('.check_answer')) {
+              return selectedIdx >= 0 ? optEls[selectedIdx] : null;
+            }
+            if (sel.includes('input') || sel.includes('li')) return optEls[0];
+            return null;
+          },
+          querySelectorAll: (sel: string) => {
+            if (sel === 'ul.Zy_ulTop, ul.Zy_ulBottom, ul.options, ul.mark_letter, .stem_answer') return [{}];
+            if (sel.includes('li')) return optEls;
+            return [];
+          }
+        };
+
+        return { timu, optEls, getSelectedIdx: () => selectedIdx };
+      };
+
+      try {
+        // 1. 错误对象格式化绝不产生 [object Object]
+        assert.equal(
+          formatRequestError({ error: 'net::ERR_INTERNET_DISCONNECTED', statusText: '' }),
+          'net::ERR_INTERNET_DISCONNECTED'
+        );
+        const emptyObjMsg = formatRequestError({});
+        assert.ok(emptyObjMsg.length > 0 && !emptyObjMsg.includes('[object Object]'));
+        assert.equal(formatRequestError(new Error('Failed to fetch')), 'Failed to fetch');
+
+        // 2. 联网第 1 题成功，第 3 题触发 GM_xmlhttpRequest 网络异常 -> 自动暂停、不启保底 [B, 原神]、不盲选、自动关自动提交
+        store.acknowledgeAllErrors();
+        store.logs = [];
+        store.config.aiApiKey = 'sk-network-test';
+        store.config.autoSubmitWork = true;
+        store.updateProgress({ status: 'playing', currentTime: '作答中', percent: 0 });
+
+        const q1 = makeRadioTimu('chem-q1', '1. (单选题) 第一题测试', ['选项甲', '选项乙']);
+        const q2 = makeRadioTimu('chem-q2', '3. (单选题) 海绵中发现的C25-呋喃萜类化合物可分为两类', ['线形和无环', '环状和倍半萜']);
+        let submitClicks = 0;
+        let saveClicks = 0;
+
+        const mockDoc: any = {
+          defaultView: {
+            addEventListener: () => {},
+            removeEventListener: () => {},
+            getComputedStyle: () => ({ display: 'block', visibility: 'visible' })
+          },
+          querySelector: (sel: string) => {
+            if (sel.includes('.questionLi') || sel.includes('.TiMu')) return q1.timu;
+            if (sel.includes('btnSubmit') || sel.includes('#submitBtn')) return { click: () => { submitClicks++; } };
+            if (sel.includes('btnSave') || sel.includes('#saveBtn')) return { click: () => { saveClicks++; } };
+            return null;
+          },
+          querySelectorAll: (sel: string) => {
+            if (sel.includes('.questionLi') || sel.includes('.TiMu')) return [q1.timu, q2.timu];
+            return [];
+          }
+        };
+
+        let aiCalls = 0;
+        let simulateOnlineRecovery = false;
+        (globalThis as any).GM_xmlhttpRequest = (opts: any) => {
+          aiCalls++;
+          const msgs = JSON.parse(opts.data).messages;
+          const userPromptTxt = JSON.stringify(msgs[msgs.length - 1] ?? msgs);
+          setTimeout(() => {
+            if (userPromptTxt.includes('题目：海绵中发现')) {
+              if (!simulateOnlineRecovery) {
+                opts.onerror({ error: 'net::ERR_NAME_NOT_RESOLVED', statusText: '' });
+              } else {
+                opts.onload({
+                  status: 200,
+                  responseText: JSON.stringify({ choices: [{ message: { content: '["B"]' } }] })
+                });
+              }
+            } else {
+              opts.onload({
+                status: 200,
+                responseText: JSON.stringify({ choices: [{ message: { content: '["A"]' } }] })
+              });
+            }
+          }, 5);
+        };
+
+        await doQuizTask(null, mockDoc, { signal: new AbortController().signal, isCurrent: () => true });
+
+        assert.equal(q1.getSelectedIdx(), 0, '第 1 题应成功选中 A');
+        assert.equal(q2.getSelectedIdx(), -1, '断网时后续题目绝不可启保底或盲选，必须保留空白');
+        assert.equal(q2.optEls[0]._getClickCount(), 0);
+        assert.equal(q2.optEls[1]._getClickCount(), 0);
+        assert.equal(submitClicks, 0, '网络暂停时绝不可提交');
+        assert.equal(saveClicks, 0, '网络暂停时绝不可点击暂存收尾');
+        assert.equal(store.progress.status, 'paused', '网络异常必须立即切换为 paused');
+        assert.equal(store.progress.currentTime, '网络异常已暂停');
+        assert.equal(getLastAiQueryFailure().kind, 'network');
+        assert.equal(getExamAutoResumeState(), null);
+        assert.equal(store.config.autoSubmitWork, false, '出现红色告警后必须自动关闭答完自动提交');
+
+        const allLogText = store.logs.map((l) => l.message).join('\n');
+        assert.ok(!allLogText.includes('保底题库'), '正式答题严禁启用保底题库');
+        assert.ok(!allLogText.includes('原神'), '正式答题严禁出现保底题库残留选项');
+        assert.ok(!allLogText.includes('[object Object]'), '错误日志严禁出现 [object Object]');
+        assert.ok(allLogText.includes('net::ERR_NAME_NOT_RESOLVED'), '应输出格式化后的真实网络错误');
+        assert.ok(
+          store.pinnedErrors.some((e) => e.message.includes('已自动关闭【答完自动提交】开关')),
+          '必须在置顶红色告警明确提醒用户已关闭自动提交'
+        );
+
+        // 3. 恢复网络后点击继续答题（再次调用 doQuizTask），自动跳过已答的第 1 题，只请求并完成第 2 题
+        simulateOnlineRecovery = true;
+        const callsBeforeResume = aiCalls;
+        await doQuizTask(null, mockDoc, { signal: new AbortController().signal, isCurrent: () => true });
+
+        assert.equal(aiCalls - callsBeforeResume, 1, '恢复网络继续答题时应自动跳过已作答的第 1 题');
+        assert.equal(q2.getSelectedIdx(), 1, '恢复后第 2 题应正常选中 B');
+        assert.equal(store.progress.status, 'finished');
+        assert.equal(submitClicks, 0, '先前红色告警已永久关闭自动提交，恢复答完后仅暂存不自动提交');
+        assert.equal(saveClicks, 1);
+
+        // 4. 离线快速失败测试 (navigator.onLine === false)
+        if (navObj) {
+          Object.defineProperty(navObj, 'onLine', { configurable: true, get: () => false });
+          const offlineQ = makeRadioTimu('offline-q1', '1. (单选题) 离线快速拦截测试', ['选项1', '选项2']);
+          const offlineDoc: any = {
+            ...mockDoc,
+            querySelector: (sel: string) =>
+              sel.includes('.questionLi') || sel.includes('.TiMu') ? offlineQ.timu : null,
+            querySelectorAll: (sel: string) =>
+              sel.includes('.questionLi') || sel.includes('.TiMu') ? [offlineQ.timu] : []
+          };
+          const callsBeforeOffline = aiCalls;
+          await doQuizTask(null, offlineDoc, { signal: new AbortController().signal, isCurrent: () => true });
+          assert.equal(aiCalls, callsBeforeOffline, '浏览器离线时应零网络请求立即快速暂停');
+          assert.equal(offlineQ.getSelectedIdx(), -1);
+          assert.equal(store.progress.status, 'paused');
+          if (prevOnLineDesc) {
+            Object.defineProperty(navObj, 'onLine', prevOnLineDesc);
+          } else {
+            delete navObj.onLine;
+          }
+        }
+
+        // 5. HTTP 200 但未匹配选项 -> 保留空白、取消自动提交，绝不误判为断网暂停
+        submitClicks = 0;
+        saveClicks = 0;
+        store.config.autoSubmitWork = true;
+        const unmatchQ = makeRadioTimu('unmatch-q1', '1. (单选题) 无法匹配选项测试', ['北京', '上海']);
+        const unmatchDoc: any = {
+          ...mockDoc,
+          querySelectorAll: (sel: string) =>
+            sel.includes('.questionLi') || sel.includes('.TiMu') ? [unmatchQ.timu] : []
+        };
+        (globalThis as any).GM_xmlhttpRequest = (opts: any) => {
+          setTimeout(() => {
+            opts.onload({
+              status: 200,
+              responseText: JSON.stringify({ choices: [{ message: { content: '["不存在选项XYZ"]' } }] })
+            });
+          }, 5);
+        };
+        await doQuizTask(null, unmatchDoc, { signal: new AbortController().signal, isCurrent: () => true });
+        assert.equal(unmatchQ.getSelectedIdx(), -1, '无匹配选项时绝不盲选 A');
+        assert.equal(store.progress.status, 'finished', 'HTTP 200 未匹配选项仅保留空白，不触发断网暂停');
+        assert.equal(submitClicks, 0);
+        assert.equal(saveClicks, 1);
+
+        // 6. FloatingCard 设置页 #cfg-auto-submit 同步取消勾选验证
+        const { FloatingCard } = await import('../src/ui/floating-card');
+        const card = new FloatingCard();
+        store.config.autoSubmitWork = true;
+        store.config.panelMinimized = false;
+        (card as any).renderedMinimized = false;
+        (card as any).currentTab = 'setting';
+        const mockAutoSubmitCheckbox = { checked: true };
+        (card as any).shadow = {
+          querySelector: (sel: string) => {
+            if (sel === '#cfg-auto-submit') return mockAutoSubmitCheckbox;
+            return null;
+          }
+        };
+        store.addLog('触发页面红色异常告警', 'error');
+        (card as any).onStoreUpdate();
+        assert.equal(store.config.autoSubmitWork, false);
+        assert.equal(mockAutoSubmitCheckbox.checked, false, '设置页自动提交开关复选框必须同步取消勾选');
+      } finally {
+        clearExamAutoResumeState();
+        if (navObj) {
+          if (prevOnLineDesc) {
+            Object.defineProperty(navObj, 'onLine', prevOnLineDesc);
+          } else {
+            delete navObj.onLine;
+          }
+        }
+        (globalThis as any).GM_xmlhttpRequest = prevXhr;
+        (globalThis as any).sessionStorage = prevSession;
+        store.config.aiApiKey = prevKey;
+        store.config.autoSubmitWork = prevAutoSubmit;
+        store.updateProgress(prevProgress);
         store.acknowledgeAllErrors();
       }
     });

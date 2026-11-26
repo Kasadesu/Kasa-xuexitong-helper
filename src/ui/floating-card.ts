@@ -228,6 +228,13 @@ export class FloatingCard extends HTMLElement {
         logListContainer.innerHTML = this.getLogListHtml();
       }
     }
+
+    if (this.currentTab === 'setting') {
+      const autoSubmitCheckbox = this.shadow.querySelector('#cfg-auto-submit') as HTMLInputElement | null;
+      if (autoSubmitCheckbox && autoSubmitCheckbox.checked !== Boolean(store.config.autoSubmitWork)) {
+        autoSubmitCheckbox.checked = Boolean(store.config.autoSubmitWork);
+      }
+    }
   }
 
   private formatProgressTime(currentTime?: string, duration?: string): string {

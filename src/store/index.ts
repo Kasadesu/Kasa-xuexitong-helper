@@ -221,7 +221,7 @@ class Store {
     this.hydrateChromeStorage();
   }
 
-  public saveConfig() {
+  private persistConfig() {
     this.configDirty = true;
     try {
       const serialized = JSON.stringify(this.config);
@@ -242,12 +242,40 @@ class Store {
     } catch (e) {
       console.warn('[KasaStore] Failed to save config', e);
     }
+  }
+
+  public saveConfig() {
+    this.persistConfig();
     this.notify();
   }
 
   public updateConfig(partial: Partial<AppConfig>) {
     Object.assign(this.config, partial);
     this.saveConfig();
+  }
+
+  private appendPinnedError(id: string, time: string, message: string) {
+    const trimmedMsg = message.trim();
+    if (!trimmedMsg) return;
+    const existingIndex = this.pinnedErrors.findIndex((p) => p.message.trim() === trimmedMsg);
+    if (existingIndex !== -1) {
+      const existing = this.pinnedErrors.splice(existingIndex, 1)[0];
+      existing.time = time;
+      existing.message = message;
+      existing.count = (existing.count || 1) + 1;
+      this.pinnedErrors.unshift(existing);
+    } else {
+      this.pinnedErrors.unshift({
+        id,
+        time,
+        message,
+        level: 'error',
+        count: 1
+      });
+      if (this.pinnedErrors.length > 20) {
+        this.pinnedErrors.pop();
+      }
+    }
   }
 
   public addLog(message: string, level: LogLevel = 'info') {
@@ -267,24 +295,25 @@ class Store {
     if (level === 'error') {
       const trimmedMsg = message.trim();
       if (trimmedMsg) {
-        const existingIndex = this.pinnedErrors.findIndex((p) => p.message.trim() === trimmedMsg);
-        if (existingIndex !== -1) {
-          const existing = this.pinnedErrors.splice(existingIndex, 1)[0];
-          existing.time = time;
-          existing.message = message;
-          existing.count = (existing.count || 1) + 1;
-          this.pinnedErrors.unshift(existing);
-        } else {
-          this.pinnedErrors.unshift({
-            id: item.id,
+        this.appendPinnedError(item.id, time, message);
+
+        // 触发任何红色关键告警时，自动关闭并持久化【答完自动提交】开关，防止异常作答误交卷
+        if (this.config.autoSubmitWork) {
+          this.config.autoSubmitWork = false;
+          this.persistConfig();
+          const autoDisableMsg =
+            '检测到红色关键告警，已自动关闭【答完自动提交】开关（已转为仅暂存），请人工核对处理后按需在设置中重新开启！';
+          const noticeItem: LogItem = {
+            id: Math.random().toString(36).slice(2, 9),
             time,
-            message,
-            level: 'error',
-            count: 1
-          });
-          if (this.pinnedErrors.length > 20) {
-            this.pinnedErrors.pop();
+            message: autoDisableMsg,
+            level: 'error'
+          };
+          this.logs.unshift(noticeItem);
+          if (this.logs.length > 100) {
+            this.logs.pop();
           }
+          this.appendPinnedError(noticeItem.id, time, autoDisableMsg);
         }
       }
     }

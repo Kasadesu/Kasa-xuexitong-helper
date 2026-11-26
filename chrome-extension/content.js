@@ -201,7 +201,7 @@
 			this.config = this.loadConfig();
 			this.hydrateChromeStorage();
 		}
-		saveConfig() {
+		persistConfig() {
 			this.configDirty = true;
 			try {
 				const serialized = JSON.stringify(this.config);
@@ -214,11 +214,35 @@
 			} catch (e) {
 				console.warn("[KasaStore] Failed to save config", e);
 			}
+		}
+		saveConfig() {
+			this.persistConfig();
 			this.notify();
 		}
 		updateConfig(partial) {
 			Object.assign(this.config, partial);
 			this.saveConfig();
+		}
+		appendPinnedError(id, time, message) {
+			const trimmedMsg = message.trim();
+			if (!trimmedMsg) return;
+			const existingIndex = this.pinnedErrors.findIndex((p) => p.message.trim() === trimmedMsg);
+			if (existingIndex !== -1) {
+				const existing = this.pinnedErrors.splice(existingIndex, 1)[0];
+				existing.time = time;
+				existing.message = message;
+				existing.count = (existing.count || 1) + 1;
+				this.pinnedErrors.unshift(existing);
+			} else {
+				this.pinnedErrors.unshift({
+					id,
+					time,
+					message,
+					level: "error",
+					count: 1
+				});
+				if (this.pinnedErrors.length > 20) this.pinnedErrors.pop();
+			}
 		}
 		addLog(message, level = "info") {
 			const now = new Date();
@@ -232,24 +256,21 @@
 			this.logs.unshift(item);
 			if (this.logs.length > 100) this.logs.pop();
 			if (level === "error") {
-				const trimmedMsg = message.trim();
-				if (trimmedMsg) {
-					const existingIndex = this.pinnedErrors.findIndex((p) => p.message.trim() === trimmedMsg);
-					if (existingIndex !== -1) {
-						const existing = this.pinnedErrors.splice(existingIndex, 1)[0];
-						existing.time = time;
-						existing.message = message;
-						existing.count = (existing.count || 1) + 1;
-						this.pinnedErrors.unshift(existing);
-					} else {
-						this.pinnedErrors.unshift({
-							id: item.id,
+				if (message.trim()) {
+					this.appendPinnedError(item.id, time, message);
+					if (this.config.autoSubmitWork) {
+						this.config.autoSubmitWork = false;
+						this.persistConfig();
+						const autoDisableMsg = "检测到红色关键告警，已自动关闭【答完自动提交】开关（已转为仅暂存），请人工核对处理后按需在设置中重新开启！";
+						const noticeItem = {
+							id: Math.random().toString(36).slice(2, 9),
 							time,
-							message,
-							level: "error",
-							count: 1
-						});
-						if (this.pinnedErrors.length > 20) this.pinnedErrors.pop();
+							message: autoDisableMsg,
+							level: "error"
+						};
+						this.logs.unshift(noticeItem);
+						if (this.logs.length > 100) this.logs.pop();
+						this.appendPinnedError(noticeItem.id, time, autoDisableMsg);
 					}
 				}
 			}
@@ -1774,6 +1795,39 @@ input:checked + .toggle-slider:before {
 		"high",
 		"max"
 	];
+	var lastAiQueryFailure = {
+		kind: "none",
+		message: ""
+	};
+	var getLastAiQueryFailure = () => ({ ...lastAiQueryFailure });
+	var clearLastAiQueryFailure = () => {
+		lastAiQueryFailure = {
+			kind: "none",
+			message: ""
+		};
+	};
+	var formatRequestError = (err) => {
+		if (err == null) return typeof navigator !== "undefined" && navigator.onLine === false ? "浏览器当前处于离线状态（无网络连接）" : "无法连接到 AI 接口（网络中断或目标不可达）";
+		if (typeof err === "string") {
+			const trimmed = err.trim();
+			return trimmed && trimmed !== "[object Object]" ? trimmed : "网络连接失败";
+		}
+		if (err instanceof Error) return (err.message || err.name || "网络连接失败").trim();
+		if (typeof err === "object") {
+			const candidates = [
+				err.error,
+				err.statusText,
+				err.message,
+				err.reason
+			].map((v) => typeof v === "string" ? v.trim() : "").filter((v) => v && v !== "[object Object]");
+			if (candidates.length > 0) return candidates[0];
+			if (typeof err.status === "number" && err.status > 0) return `HTTP ${err.status}`;
+			if (typeof navigator !== "undefined" && navigator.onLine === false) return "浏览器当前处于离线状态（无网络连接）";
+			return "无法连接到 AI 接口（网络中断、DNS 失败或目标地址不可达）";
+		}
+		const str = String(err).trim();
+		return str && str !== "[object Object]" ? str : "网络连接失败";
+	};
 	var parseModelsFromJson = (raw) => {
 		try {
 			const data = typeof raw === "string" ? JSON.parse(raw) : raw;
@@ -1913,7 +1967,7 @@ input:checked + .toggle-slider:before {
 				}
 			} catch (err) {
 				if (err?.name === "AbortError") store.addLog("拉取模型列表超时（15秒）", "error");
-				else store.addLog(`拉取模型列表失败 (fetch): ${String(err)}`, "error");
+				else store.addLog(`拉取模型列表失败 (fetch): ${formatRequestError(err)}`, "error");
 				return [];
 			} finally {
 				window.clearTimeout(timer);
@@ -1951,7 +2005,7 @@ input:checked + .toggle-slider:before {
 						}
 					},
 					onerror: (err) => {
-						store.addLog(`拉取模型列表失败，网络错误: ${String(err)}`, "error");
+						store.addLog(`拉取模型列表失败，网络错误: ${formatRequestError(err)}`, "error");
 						safeResolve([]);
 					},
 					ontimeout: () => {
@@ -1984,11 +2038,31 @@ input:checked + .toggle-slider:before {
 		return "unsupported";
 	};
 	var queryAiAnswer = async (question, paperContext, signal) => {
-		if (signal?.aborted) return [];
+		clearLastAiQueryFailure();
+		if (signal?.aborted) {
+			lastAiQueryFailure = {
+				kind: "aborted",
+				message: ""
+			};
+			return [];
+		}
 		if (!store.config.aiApiKey.trim()) store.reloadConfig();
 		const { aiApiKey, aiBaseUrl, aiModel, reasoningEffort } = store.config;
 		if (!aiApiKey.trim()) {
+			lastAiQueryFailure = {
+				kind: "no_key",
+				message: "未配置 AI API Key"
+			};
 			store.addLog("未配置 AI API Key，请点击面板右上角齿轮填入后答题", "warning");
+			return [];
+		}
+		if (typeof navigator !== "undefined" && navigator.onLine === false) {
+			const offlineMsg = "浏览器当前处于离线状态（无网络连接）";
+			lastAiQueryFailure = {
+				kind: "network",
+				message: offlineMsg
+			};
+			store.addLog(`AI 请求失败: ${offlineMsg}`, "error");
 			return [];
 		}
 		let endpoint = aiBaseUrl.trim().replace(/\/+$/, "");
@@ -2082,15 +2156,20 @@ input:checked + .toggle-slider:before {
 							status: extRes.status,
 							answers: [],
 							rawContent: "",
-							errText: `解析响应失败: ${String(err)}`
+							errText: `解析响应失败: ${formatRequestError(err)}`
 						};
 					}
+					const errMsg = extRes.error || extRes.text || "";
+					const isTimeout = extRes.status === 0 && /超时|timeout|abort/i.test(errMsg);
+					const isNetworkError = extRes.status === 0 && !isTimeout;
 					return {
 						ok: false,
 						status: extRes.status,
 						answers: [],
 						rawContent: "",
-						errText: extRes.error || extRes.text || ""
+						errText: errMsg,
+						isNetworkError,
+						isTimeout
 					};
 				}
 			}
@@ -2144,12 +2223,21 @@ input:checked + .toggle-slider:before {
 						rawContent: "",
 						errText: ""
 					};
+					if (err?.name === "AbortError") return {
+						ok: false,
+						status: 0,
+						answers: [],
+						rawContent: "",
+						errText: "AI 请求超时（60秒）",
+						isTimeout: true
+					};
 					return {
 						ok: false,
 						status: 0,
 						answers: [],
 						rawContent: "",
-						errText: err?.name === "AbortError" ? "AI 请求超时（60秒）" : String(err)
+						errText: `网络错误: ${formatRequestError(err)}`,
+						isNetworkError: true
 					};
 				} finally {
 					window.clearTimeout(timer);
@@ -2171,7 +2259,8 @@ input:checked + .toggle-slider:before {
 					status: 0,
 					answers: [],
 					rawContent: "",
-					errText: "AI 请求硬超时（65秒）"
+					errText: "AI 请求硬超时（65秒）",
+					isTimeout: true
 				}),
 				execute: (safeResolve, setReq) => {
 					setReq(xhr({
@@ -2215,7 +2304,7 @@ input:checked + .toggle-slider:before {
 									status: res.status || 0,
 									answers: [],
 									rawContent: "",
-									errText: `解析响应失败: ${String(err)}`
+									errText: `解析响应失败: ${formatRequestError(err)}`
 								});
 							}
 						},
@@ -2232,7 +2321,8 @@ input:checked + .toggle-slider:before {
 								status: 0,
 								answers: [],
 								rawContent: "",
-								errText: `网络错误: ${String(err)}`
+								errText: `网络错误: ${formatRequestError(err)}`,
+								isNetworkError: true
 							});
 						},
 						ontimeout: () => {
@@ -2248,7 +2338,8 @@ input:checked + .toggle-slider:before {
 								status: 0,
 								answers: [],
 								rawContent: "",
-								errText: "AI 请求超时（60秒）"
+								errText: "AI 请求超时（60秒）",
+								isTimeout: true
 							});
 						},
 						onabort: () => {
@@ -2303,6 +2394,10 @@ input:checked + .toggle-slider:before {
 		if (firstRes.ok && firstRes.answers.length > 0) return await recheckMultipleChoiceIfSingle(firstRes, forcePlainText);
 		if (hasImages && !forcePlainText && (firstRes.status === 413 || isMultimodalError(firstRes.status, firstRes.errText) || firstRes.status === 400 || firstRes.status === 422)) {
 			if (isVisionOnlyStem) {
+				lastAiQueryFailure = {
+					kind: "vision_unsupported",
+					message: "当前模型不支持图片输入"
+				};
 				store.addLog("当前配置的 AI 模型不支持图片输入，无法识别封闭题干截图；请在【AI 设置】中切换支持视觉识图的多模态模型（如 Gemini / GPT-4o / Qwen-VL）！", "error");
 				return [];
 			}
@@ -2312,23 +2407,74 @@ input:checked + .toggle-slider:before {
 			if (signal?.aborted) return [];
 			if (firstRes.ok && firstRes.answers.length > 0) return await recheckMultipleChoiceIfSingle(firstRes, forcePlainText);
 		}
-		if (hasImages && !isVisionOnlyStem && (firstRes.status === 413 || firstRes.status === 400 || firstRes.status === 422 || isMultimodalError(firstRes.status, firstRes.errText))) forcePlainText = true;
-		const isParamError = firstRes.status === 400 || firstRes.status === 422 || firstRes.status === 413;
-		const hasEffort = Boolean(reasoningEffort && reasoningEffort !== "none");
-		const secondIncludeEffort = isParamError && hasEffort ? reasoningEffort === "max" : !isParamError;
-		const secondFallbackEffort = isParamError && hasEffort && reasoningEffort === "max" ? "high" : void 0;
-		let secondRes = await sendSingleRequest(buildPayload(secondIncludeEffort, secondFallbackEffort, forcePlainText));
-		if (signal?.aborted) return [];
-		if (secondRes.ok && secondRes.answers.length > 0) return await recheckMultipleChoiceIfSingle(secondRes, forcePlainText, secondIncludeEffort, secondFallbackEffort ?? reasoningEffort);
-		const ultimateForcePlain = hasImages && !isVisionOnlyStem ? true : forcePlainText;
-		const thirdRes = await sendSingleRequest(buildPayload(false, "none", ultimateForcePlain));
-		if (signal?.aborted) return [];
-		if (thirdRes.ok && thirdRes.answers.length > 0) return await recheckMultipleChoiceIfSingle(thirdRes, ultimateForcePlain, false, "none");
-		if (signal?.aborted) return [];
-		const finalErr = thirdRes.errText || secondRes.errText || firstRes.errText;
-		const finalStatus = thirdRes.status || secondRes.status || firstRes.status;
-		if (finalStatus > 0) store.addLog(`AI 接口返回错误 HTTP ${finalStatus}: ${finalErr.slice(0, 100)}`, "error");
-		else if (finalErr) store.addLog(`AI 请求失败: ${finalErr.slice(0, 100)}`, "error");
+		let secondRes = null;
+		let thirdRes = null;
+		const isOfflineNow = typeof navigator !== "undefined" && navigator.onLine === false;
+		if (!(firstRes.isNetworkError && isOfflineNow)) {
+			if (hasImages && !isVisionOnlyStem && (firstRes.status === 413 || firstRes.status === 400 || firstRes.status === 422 || isMultimodalError(firstRes.status, firstRes.errText))) forcePlainText = true;
+			const isParamError = firstRes.status === 400 || firstRes.status === 422 || firstRes.status === 413;
+			const hasEffort = Boolean(reasoningEffort && reasoningEffort !== "none");
+			const secondIncludeEffort = isParamError && hasEffort ? reasoningEffort === "max" : !isParamError;
+			const secondFallbackEffort = isParamError && hasEffort && reasoningEffort === "max" ? "high" : void 0;
+			secondRes = await sendSingleRequest(buildPayload(secondIncludeEffort, secondFallbackEffort, forcePlainText));
+			if (signal?.aborted) {
+				lastAiQueryFailure = {
+					kind: "aborted",
+					message: ""
+				};
+				return [];
+			}
+			if (secondRes.ok && secondRes.answers.length > 0) return await recheckMultipleChoiceIfSingle(secondRes, forcePlainText, secondIncludeEffort, secondFallbackEffort ?? reasoningEffort);
+			const ultimateForcePlain = hasImages && !isVisionOnlyStem ? true : forcePlainText;
+			thirdRes = await sendSingleRequest(buildPayload(false, "none", ultimateForcePlain));
+			if (signal?.aborted) {
+				lastAiQueryFailure = {
+					kind: "aborted",
+					message: ""
+				};
+				return [];
+			}
+			if (thirdRes.ok && thirdRes.answers.length > 0) return await recheckMultipleChoiceIfSingle(thirdRes, ultimateForcePlain, false, "none");
+		}
+		if (signal?.aborted) {
+			lastAiQueryFailure = {
+				kind: "aborted",
+				message: ""
+			};
+			return [];
+		}
+		const finalErr = thirdRes?.errText || secondRes?.errText || firstRes.errText;
+		const finalStatus = thirdRes?.status || secondRes?.status || firstRes.status;
+		const anyTimeout = Boolean(thirdRes?.isTimeout || secondRes?.isTimeout || firstRes.isTimeout);
+		const anyNetworkErr = Boolean(thirdRes?.isNetworkError || secondRes?.isNetworkError || firstRes.isNetworkError);
+		if (finalStatus > 0) {
+			const apiErrMsg = `HTTP ${finalStatus}: ${finalErr.slice(0, 100)}`;
+			lastAiQueryFailure = {
+				kind: "api",
+				message: apiErrMsg
+			};
+			store.addLog(`AI 接口返回错误 ${apiErrMsg}`, "error");
+		} else if (anyTimeout) {
+			const timeoutMsg = finalErr || "AI 请求超时";
+			lastAiQueryFailure = {
+				kind: "timeout",
+				message: timeoutMsg
+			};
+			store.addLog(`AI 请求失败: ${timeoutMsg.slice(0, 100)}`, "error");
+		} else if (anyNetworkErr) {
+			const netMsg = finalErr || "网络连接失败";
+			lastAiQueryFailure = {
+				kind: "network",
+				message: netMsg
+			};
+			store.addLog(`AI 请求失败: ${netMsg.slice(0, 100)}`, "error");
+		} else if (finalErr) {
+			lastAiQueryFailure = {
+				kind: "api",
+				message: finalErr
+			};
+			store.addLog(`AI 请求失败: ${finalErr.slice(0, 100)}`, "error");
+		}
 		return [];
 	};
 	var FloatingCard = class extends HTMLElement {
@@ -2521,6 +2667,10 @@ input:checked + .toggle-slider:before {
 					this.lastRenderedLogKey = currentLogKey;
 					logListContainer.innerHTML = this.getLogListHtml();
 				}
+			}
+			if (this.currentTab === "setting") {
+				const autoSubmitCheckbox = this.shadow.querySelector("#cfg-auto-submit");
+				if (autoSubmitCheckbox && autoSubmitCheckbox.checked !== Boolean(store.config.autoSubmitWork)) autoSubmitCheckbox.checked = Boolean(store.config.autoSubmitWork);
 			}
 		}
 		formatProgressTime(currentTime, duration) {
@@ -26860,12 +27010,14 @@ input:checked + .toggle-slider:before {
 		const initialResumeOffset = resumeState?.solvedCount || 0;
 		let cumulativeSeenCount = initialResumeOffset;
 		const questionList = [];
+		const initialAutoSubmitWork = store.config.autoSubmitWork;
 		let cancelAutoSubmit = Boolean(resumeState?.cancelAutoSubmit);
 		const seenPageSignatures = new Set([...Array.isArray(resumeState?.recentSigs) ? resumeState.recentSigs : [], ...resumeState?.lastPageSig ? [resumeState.lastPageSig] : []].filter(Boolean));
 		const MAX_PAGE_TURNS = 200;
 		let pageTurnCount = resumeState?.pageTurnCount ?? 0;
 		let isFirstResumedIteration = Boolean(resumeState?.active);
 		let stoppedOnStuckPagination = false;
+		let pausedDueToNetwork = false;
 		const targetWin = quizDoc.defaultView || (typeof window !== "undefined" ? window : {});
 		while (isCurrent() && !signal.aborted) {
 			try {
@@ -27066,15 +27218,25 @@ input:checked + .toggle-slider:before {
 				const imgTag = images.length > 0 ? `（含 ${images.length} 张图片）` : "";
 				const displayStem = cleanTitle ? `"${cleanTitle.slice(0, 24)}..."` : "[附图题干识别]";
 				store.addLog(`${questionLabel} [${qType}]: ${displayStem} ${imgTag}正在查询答案`, "info");
+				clearLastAiQueryFailure();
 				let answers = await queryAiAnswer(questionObj, paperContext, signal);
 				if (!isCurrent() || signal.aborted) return;
-				if (!answers || answers.length === 0) {
-					answers = matchFallbackAnswer(cleanTitle, optionsTextList, displayIndex);
-					if (answers.length > 0) {
-						store.addLog(`${shortLabel}启用保底题库匹配: [${answers.join(", ")}]`, "success");
-						if (store.config.aiApiKey.trim()) cancelAutoSubmit = true;
-					} else cancelAutoSubmit = true;
+				const aiFailure = getLastAiQueryFailure();
+				if ((!answers || answers.length === 0) && (aiFailure.kind === "network" || aiFailure.kind === "timeout")) {
+					questionObj.answer = [];
+					questionObj.status = "failed";
+					store.setQuestions([...questionList]);
+					cancelAutoSubmit = true;
+					pausedDueToNetwork = true;
+					clearExamAutoResumeState();
+					store.addLog(`${shortLabel}因网络异常（${aiFailure.message || "网络连接失败"}）未能获取 AI 答案，已自动暂停答题；恢复网络后点击【继续答题】即可从本题继续！`, "error");
+					store.updateProgress({
+						status: "paused",
+						currentTime: "网络异常已暂停"
+					});
+					break;
 				}
+				if (!answers || answers.length === 0) cancelAutoSubmit = true;
 				if (questionObj.images && questionObj.images.length > 0 && answers.some((ans) => /无法(?:唯一)?确定答案|没有(?:给出|提供).*?(?:结构式|图片)/.test(ans))) {
 					cancelAutoSubmit = true;
 					store.addLog(`${shortLabel}模型提示无法完整识别图片内容，请在交卷前重点人工核对该题！`, "error");
@@ -27085,80 +27247,82 @@ input:checked + .toggle-slider:before {
 				if (parsedOptions.length > 0) {
 					const matchedOptions = selectBestOptions(parsedOptions, answers, qType);
 					if (matchedOptions.length === 0) {
-						matchedOptions.push(parsedOptions[0]);
+						questionObj.status = "failed";
+						store.setQuestions([...questionList]);
 						cancelAutoSubmit = true;
-						store.addLog(`${shortLabel}未找到精准答案匹配，保底选择第 1 项 [${parsedOptions[0].letter}]`, "warning");
-					}
-					const selectedLetters = matchedOptions.map((o) => o.letter || "A");
-					store.addLog(`${shortLabel} AI 给出: [${answers.join(", ")}] -> 匹配选中: [${selectedLetters.join(", ")}]`, "info");
-					const quizWin = quizDoc.defaultView;
-					const isOptionSelected = (el) => {
-						if (el.classList.contains("check_answer") || el.classList.contains("check_answer_dx") || el.classList.contains("cur") || el.classList.contains("active") || el.classList.contains("selected") || el.classList.contains("is-checked") || el.getAttribute("aria-checked") === "true") return true;
-						return !!el.querySelector(".check_answer, .check_answer_dx, .active, .selected, .is-checked, .el-radio.is-checked, .el-checkbox.is-checked, input[type=\"radio\"]:checked, input[type=\"checkbox\"]:checked");
-					};
-					for (const optItem of matchedOptions) {
-						if (!isCurrent() || signal.aborted) return;
-						const target = optItem.clickableEl;
-						try {
-							optItem.el.scrollIntoView({
-								behavior: "smooth",
-								block: "center"
-							});
-						} catch {}
-						const isElementUiOption = optItem.el.classList?.contains("el-radio") || optItem.el.classList?.contains("el-checkbox") || !!optItem.el.querySelector?.(".el-radio, .el-checkbox") || optItem.el.classList?.contains("nodeLab") || optItem.el.classList?.contains("topic-item") || !!optItem.el.querySelector?.(".nodeLab");
-						if (!isOptionSelected(optItem.el)) {
-							if (isElementUiOption) {
-								const primaryClickTarget = optItem.el.matches?.("label.el-radio, label.el-checkbox, .el-radio, .el-checkbox, .nodeLab, .topic-item") || typeof optItem.el.matches !== "function" ? optItem.el : optItem.el.querySelector("label.el-radio, label.el-checkbox, .el-radio, .el-checkbox, .nodeLab, .el-radio__input, .el-checkbox__input") || optItem.el;
-								primaryClickTarget.click();
-								await sleep(50, signal);
-								if (!isCurrent() || signal.aborted) return;
-								if (!isOptionSelected(optItem.el) && target !== primaryClickTarget) {
-									target.click();
+						store.addLog(`${shortLabel}未能匹配到有效选项（AI 返回: [${answers.join(", ") || "空"}]），已保留空白不盲选，请人工核对！`, "error");
+					} else {
+						const selectedLetters = matchedOptions.map((o) => o.letter || "A");
+						store.addLog(`${shortLabel} AI 给出: [${answers.join(", ")}] -> 匹配选中: [${selectedLetters.join(", ")}]`, "info");
+						const quizWin = quizDoc.defaultView;
+						const isOptionSelected = (el) => {
+							if (el.classList.contains("check_answer") || el.classList.contains("check_answer_dx") || el.classList.contains("cur") || el.classList.contains("active") || el.classList.contains("selected") || el.classList.contains("is-checked") || el.getAttribute("aria-checked") === "true") return true;
+							return !!el.querySelector(".check_answer, .check_answer_dx, .active, .selected, .is-checked, .el-radio.is-checked, .el-checkbox.is-checked, input[type=\"radio\"]:checked, input[type=\"checkbox\"]:checked");
+						};
+						for (const optItem of matchedOptions) {
+							if (!isCurrent() || signal.aborted) return;
+							const target = optItem.clickableEl;
+							try {
+								optItem.el.scrollIntoView({
+									behavior: "smooth",
+									block: "center"
+								});
+							} catch {}
+							const isElementUiOption = optItem.el.classList?.contains("el-radio") || optItem.el.classList?.contains("el-checkbox") || !!optItem.el.querySelector?.(".el-radio, .el-checkbox") || optItem.el.classList?.contains("nodeLab") || optItem.el.classList?.contains("topic-item") || !!optItem.el.querySelector?.(".nodeLab");
+							if (!isOptionSelected(optItem.el)) {
+								if (isElementUiOption) {
+									const primaryClickTarget = optItem.el.matches?.("label.el-radio, label.el-checkbox, .el-radio, .el-checkbox, .nodeLab, .topic-item") || typeof optItem.el.matches !== "function" ? optItem.el : optItem.el.querySelector("label.el-radio, label.el-checkbox, .el-radio, .el-checkbox, .nodeLab, .el-radio__input, .el-checkbox__input") || optItem.el;
+									primaryClickTarget.click();
 									await sleep(50, signal);
 									if (!isCurrent() || signal.aborted) return;
-								}
-							} else {
-								optItem.el.click();
-								await Promise.resolve();
-								if (!isOptionSelected(optItem.el) && target !== optItem.el) {
-									target.click();
+									if (!isOptionSelected(optItem.el) && target !== primaryClickTarget) {
+										target.click();
+										await sleep(50, signal);
+										if (!isCurrent() || signal.aborted) return;
+									}
+								} else {
+									optItem.el.click();
 									await Promise.resolve();
+									if (!isOptionSelected(optItem.el) && target !== optItem.el) {
+										target.click();
+										await Promise.resolve();
+									}
 								}
 							}
+							if (!isOptionSelected(optItem.el) && typeof quizWin?.addChoice === "function") try {
+								quizWin.addChoice(optItem.el);
+							} catch {}
+							if (!isElementUiOption || !isOptionSelected(optItem.el)) {
+								const input = optItem.el.querySelector("input[type=\"radio\"], input[type=\"checkbox\"]");
+								if (input && !input.checked) {
+									input.checked = true;
+									input.dispatchEvent(new Event("change", { bubbles: true }));
+								}
+							}
+							const numOption = optItem.el.querySelector(".num_option, .num_option_dx");
+							if (numOption) numOption.classList.add(qType === "multiple" ? "check_answer_dx" : "check_answer");
+							optItem.el.setAttribute("aria-checked", "true");
+							await sleep(Math.random() * 400 + 400, signal);
 						}
-						if (!isOptionSelected(optItem.el) && typeof quizWin?.addChoice === "function") try {
-							quizWin.addChoice(optItem.el);
-						} catch {}
-						if (!isElementUiOption || !isOptionSelected(optItem.el)) {
-							const input = optItem.el.querySelector("input[type=\"radio\"], input[type=\"checkbox\"]");
-							if (input && !input.checked) {
-								input.checked = true;
-								input.dispatchEvent(new Event("change", { bubbles: true }));
+						const qid = timuEl.getAttribute("data-id") || timuEl.getAttribute("data") || timuEl.getAttribute("qid") || matchedOptions[0]?.el.getAttribute("qid") || timuEl.querySelector("input[name^=\"answer\"]:not([name^=\"answertype\"])")?.name?.replace(/^answer/, "");
+						if (qid) {
+							const hiddenInput = quizDoc.querySelector(`input[type="hidden"]#answer${qid}, input[type="hidden"][name="answer${qid}"]`) || quizDoc.querySelector(`input#answer${qid}:not([type="radio"]):not([type="checkbox"]), input[name="answer${qid}"]:not([type="radio"]):not([type="checkbox"])`);
+							if (hiddenInput && !hiddenInput.value) {
+								if (qType === "judge") {
+									const firstOpt = matchedOptions[0];
+									hiddenInput.value = firstOpt.dataValue && /^(true|false)$/i.test(firstOpt.dataValue) ? firstOpt.dataValue.toLowerCase() : firstOpt.letter === "A" ? "true" : "false";
+								} else hiddenInput.value = selectedLetters.join("");
+								hiddenInput.dispatchEvent(new Event("change", { bubbles: true }));
 							}
 						}
-						const numOption = optItem.el.querySelector(".num_option, .num_option_dx");
-						if (numOption) numOption.classList.add(qType === "multiple" ? "check_answer_dx" : "check_answer");
-						optItem.el.setAttribute("aria-checked", "true");
-						await sleep(Math.random() * 400 + 400, signal);
+						store.addLog(`${questionLabel}作答完成：已选 [${selectedLetters.join(", ")}]`, "success");
 					}
-					const qid = timuEl.getAttribute("data-id") || timuEl.getAttribute("data") || timuEl.getAttribute("qid") || matchedOptions[0]?.el.getAttribute("qid") || timuEl.querySelector("input[name^=\"answer\"]:not([name^=\"answertype\"])")?.name?.replace(/^answer/, "");
-					if (qid) {
-						const hiddenInput = quizDoc.querySelector(`input[type="hidden"]#answer${qid}, input[type="hidden"][name="answer${qid}"]`) || quizDoc.querySelector(`input#answer${qid}:not([type="radio"]):not([type="checkbox"]), input[name="answer${qid}"]:not([type="radio"]):not([type="checkbox"])`);
-						if (hiddenInput && !hiddenInput.value) {
-							if (qType === "judge") {
-								const firstOpt = matchedOptions[0];
-								hiddenInput.value = firstOpt.dataValue && /^(true|false)$/i.test(firstOpt.dataValue) ? firstOpt.dataValue.toLowerCase() : firstOpt.letter === "A" ? "true" : "false";
-							} else hiddenInput.value = selectedLetters.join("");
-							hiddenInput.dispatchEvent(new Event("change", { bubbles: true }));
-						}
-					}
-					store.addLog(`${questionLabel}作答完成：已选 [${selectedLetters.join(", ")}]`, "success");
 				} else if (answers.some((ans) => isAiRefusalOrApology(ans))) {
 					questionObj.status = "failed";
 					store.setQuestions([...questionList]);
 					cancelAutoSubmit = true;
 					store.addLog(`${shortLabel} AI 反映缺少关键图片或数据，已放弃自动填入并保留空白，请人工核对！`, "error");
-					if (store.config.autoSubmitWork) store.addLog(`检测到${shortLabel}未成功获得有效作答，为防学业事故，已自动取消自动提交，请人工复核后手动提交！`, "error");
+					if (store.config.autoSubmitWork || initialAutoSubmitWork) store.addLog(`检测到${shortLabel}未成功获得有效作答，为防学业事故，已自动取消自动提交，请人工复核后手动提交！`, "error");
 				} else {
 					const textInputs = Array.from(timuEl.querySelectorAll("textarea.answerText, textarea, input.answerInput, input.newAnswerInput, input[type=\"text\"], .el-textarea__inner, .el-input__inner")).filter((input) => {
 						if (input.type === "hidden") return false;
@@ -27239,6 +27403,7 @@ input:checked + .toggle-slider:before {
 				await sleep(1500, signal);
 			}
 			if (!isCurrent() || signal.aborted) return;
+			if (pausedDueToNetwork) break;
 			const nextBtn = findNextQuestionBtn(quizDoc);
 			if (!nextBtn) {
 				clearExamAutoResumeState();
@@ -27313,6 +27478,7 @@ input:checked + .toggle-slider:before {
 			break;
 		}
 		if (!isCurrent() || signal.aborted) return;
+		if (pausedDueToNetwork) return;
 		if (stoppedOnStuckPagination) {
 			store.updateProgress({
 				status: "paused",
@@ -27395,7 +27561,7 @@ input:checked + .toggle-slider:before {
 				} catch {}
 			}
 		} else {
-			if (autoSubmitWork && cancelAutoSubmit) store.addLog("因存在未成功有效作答的题目，为防学业事故已自动取消自动提交，转为暂存模式，请人工复核后手动提交！", "error");
+			if ((autoSubmitWork || initialAutoSubmitWork) && cancelAutoSubmit) store.addLog("因存在未成功有效作答的题目，为防学业事故已自动取消自动提交，转为暂存模式，请人工复核后手动提交！", "error");
 			else store.addLog("当前为自动暂存模式，正在定位暂存按钮", "info");
 			if (typeof targetWin?.noSubmit === "function") try {
 				targetWin.noSubmit();

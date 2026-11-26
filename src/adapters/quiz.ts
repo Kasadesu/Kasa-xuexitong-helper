@@ -2,7 +2,7 @@ import { store } from '../store';
 import { IframeContext, Question, QuestionType, QuestionSubType } from '../types';
 import { waitIframeLoaded, isFinishedTask } from '../core/iframe';
 import { sleep } from '../core/lifecycle';
-import { queryAiAnswer } from './ai-solver/client';
+import { queryAiAnswer, getLastAiQueryFailure, clearLastAiQueryFailure } from './ai-solver/client';
 import { cleanRichTextAnswer, formatToUEditorParagraphs, isAiRefusalOrApology } from '../utils/text-sanitizer';
 import {
   decodeChaoxingFont,
@@ -1851,6 +1851,7 @@ export async function doQuizTask(
   const initialResumeOffset = resumeState?.solvedCount || 0;
   let cumulativeSeenCount = initialResumeOffset;
   const questionList: Question[] = [];
+  const initialAutoSubmitWork = store.config.autoSubmitWork;
   let cancelAutoSubmit = Boolean(resumeState?.cancelAutoSubmit);
   const seenPageSignatures = new Set<string>(
     [
@@ -1862,6 +1863,7 @@ export async function doQuizTask(
   let pageTurnCount = resumeState?.pageTurnCount ?? 0;
   let isFirstResumedIteration = Boolean(resumeState?.active);
   let stoppedOnStuckPagination = false;
+  let pausedDueToNetwork = false;
   const targetWin = (quizDoc.defaultView as any) || (typeof window !== 'undefined' ? window : {});
 
   while (isCurrent() && !signal.aborted) {
@@ -2194,20 +2196,31 @@ export async function doQuizTask(
       );
 
       // 4. Query AI answer with paper context and abort signal
+      clearLastAiQueryFailure();
       let answers = await queryAiAnswer(questionObj, paperContext, signal);
       if (!isCurrent() || signal.aborted) return;
 
-      // Built-in test course / offline fallback with index-based font obfuscation defense
+      const aiFailure = getLastAiQueryFailure();
+      if ((!answers || answers.length === 0) && (aiFailure.kind === 'network' || aiFailure.kind === 'timeout')) {
+        questionObj.answer = [];
+        questionObj.status = 'failed';
+        store.setQuestions([...questionList]);
+        cancelAutoSubmit = true;
+        pausedDueToNetwork = true;
+        clearExamAutoResumeState();
+        store.addLog(
+          `${shortLabel}因网络异常（${aiFailure.message || '网络连接失败'}）未能获取 AI 答案，已自动暂停答题；恢复网络后点击【继续答题】即可从本题继续！`,
+          'error'
+        );
+        store.updateProgress({
+          status: 'paused',
+          currentTime: '网络异常已暂停'
+        });
+        break;
+      }
+
       if (!answers || answers.length === 0) {
-        answers = matchFallbackAnswer(cleanTitle, optionsTextList, displayIndex);
-        if (answers.length > 0) {
-          store.addLog(`${shortLabel}启用保底题库匹配: [${answers.join(', ')}]`, 'success');
-          if (store.config.aiApiKey.trim()) {
-            cancelAutoSubmit = true;
-          }
-        } else {
-          cancelAutoSubmit = true;
-        }
+        cancelAutoSubmit = true;
       }
 
       // 兜底提示：若题目含图片但模型回答明确提示缺少图片或无法识别结构式
@@ -2231,148 +2244,151 @@ export async function doQuizTask(
       if (parsedOptions.length > 0) {
         const matchedOptions = selectBestOptions(parsedOptions, answers, qType);
 
-        // Final fallback: if no option matched, select the first option to prevent getting stuck
         if (matchedOptions.length === 0) {
-          matchedOptions.push(parsedOptions[0]);
+          questionObj.status = 'failed';
+          store.setQuestions([...questionList]);
           cancelAutoSubmit = true;
-          store.addLog(`${shortLabel}未找到精准答案匹配，保底选择第 1 项 [${parsedOptions[0].letter}]`, 'warning');
-        }
-
-        const selectedLetters = matchedOptions.map((o) => o.letter || 'A');
-        store.addLog(
-          `${shortLabel} AI 给出: [${answers.join(', ')}] -> 匹配选中: [${selectedLetters.join(', ')}]`,
-          'info'
-        );
-
-        // Execute clean, non-toggling clicks with human jitter
-        const quizWin = quizDoc.defaultView as any;
-        const isOptionSelected = (el: HTMLElement): boolean => {
-          if (
-            el.classList.contains('check_answer') ||
-            el.classList.contains('check_answer_dx') ||
-            el.classList.contains('cur') ||
-            el.classList.contains('active') ||
-            el.classList.contains('selected') ||
-            el.classList.contains('is-checked') ||
-            el.getAttribute('aria-checked') === 'true'
-          ) {
-            return true;
-          }
-          return !!el.querySelector(
-            '.check_answer, .check_answer_dx, .active, .selected, .is-checked, .el-radio.is-checked, .el-checkbox.is-checked, input[type="radio"]:checked, input[type="checkbox"]:checked'
+          store.addLog(
+            `${shortLabel}未能匹配到有效选项（AI 返回: [${answers.join(', ') || '空'}]），已保留空白不盲选，请人工核对！`,
+            'error'
           );
-        };
+        } else {
+          const selectedLetters = matchedOptions.map((o) => o.letter || 'A');
+          store.addLog(
+            `${shortLabel} AI 给出: [${answers.join(', ')}] -> 匹配选中: [${selectedLetters.join(', ')}]`,
+            'info'
+          );
 
-        for (const optItem of matchedOptions) {
-          if (!isCurrent() || signal.aborted) return;
+          // Execute clean, non-toggling clicks with human jitter
+          const quizWin = quizDoc.defaultView as any;
+          const isOptionSelected = (el: HTMLElement): boolean => {
+            if (
+              el.classList.contains('check_answer') ||
+              el.classList.contains('check_answer_dx') ||
+              el.classList.contains('cur') ||
+              el.classList.contains('active') ||
+              el.classList.contains('selected') ||
+              el.classList.contains('is-checked') ||
+              el.getAttribute('aria-checked') === 'true'
+            ) {
+              return true;
+            }
+            return !!el.querySelector(
+              '.check_answer, .check_answer_dx, .active, .selected, .is-checked, .el-radio.is-checked, .el-checkbox.is-checked, input[type="radio"]:checked, input[type="checkbox"]:checked'
+            );
+          };
 
-          const target = optItem.clickableEl;
-          try {
-            optItem.el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          } catch {}
+          for (const optItem of matchedOptions) {
+            if (!isCurrent() || signal.aborted) return;
 
-          const isElementUiOption =
-            optItem.el.classList?.contains('el-radio') ||
-            optItem.el.classList?.contains('el-checkbox') ||
-            !!optItem.el.querySelector?.('.el-radio, .el-checkbox') ||
-            optItem.el.classList?.contains('nodeLab') ||
-            optItem.el.classList?.contains('topic-item') ||
-            !!optItem.el.querySelector?.('.nodeLab');
+            const target = optItem.clickableEl;
+            try {
+              optItem.el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            } catch {}
 
-          // Avoid redundant clicks that could toggle off a checkbox or Vue v-model option
-          if (!isOptionSelected(optItem.el)) {
-            if (isElementUiOption) {
-              const primaryClickTarget =
-                optItem.el.matches?.('label.el-radio, label.el-checkbox, .el-radio, .el-checkbox, .nodeLab, .topic-item') ||
-                typeof optItem.el.matches !== 'function'
-                  ? optItem.el
-                  : optItem.el.querySelector<HTMLElement>(
-                      'label.el-radio, label.el-checkbox, .el-radio, .el-checkbox, .nodeLab, .el-radio__input, .el-checkbox__input'
-                    ) || optItem.el;
+            const isElementUiOption =
+              optItem.el.classList?.contains('el-radio') ||
+              optItem.el.classList?.contains('el-checkbox') ||
+              !!optItem.el.querySelector?.('.el-radio, .el-checkbox') ||
+              optItem.el.classList?.contains('nodeLab') ||
+              optItem.el.classList?.contains('topic-item') ||
+              !!optItem.el.querySelector?.('.nodeLab');
 
-              primaryClickTarget.click();
-              await sleep(50, signal);
-              if (!isCurrent() || signal.aborted) return;
+            // Avoid redundant clicks that could toggle off a checkbox or Vue v-model option
+            if (!isOptionSelected(optItem.el)) {
+              if (isElementUiOption) {
+                const primaryClickTarget =
+                  optItem.el.matches?.('label.el-radio, label.el-checkbox, .el-radio, .el-checkbox, .nodeLab, .topic-item') ||
+                  typeof optItem.el.matches !== 'function'
+                    ? optItem.el
+                    : optItem.el.querySelector<HTMLElement>(
+                        'label.el-radio, label.el-checkbox, .el-radio, .el-checkbox, .nodeLab, .el-radio__input, .el-checkbox__input'
+                      ) || optItem.el;
 
-              if (!isOptionSelected(optItem.el) && target !== primaryClickTarget) {
-                target.click();
+                primaryClickTarget.click();
                 await sleep(50, signal);
                 if (!isCurrent() || signal.aborted) return;
-              }
-            } else {
-              optItem.el.click();
-              await Promise.resolve();
-              if (!isOptionSelected(optItem.el) && target !== optItem.el) {
-                target.click();
+
+                if (!isOptionSelected(optItem.el) && target !== primaryClickTarget) {
+                  target.click();
+                  await sleep(50, signal);
+                  if (!isCurrent() || signal.aborted) return;
+                }
+              } else {
+                optItem.el.click();
                 await Promise.resolve();
+                if (!isOptionSelected(optItem.el) && target !== optItem.el) {
+                  target.click();
+                  await Promise.resolve();
+                }
               }
             }
+
+            if (!isOptionSelected(optItem.el) && typeof quizWin?.addChoice === 'function') {
+              try {
+                quizWin.addChoice(optItem.el);
+              } catch {}
+            }
+
+            if (!isElementUiOption || !isOptionSelected(optItem.el)) {
+              const input = optItem.el.querySelector<HTMLInputElement>('input[type="radio"], input[type="checkbox"]');
+              if (input && !input.checked) {
+                input.checked = true;
+                input.dispatchEvent(new Event('change', { bubbles: true }));
+              }
+            }
+
+            // Direct DOM enhancement: mark check_answer
+            const numOption = optItem.el.querySelector('.num_option, .num_option_dx');
+            if (numOption) {
+              numOption.classList.add(qType === 'multiple' ? 'check_answer_dx' : 'check_answer');
+            }
+            optItem.el.setAttribute('aria-checked', 'true');
+
+            // Random jitter delay: 400ms ~ 800ms
+            const delay = Math.random() * 400 + 400;
+            await sleep(delay, signal);
           }
 
-          if (!isOptionSelected(optItem.el) && typeof quizWin?.addChoice === 'function') {
-            try {
-              quizWin.addChoice(optItem.el);
-            } catch {}
-          }
-
-          if (!isElementUiOption || !isOptionSelected(optItem.el)) {
-            const input = optItem.el.querySelector<HTMLInputElement>('input[type="radio"], input[type="checkbox"]');
-            if (input && !input.checked) {
-              input.checked = true;
-              input.dispatchEvent(new Event('change', { bubbles: true }));
+          // Sync hidden answer input ONLY if ChaoXing's native click handler did not already populate it
+          const qid =
+            timuEl.getAttribute('data-id') ||
+            timuEl.getAttribute('data') ||
+            timuEl.getAttribute('qid') ||
+            matchedOptions[0]?.el.getAttribute('qid') ||
+            timuEl
+              .querySelector<HTMLInputElement>('input[name^="answer"]:not([name^="answertype"])')
+              ?.name?.replace(/^answer/, '');
+          if (qid) {
+            const hiddenInput =
+              quizDoc.querySelector<HTMLInputElement>(
+                `input[type="hidden"]#answer${qid}, input[type="hidden"][name="answer${qid}"]`
+              ) ||
+              quizDoc.querySelector<HTMLInputElement>(
+                `input#answer${qid}:not([type="radio"]):not([type="checkbox"]), input[name="answer${qid}"]:not([type="radio"]):not([type="checkbox"])`
+              );
+            if (hiddenInput && !hiddenInput.value) {
+              if (qType === 'judge') {
+                const firstOpt = matchedOptions[0];
+                hiddenInput.value =
+                  firstOpt.dataValue && /^(true|false)$/i.test(firstOpt.dataValue)
+                    ? firstOpt.dataValue.toLowerCase()
+                    : firstOpt.letter === 'A'
+                      ? 'true'
+                      : 'false';
+              } else {
+                hiddenInput.value = selectedLetters.join('');
+              }
+              hiddenInput.dispatchEvent(new Event('change', { bubbles: true }));
             }
           }
 
-          // Direct DOM enhancement: mark check_answer
-          const numOption = optItem.el.querySelector('.num_option, .num_option_dx');
-          if (numOption) {
-            numOption.classList.add(qType === 'multiple' ? 'check_answer_dx' : 'check_answer');
-          }
-          optItem.el.setAttribute('aria-checked', 'true');
-
-          // Random jitter delay: 400ms ~ 800ms
-          const delay = Math.random() * 400 + 400;
-          await sleep(delay, signal);
+          // Step completion log with explicit feedback
+          store.addLog(
+            `${questionLabel}作答完成：已选 [${selectedLetters.join(', ')}]`,
+            'success'
+          );
         }
-
-        // Sync hidden answer input ONLY if ChaoXing's native click handler did not already populate it
-        const qid =
-          timuEl.getAttribute('data-id') ||
-          timuEl.getAttribute('data') ||
-          timuEl.getAttribute('qid') ||
-          matchedOptions[0]?.el.getAttribute('qid') ||
-          timuEl
-            .querySelector<HTMLInputElement>('input[name^="answer"]:not([name^="answertype"])')
-            ?.name?.replace(/^answer/, '');
-        if (qid) {
-          const hiddenInput =
-            quizDoc.querySelector<HTMLInputElement>(
-              `input[type="hidden"]#answer${qid}, input[type="hidden"][name="answer${qid}"]`
-            ) ||
-            quizDoc.querySelector<HTMLInputElement>(
-              `input#answer${qid}:not([type="radio"]):not([type="checkbox"]), input[name="answer${qid}"]:not([type="radio"]):not([type="checkbox"])`
-            );
-          if (hiddenInput && !hiddenInput.value) {
-            if (qType === 'judge') {
-              const firstOpt = matchedOptions[0];
-              hiddenInput.value =
-                firstOpt.dataValue && /^(true|false)$/i.test(firstOpt.dataValue)
-                  ? firstOpt.dataValue.toLowerCase()
-                  : firstOpt.letter === 'A'
-                    ? 'true'
-                    : 'false';
-            } else {
-              hiddenInput.value = selectedLetters.join('');
-            }
-            hiddenInput.dispatchEvent(new Event('change', { bubbles: true }));
-          }
-        }
-
-        // Step completion log with explicit feedback
-        store.addLog(
-          `${questionLabel}作答完成：已选 [${selectedLetters.join(', ')}]`,
-          'success'
-        );
       } else {
         // Fill-in-the-blank or essay question inputs (filtering out hidden/system metadata fields + supporting UEditor)
         const hasRefusal = answers.some((ans) => isAiRefusalOrApology(ans));
@@ -2384,7 +2400,7 @@ export async function doQuizTask(
             `${shortLabel} AI 反映缺少关键图片或数据，已放弃自动填入并保留空白，请人工核对！`,
             'error'
           );
-          if (store.config.autoSubmitWork) {
+          if (store.config.autoSubmitWork || initialAutoSubmitWork) {
             store.addLog(
               `检测到${shortLabel}未成功获得有效作答，为防学业事故，已自动取消自动提交，请人工复核后手动提交！`,
               'error'
@@ -2505,6 +2521,7 @@ export async function doQuizTask(
     }
 
     if (!isCurrent() || signal.aborted) return;
+    if (pausedDueToNetwork) break;
 
     // 5b. Check if single-question mode has a "Next Question" button
     const nextBtn = findNextQuestionBtn(quizDoc);
@@ -2607,6 +2624,10 @@ export async function doQuizTask(
   }
 
   if (!isCurrent() || signal.aborted) return;
+
+  if (pausedDueToNetwork) {
+    return;
+  }
 
   if (stoppedOnStuckPagination) {
     store.updateProgress({
@@ -2734,7 +2755,7 @@ export async function doQuizTask(
       } catch {}
     }
   } else {
-    if (autoSubmitWork && cancelAutoSubmit) {
+    if ((autoSubmitWork || initialAutoSubmitWork) && cancelAutoSubmit) {
       store.addLog('因存在未成功有效作答的题目，为防学业事故已自动取消自动提交，转为暂存模式，请人工复核后手动提交！', 'error');
     } else {
       store.addLog('当前为自动暂存模式，正在定位暂存按钮', 'info');
