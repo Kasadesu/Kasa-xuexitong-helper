@@ -9125,5 +9125,249 @@ C 是温迪（风神巴巴托斯）
         store.acknowledgeAllErrors();
       }
     });
+
+    it('25.15 wisdom-mooc.zhihuishu.com/study/index 融合共享课防点回主界面：忽略 .el-menu-item/.menu-item/顶部返回导航，精准命中下一节 .chapter-content-second', async () => {
+      const prevAutoNext = store.config.autoNextChapter;
+      const prevDelayBase = store.config.randomDelayBase;
+      const prevDelayJitter = store.config.randomDelayJitter;
+
+      const matchesSimple = (el: any, part: string): boolean => {
+        const cls = (el.className || '').split(/\s+/).filter(Boolean);
+        const tag = (el.tagName || '').toUpperCase();
+        if (part.startsWith('.') && part.slice(1).includes('.')) {
+          return part.slice(1).split('.').every((sub) => cls.includes(sub));
+        }
+        if (part.startsWith('.')) return cls.includes(part.slice(1));
+        const attrContains = part.match(/^\[class\*="([^"]+)"\]$/);
+        if (attrContains) return (el.className || '').includes(attrContains[1]);
+        const roleMatch = part.match(/^\[role="([^"]+)"\]$/);
+        if (roleMatch) return el.getAttribute?.('role') === roleMatch[1];
+        if (part === '[onclick]') return Boolean(el.getAttribute?.('onclick'));
+        if (/^[a-z0-9]+$/i.test(part)) return tag === part.toUpperCase();
+        return false;
+      };
+
+      const matchesSel = (el: any, sel: string): boolean =>
+        sel
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean)
+          .some((p) => matchesSimple(el, p));
+
+      const makeNode = (opts: {
+        tagName: string;
+        className?: string;
+        attrs?: Record<string, string>;
+        text?: string;
+        children?: any[];
+        onClick?: () => void;
+      }): any => {
+        const node: any = {
+          tagName: opts.tagName,
+          className: opts.className || '',
+          style: { display: '', visibility: '' },
+          parentElement: null as any,
+          children: opts.children || [],
+          clicked: 0,
+          _attrs: { ...(opts.attrs || {}) },
+          classList: {
+            contains: (c: string) => (node.className || '').split(/\s+/).includes(c),
+            add: (c: string) => {
+              const parts = (node.className || '').split(/\s+/).filter(Boolean);
+              if (!parts.includes(c)) node.className = [...parts, c].join(' ');
+            },
+            remove: (c: string) => {
+              node.className = (node.className || '')
+                .split(/\s+/)
+                .filter((x: string) => x && x !== c)
+                .join(' ');
+            }
+          },
+          getAttribute: (k: string) => (k in node._attrs ? node._attrs[k] : null),
+          hasAttribute: (k: string) => k in node._attrs,
+          contains: (other: any): boolean => {
+            if (!other) return false;
+            if (node === other) return true;
+            return (node.children || []).some((ch: any) => ch === other || ch.contains?.(other));
+          },
+          closest: (sel: string): any => {
+            let cur: any = node;
+            while (cur) {
+              if (matchesSel(cur, sel)) return cur;
+              cur = cur.parentElement;
+            }
+            return null;
+          },
+          querySelectorAll: (sel: string): any[] => {
+            const res: any[] = [];
+            const walk = (n: any) => {
+              for (const ch of n.children || []) {
+                if (matchesSel(ch, sel)) res.push(ch);
+                walk(ch);
+              }
+            };
+            walk(node);
+            return res;
+          },
+          querySelector: (sel: string): any => node.querySelectorAll(sel)[0] || null,
+          click: () => {
+            node.clicked++;
+            opts.onClick?.();
+          },
+          get innerText(): string {
+            if (opts.text !== undefined && (!node.children || node.children.length === 0)) return opts.text;
+            return (node.children || [])
+              .map((c: any) => c.innerText || c.textContent || '')
+              .filter(Boolean)
+              .join(' ');
+          },
+          get textContent(): string {
+            return node.innerText;
+          }
+        };
+        for (const ch of node.children) ch.parentElement = node;
+        return node;
+      };
+
+      try {
+        clearZhihuishuCompletionSuppression();
+        store.config.autoNextChapter = true;
+        store.config.randomDelayBase = 0.05;
+        store.config.randomDelayJitter = 0;
+        store.logs = [];
+
+        const pageUrl = 'https://wisdom-mooc.zhihuishu.com/study/index?recruitAndCourseId=4e5b585d44584859454a58585a4d5d4751';
+        assert.equal(isZhihuishuVideoPage(undefined, pageUrl), true, 'wisdom-mooc /study/index 必须识别为视频学习页');
+
+        // 干扰 1：顶部导航栏返回主界面链接 + 左侧 .el-menu-item / .menu-item 主导航
+        const backHomeLink = makeNode({
+          tagName: 'A',
+          className: 'go-back-link menu-item',
+          attrs: { href: '/home/index' },
+          text: '返回课程首页'
+        });
+        const topHeader = makeNode({ tagName: 'HEADER', className: 'site-header', children: [backHomeLink] });
+
+        const navHomeItem = makeNode({
+          tagName: 'LI',
+          className: 'el-menu-item',
+          children: [makeNode({ tagName: 'A', attrs: { href: '/myCourse' }, text: '课程主页' })]
+        });
+        const navGraphItem = makeNode({
+          tagName: 'DIV',
+          className: 'menu-item knowledge-item',
+          text: '知识图谱'
+        });
+        const leftNav = makeNode({
+          tagName: 'NAV',
+          className: 'side-nav',
+          children: [navHomeItem, navGraphItem]
+        });
+
+        // 真实课时目录：.chapter-content -> .chapter-item -> .chapter-content-second
+        const listeners: Record<string, Set<() => void>> = {
+          timeupdate: new Set(),
+          pause: new Set(),
+          ended: new Set()
+        };
+        const videoEl: any = {
+          tagName: 'VIDEO',
+          className: 'vjs-tech',
+          src: 'https://video.zhihuishu.com/lesson-1.mp4',
+          currentSrc: 'https://video.zhihuishu.com/lesson-1.mp4',
+          duration: 120,
+          currentTime: 119.5,
+          ended: true,
+          paused: false,
+          muted: false,
+          playbackRate: 1,
+          isConnected: true,
+          play: async () => {},
+          pause: () => {
+            videoEl.paused = true;
+          },
+          addEventListener: (ev: string, fn: () => void) => listeners[ev]?.add(fn),
+          removeEventListener: (ev: string, fn: () => void) => listeners[ev]?.delete(fn)
+        };
+
+        const lesson1 = makeNode({
+          tagName: 'DIV',
+          className: 'chapter-content-second current',
+          text: '1.1 课程导论与背景'
+        });
+        const lesson2 = makeNode({
+          tagName: 'DIV',
+          className: 'chapter-content-second',
+          text: '1.2 核心原理详解',
+          onClick: () => {
+            lesson1.classList.remove('current');
+            lesson2.classList.add('current');
+            videoEl.src = 'https://video.zhihuishu.com/lesson-2.mp4';
+            videoEl.currentSrc = 'https://video.zhihuishu.com/lesson-2.mp4';
+            videoEl.currentTime = 0;
+            videoEl.ended = false;
+          }
+        });
+        const chapter1 = makeNode({
+          tagName: 'DIV',
+          className: 'chapter-item',
+          children: [
+            makeNode({ tagName: 'DIV', className: 'chapter-content-first', text: '第一章 绪论' }),
+            lesson1,
+            lesson2
+          ]
+        });
+        const chapterContent = makeNode({
+          tagName: 'DIV',
+          className: 'chapter-content',
+          children: [chapter1]
+        });
+
+        const rootBody = makeNode({
+          tagName: 'BODY',
+          children: [topHeader, leftNav, chapterContent]
+        });
+
+        const mockDoc: any = {
+          location: { href: pageUrl },
+          defaultView: { getComputedStyle: () => ({ display: 'block', visibility: 'visible', backgroundColor: 'transparent' }) },
+          querySelectorAll: (sel: string) => {
+            if (sel === 'video' || sel.includes('#vjs_container_html5_api')) return [videoEl];
+            return rootBody.querySelectorAll(sel);
+          },
+          querySelector: (sel: string) => {
+            if (sel === 'video' || sel.includes('#vjs_container_html5_api')) return videoEl;
+            return rootBody.querySelector(sel);
+          }
+        };
+
+        // 1. 静态目录扫描绝不可把 .el-menu-item / 知识图谱 / 返回首页当成课时
+        const discovered = findZhihuishuAiLessonItems(mockDoc);
+        assert.deepEqual(discovered, [lesson1, lesson2], '必须精准识别 .chapter-content-second 课时而非导航菜单');
+        const nextBtn = findNextZhihuishuVideoItem(mockDoc);
+        assert.equal(nextBtn, lesson2, '必须精准命中下一节 1.2 而绝不命中返回主界面或导航项');
+
+        // 2. 端到端播完切集：成功切到 1.2，且返回首页 / 课程主页 / 知识图谱全部 0 点击
+        await playZhihuishuVideoTask(
+          mockDoc,
+          { signal: new AbortController().signal, isCurrent: () => true },
+          { pollIntervalMs: 30, switchWaitTimeoutMs: 500 }
+        );
+
+        assert.equal(backHomeLink.clicked, 0, '绝不可点击顶部返回首页链接');
+        assert.equal(navHomeItem.clicked, 0, '绝不可点击侧边栏课程主页 .el-menu-item');
+        assert.equal(navGraphItem.clicked, 0, '绝不可点击知识图谱 .menu-item');
+        assert.equal(lesson2.clicked, 1, '必须点击真正的下一节课时 1.2');
+        assert.ok(
+          store.logs.some((l) => l.message.includes('触发智慧树下一节视频切换：【1.2 核心原理详解】')),
+          '切集日志必须明确输出实际点击的课时名称'
+        );
+      } finally {
+        clearZhihuishuCompletionSuppression();
+        store.config.autoNextChapter = prevAutoNext;
+        store.config.randomDelayBase = prevDelayBase;
+        store.config.randomDelayJitter = prevDelayJitter;
+      }
+    });
   });
 });
