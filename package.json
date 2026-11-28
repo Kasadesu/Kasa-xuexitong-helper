@@ -1,6 +1,6 @@
 {
   "name": "kasa-xuexitong-helper",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "type": "module",
   "private": true,
   "description": "超星学习通与知到智慧树双平台课程与作业辅助脚本",

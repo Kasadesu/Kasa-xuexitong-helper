@@ -84,7 +84,7 @@ export class FloatingCard extends HTMLElement {
         <div class="kasa-card">
           <div class="kasa-header" id="drag-handle">
             <div class="kasa-title-group">
-              <span class="kasa-badge">v1.4.0</span>
+              <span class="kasa-badge">v1.4.1</span>
               <span class="kasa-title">Kasa 学习通助手</span>
             </div>
             <div class="kasa-actions">
@@ -467,7 +467,7 @@ export class FloatingCard extends HTMLElement {
         <p style="margin:4px 0;">• <strong>作业与测验</strong>：在「AI 设置」中填好 API Key 与模型，进入超星或智慧树作业/考试页点击右上角「开始答题」即可自动作答。</p>
         <p style="margin:4px 0;">• <strong>数据安全</strong>：配置与 Key 仅保存在当前浏览器本地，直接请求服务商接口。</p>
         <div style="margin-top:12px;padding-top:8px;border-top:1px solid var(--kasa-border);color:var(--kasa-text-muted);font-size:11px;">
-          提示：遇到遮挡可点击右上角最小化面板 · v1.4.0
+          提示：遇到遮挡可点击右上角最小化面板 · v1.4.1
         </div>
       </div>
     `;

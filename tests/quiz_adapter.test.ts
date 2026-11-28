@@ -2561,7 +2561,7 @@ C 是温迪（风神巴巴托斯）
       return new FloatingCardClass();
     };
 
-    it('23.11 FloatingCard DOM 契约与无障碍属性：role=alert、aria-live=assertive、版本 v1.4.0、兄弟容器架构', async () => {
+    it('23.11 FloatingCard DOM 契约与无障碍属性：role=alert、aria-live=assertive、版本 v1.4.1、兄弟容器架构', async () => {
       const card = await getFloatingCard();
       const tabContentHtml = (card as any).getTabContentHtml();
 
@@ -2583,7 +2583,7 @@ C 是温迪（风神巴巴托斯）
       );
 
       const cardRenderHtml = (card as any).render.toString();
-      assert.ok(cardRenderHtml.includes('v1.4.0'), '面板必须标注 v1.4.0 版本');
+      assert.ok(cardRenderHtml.includes('v1.4.1'), '面板必须标注 v1.4.1 版本');
       assert.ok(!cardRenderHtml.includes('💯'), '面板 HTML 不得包含 💯 emoji');
     });
 
@@ -5791,7 +5791,7 @@ C 是温迪（风神巴巴托斯）
       }
     });
 
-    it('25.5 ChapterScheduler 智慧树视频防重入/考试自动识别续跑与 v1.4.0 产物静态元数据校验', async () => {
+    it('25.5 ChapterScheduler 智慧树视频防重入/考试自动识别续跑与 v1.4.1 产物静态元数据校验', async () => {
       const prevWin = (globalThis as any).window;
       const prevDoc = (globalThis as any).document;
       const prevSession = (globalThis as any).sessionStorage;
@@ -5896,17 +5896,17 @@ C 是温迪（风神巴巴托斯）
         await new Promise((r) => setTimeout(r, 100));
         assert.equal(resumed, 1, '智慧树考试页存在 ExamAutoResumeState 时必须自动续跑');
 
-        // 3. v1.4.0 产物与工程配置文件静态元数据校验
+        // 3. v1.4.1 产物与工程配置文件静态元数据校验
         const rootDir = path.resolve(process.cwd());
         const pkgJson = JSON.parse(fs.readFileSync(path.join(rootDir, 'package.json'), 'utf8'));
-        assert.equal(pkgJson.version, '1.4.0', 'package.json 版本必须为 1.4.0');
+        assert.equal(pkgJson.version, '1.4.1', 'package.json 版本必须为 1.4.1');
 
         const viteCfg = fs.readFileSync(path.join(rootDir, 'vite.config.ts'), 'utf8');
-        assert.ok(viteCfg.includes("version: '1.4.0'") || viteCfg.includes('version: "1.4.0"'), 'vite.config.ts 必须声明 1.4.0');
+        assert.ok(viteCfg.includes("version: '1.4.1'") || viteCfg.includes('version: "1.4.1"'), 'vite.config.ts 必须声明 1.4.1');
         assert.ok(viteCfg.includes('*://*.zhihuishu.com/*'), 'vite.config.ts 必须包含 *://*.zhihuishu.com/*');
 
         const manifest = JSON.parse(fs.readFileSync(path.join(rootDir, 'chrome-extension', 'manifest.json'), 'utf8'));
-        assert.equal(manifest.version, '1.4.0', 'manifest.json 版本必须为 1.4.0');
+        assert.equal(manifest.version, '1.4.1', 'manifest.json 版本必须为 1.4.1');
         assert.ok(
           Array.isArray(manifest.host_permissions) && manifest.host_permissions.includes('*://*.zhihuishu.com/*'),
           'manifest.json host_permissions 必须包含 *://*.zhihuishu.com/*'
@@ -5920,7 +5920,7 @@ C 是温迪（风神巴巴托斯）
         const distUserJsPath = path.join(rootDir, 'dist', 'Kasa-xuexitong-helper.user.js');
         assert.equal(fs.existsSync(distUserJsPath), true, 'dist/Kasa-xuexitong-helper.user.js 产物必须存在');
         const distUserJs = fs.readFileSync(distUserJsPath, 'utf8');
-        assert.match(distUserJs, /@version\s+1\.4\.0/, '构建产物 UserScript 头必须包含 @version 1.4.0');
+        assert.match(distUserJs, /@version\s+1\.4\.1/, '构建产物 UserScript 头必须包含 @version 1.4.1');
         assert.match(distUserJs, /@match\s+\*:\/\/\*\.zhihuishu\.com\/\*/, '构建产物 UserScript 头必须包含 @match *://*.zhihuishu.com/*');
       } finally {
         clearExamAutoResumeState();
