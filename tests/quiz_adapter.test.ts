@@ -94,6 +94,7 @@ import {
   isZhihuishuVideoPage,
   isZhihuishuExamPage,
   findVisiblePopupTestDialog,
+  findVisibleZhihuishuCaptchaDialog,
   dismissZhihuishuTipDialog,
   solveZhihuishuPopupTest,
   findNextZhihuishuVideoItem,
@@ -2561,7 +2562,7 @@ C 是温迪（风神巴巴托斯）
       return new FloatingCardClass();
     };
 
-    it('23.11 FloatingCard DOM 契约与无障碍属性：role=alert、aria-live=assertive、版本 v1.4.1、兄弟容器架构', async () => {
+    it('23.11 FloatingCard DOM 契约与无障碍属性：role=alert、aria-live=assertive、版本 v1.4.2、兄弟容器架构', async () => {
       const card = await getFloatingCard();
       const tabContentHtml = (card as any).getTabContentHtml();
 
@@ -2583,7 +2584,7 @@ C 是温迪（风神巴巴托斯）
       );
 
       const cardRenderHtml = (card as any).render.toString();
-      assert.ok(cardRenderHtml.includes('v1.4.1'), '面板必须标注 v1.4.1 版本');
+      assert.ok(cardRenderHtml.includes('v1.4.2'), '面板必须标注 v1.4.2 版本');
       assert.ok(!cardRenderHtml.includes('💯'), '面板 HTML 不得包含 💯 emoji');
     });
 
@@ -5791,7 +5792,7 @@ C 是温迪（风神巴巴托斯）
       }
     });
 
-    it('25.5 ChapterScheduler 智慧树视频防重入/考试自动识别续跑与 v1.4.1 产物静态元数据校验', async () => {
+    it('25.5 ChapterScheduler 智慧树视频防重入/考试自动识别续跑与 v1.4.2 产物静态元数据校验', async () => {
       const prevWin = (globalThis as any).window;
       const prevDoc = (globalThis as any).document;
       const prevSession = (globalThis as any).sessionStorage;
@@ -5896,17 +5897,17 @@ C 是温迪（风神巴巴托斯）
         await new Promise((r) => setTimeout(r, 100));
         assert.equal(resumed, 1, '智慧树考试页存在 ExamAutoResumeState 时必须自动续跑');
 
-        // 3. v1.4.1 产物与工程配置文件静态元数据校验
+        // 3. v1.4.2 产物与工程配置文件静态元数据校验
         const rootDir = path.resolve(process.cwd());
         const pkgJson = JSON.parse(fs.readFileSync(path.join(rootDir, 'package.json'), 'utf8'));
-        assert.equal(pkgJson.version, '1.4.1', 'package.json 版本必须为 1.4.1');
+        assert.equal(pkgJson.version, '1.4.2', 'package.json 版本必须为 1.4.2');
 
         const viteCfg = fs.readFileSync(path.join(rootDir, 'vite.config.ts'), 'utf8');
-        assert.ok(viteCfg.includes("version: '1.4.1'") || viteCfg.includes('version: "1.4.1"'), 'vite.config.ts 必须声明 1.4.1');
+        assert.ok(viteCfg.includes("version: '1.4.2'") || viteCfg.includes('version: "1.4.2"'), 'vite.config.ts 必须声明 1.4.2');
         assert.ok(viteCfg.includes('*://*.zhihuishu.com/*'), 'vite.config.ts 必须包含 *://*.zhihuishu.com/*');
 
         const manifest = JSON.parse(fs.readFileSync(path.join(rootDir, 'chrome-extension', 'manifest.json'), 'utf8'));
-        assert.equal(manifest.version, '1.4.1', 'manifest.json 版本必须为 1.4.1');
+        assert.equal(manifest.version, '1.4.2', 'manifest.json 版本必须为 1.4.2');
         assert.ok(
           Array.isArray(manifest.host_permissions) && manifest.host_permissions.includes('*://*.zhihuishu.com/*'),
           'manifest.json host_permissions 必须包含 *://*.zhihuishu.com/*'
@@ -5920,7 +5921,7 @@ C 是温迪（风神巴巴托斯）
         const distUserJsPath = path.join(rootDir, 'dist', 'Kasa-xuexitong-helper.user.js');
         assert.equal(fs.existsSync(distUserJsPath), true, 'dist/Kasa-xuexitong-helper.user.js 产物必须存在');
         const distUserJs = fs.readFileSync(distUserJsPath, 'utf8');
-        assert.match(distUserJs, /@version\s+1\.4\.1/, '构建产物 UserScript 头必须包含 @version 1.4.1');
+        assert.match(distUserJs, /@version\s+1\.4\.2/, '构建产物 UserScript 头必须包含 @version 1.4.2');
         assert.match(distUserJs, /@match\s+\*:\/\/\*\.zhihuishu\.com\/\*/, '构建产物 UserScript 头必须包含 @match *://*.zhihuishu.com/*');
       } finally {
         clearExamAutoResumeState();
@@ -9367,6 +9368,486 @@ C 是温迪（风神巴巴托斯）
         store.config.autoNextChapter = prevAutoNext;
         store.config.randomDelayBase = prevDelayBase;
         store.config.randomDelayJitter = prevDelayJitter;
+      }
+    });
+
+    it('25.16 新版智慧树真实 DOM 对齐（.el-collapse-item__header + .item-box + img.finish-icon 95% 提前切章）与安全验证弹窗暂停/三重提醒/自动续播', async () => {
+      const prevAutoNext = store.config.autoNextChapter;
+      const prevDelayBase = store.config.randomDelayBase;
+      const prevDelayJitter = store.config.randomDelayJitter;
+      const prevNotify = (globalThis as any).GM_notification;
+
+      const matchesSimple = (el: any, part: string): boolean => {
+        const cls = (el.className || '').split(/\s+/).filter(Boolean);
+        const tag = (el.tagName || '').toUpperCase();
+        if (part.startsWith('.') && part.slice(1).includes('.')) {
+          return part.slice(1).split('.').every((sub) => cls.includes(sub));
+        }
+        if (part.startsWith('.')) return cls.includes(part.slice(1));
+        const attrContains = part.match(/^\[class\*="([^"]+)"\]$/);
+        if (attrContains) return (el.className || '').includes(attrContains[1]);
+        const roleMatch = part.match(/^\[role="([^"]+)"\]$/);
+        if (roleMatch) return el.getAttribute?.('role') === roleMatch[1];
+        if (part === '[onclick]') return Boolean(el.getAttribute?.('onclick'));
+        if (/^[a-z0-9]+$/i.test(part)) return tag === part.toUpperCase();
+        return false;
+      };
+
+      const matchesSel = (el: any, sel: string): boolean =>
+        sel
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean)
+          .some((p) => matchesSimple(el, p));
+
+      const makeNode = (opts: {
+        tagName: string;
+        className?: string;
+        attrs?: Record<string, string>;
+        style?: { display?: string; visibility?: string };
+        bg?: string;
+        text?: string;
+        children?: any[];
+        onClick?: () => void;
+      }): any => {
+        const node: any = {
+          tagName: opts.tagName,
+          className: opts.className || '',
+          style: opts.style || { display: '', visibility: '' },
+          _bg: opts.bg || 'transparent',
+          parentElement: null as any,
+          children: opts.children || [],
+          clicked: 0,
+          _attrs: { ...(opts.attrs || {}) },
+          classList: {
+            contains: (c: string) => (node.className || '').split(/\s+/).includes(c),
+            add: (c: string) => {
+              const parts = (node.className || '').split(/\s+/).filter(Boolean);
+              if (!parts.includes(c)) node.className = [...parts, c].join(' ');
+            },
+            remove: (c: string) => {
+              node.className = (node.className || '')
+                .split(/\s+/)
+                .filter((x: string) => x && x !== c)
+                .join(' ');
+            }
+          },
+          getAttribute: (k: string) => (k in node._attrs ? node._attrs[k] : null),
+          setAttribute: (k: string, v: string) => {
+            node._attrs[k] = v;
+          },
+          hasAttribute: (k: string) => k in node._attrs,
+          contains: (other: any): boolean => {
+            if (!other) return false;
+            if (node === other) return true;
+            return (node.children || []).some((ch: any) => ch === other || ch.contains?.(other));
+          },
+          closest: (sel: string): any => {
+            let cur: any = node;
+            while (cur) {
+              if (matchesSel(cur, sel)) return cur;
+              cur = cur.parentElement;
+            }
+            return null;
+          },
+          querySelectorAll: (sel: string): any[] => {
+            const res: any[] = [];
+            const walk = (n: any) => {
+              for (const ch of n.children || []) {
+                if (matchesSel(ch, sel)) res.push(ch);
+                walk(ch);
+              }
+            };
+            walk(node);
+            return res;
+          },
+          querySelector: (sel: string): any => node.querySelectorAll(sel)[0] || null,
+          click: () => {
+            node.clicked++;
+            opts.onClick?.();
+          },
+          get innerText(): string {
+            if (opts.text !== undefined && (!node.children || node.children.length === 0)) return opts.text;
+            return (node.children || [])
+              .map((c: any) => c.innerText || c.textContent || '')
+              .filter(Boolean)
+              .join(' ');
+          },
+          get textContent(): string {
+            return node.innerText;
+          }
+        };
+        for (const ch of node.children) ch.parentElement = node;
+        return node;
+      };
+
+      try {
+        clearZhihuishuCompletionSuppression();
+        store.acknowledgeAllErrors();
+        store.logs = [];
+        store.config.autoNextChapter = true;
+        store.config.randomDelayBase = 0.04;
+        store.config.randomDelayJitter = 0;
+
+        // ===== 子场景 A：真实 DOM (.el-collapse-item__header + .item-box + img.finish-icon) 在 95.6% 未播完时提前切入第二章 2.1 =====
+        const backBtn = makeNode({ tagName: 'DIV', className: 'back-btn', text: '浙江大学' });
+        const mainHeader = makeNode({
+          tagName: 'DIV',
+          className: 'main-header',
+          children: [makeNode({ tagName: 'DIV', className: 'header-com', children: [backBtn] })]
+        });
+
+        const lesson14FinishIcon = makeNode({
+          tagName: 'IMG',
+          className: 'finish-icon el-tooltip__trigger',
+          attrs: { src: 'https://image.zhihuishu.com/zhs/b2cm/base1/202512/fe9d6193.png' },
+          style: { display: 'none', visibility: '' }
+        });
+        const lesson14Box = makeNode({
+          tagName: 'DIV',
+          className: 'item-box',
+          bg: 'rgb(236, 237, 255)',
+          children: [
+            lesson14FinishIcon,
+            makeNode({ tagName: 'DIV', className: 'item-num', text: '1.4' }),
+            makeNode({ tagName: 'DIV', className: 'item-name', text: '人工智能的伦理安全' })
+          ]
+        });
+        const lesson11Box = makeNode({
+          tagName: 'DIV',
+          className: 'item-box',
+          children: [
+            makeNode({ tagName: 'IMG', className: 'finish-icon' }),
+            makeNode({ tagName: 'DIV', className: 'item-num', text: '1.1' }),
+            makeNode({ tagName: 'DIV', className: 'item-name', text: '人工智能的新时代和起源定义' })
+          ]
+        });
+        const quizItemBox = makeNode({
+          tagName: 'DIV',
+          className: 'item-box',
+          children: [makeNode({ tagName: 'DIV', className: 'item-name', text: '测试' })]
+        });
+
+        const video1: any = {
+          tagName: 'VIDEO',
+          src: 'https://video.zhihuishu.com/1-4.mp4',
+          currentSrc: 'https://video.zhihuishu.com/1-4.mp4',
+          duration: 802,
+          currentTime: 766, // 95.5% 未播完！
+          ended: false,
+          paused: false,
+          muted: false,
+          playbackRate: 1,
+          isConnected: true,
+          playCalls: 0,
+          play: async () => {
+            video1.playCalls++;
+            video1.paused = false;
+          },
+          pause: () => {
+            video1.paused = true;
+          },
+          addEventListener: () => {},
+          removeEventListener: () => {}
+        };
+
+        const lesson21Box = makeNode({
+          tagName: 'DIV',
+          className: 'item-box',
+          children: [
+            makeNode({ tagName: 'DIV', className: 'item-num', text: '2.1' }),
+            makeNode({ tagName: 'DIV', className: 'item-name', text: '人工智能系统架构与计算机系统基础' })
+          ],
+          onClick: () => {
+            lesson14Box._bg = 'transparent';
+            lesson21Box._bg = 'rgb(236, 237, 255)';
+            video1.src = 'https://video.zhihuishu.com/2-1.mp4';
+            video1.currentSrc = 'https://video.zhihuishu.com/2-1.mp4';
+            video1.currentTime = 0;
+          }
+        });
+        const ch2Wrap = makeNode({
+          tagName: 'DIV',
+          className: 'el-collapse-item__wrap',
+          style: { display: 'none', visibility: '' },
+          children: [
+            makeNode({
+              tagName: 'DIV',
+              className: 'chapter-content',
+              children: [makeNode({ tagName: 'DIV', className: 'chapter-item', children: [lesson21Box] })]
+            })
+          ]
+        });
+
+        const ch1Header = makeNode({
+          tagName: 'DIV',
+          className: 'el-collapse-item__header is-active',
+          attrs: { 'aria-expanded': 'true', role: 'button' },
+          children: [
+            makeNode({
+              tagName: 'SPAN',
+              className: 'el-collapse-item__title',
+              children: [
+                makeNode({
+                  tagName: 'DIV',
+                  className: 'chapter-first',
+                  children: [
+                    makeNode({ tagName: 'DIV', className: 'chapter-title', text: '第一章:' }),
+                    makeNode({ tagName: 'DIV', className: 'chapter-name', text: '初识人工智能' })
+                  ]
+                })
+              ]
+            })
+          ]
+        });
+        const ch2Header = makeNode({
+          tagName: 'DIV',
+          className: 'el-collapse-item__header',
+          attrs: { 'aria-expanded': 'false', role: 'button' },
+          children: [
+            makeNode({
+              tagName: 'SPAN',
+              className: 'el-collapse-item__title',
+              children: [
+                makeNode({
+                  tagName: 'DIV',
+                  className: 'chapter-first',
+                  children: [
+                    makeNode({ tagName: 'DIV', className: 'chapter-title', text: '第二章:' }),
+                    makeNode({ tagName: 'DIV', className: 'chapter-name', text: '人工智能的系统数据基础' })
+                  ]
+                })
+              ]
+            })
+          ],
+          onClick: () => {
+            ch2Header.setAttribute('aria-expanded', 'true');
+            ch2Header.classList.add('is-active');
+            ch2Wrap.style.display = 'block';
+          }
+        });
+        const ch3Header = makeNode({
+          tagName: 'DIV',
+          className: 'el-collapse-item__header',
+          attrs: { 'aria-expanded': 'false', role: 'button' },
+          children: [
+            makeNode({
+              tagName: 'SPAN',
+              className: 'el-collapse-item__title',
+              children: [
+                makeNode({
+                  tagName: 'DIV',
+                  className: 'chapter-first',
+                  children: [
+                    makeNode({ tagName: 'DIV', className: 'chapter-title', text: '第三章:' }),
+                    makeNode({ tagName: 'DIV', className: 'chapter-name', text: '人工智能的应用开发基础' })
+                  ]
+                })
+              ]
+            })
+          ]
+        });
+
+        const ch1Item = makeNode({
+          tagName: 'DIV',
+          className: 'el-collapse-item is-active',
+          children: [
+            ch1Header,
+            makeNode({
+              tagName: 'DIV',
+              className: 'el-collapse-item__wrap',
+              children: [
+                makeNode({
+                  tagName: 'DIV',
+                  className: 'chapter-content',
+                  children: [
+                    makeNode({ tagName: 'DIV', className: 'chapter-item', children: [lesson11Box] }),
+                    makeNode({ tagName: 'DIV', className: 'chapter-item', children: [lesson14Box] }),
+                    makeNode({ tagName: 'DIV', className: 'chapter-item', children: [quizItemBox] })
+                  ]
+                })
+              ]
+            })
+          ]
+        });
+        const ch2Item = makeNode({ tagName: 'DIV', className: 'el-collapse-item', children: [ch2Header, ch2Wrap] });
+        const ch3Item = makeNode({ tagName: 'DIV', className: 'el-collapse-item', children: [ch3Header] });
+
+        const collapseRoot = makeNode({
+          tagName: 'DIV',
+          className: 'course-catalog',
+          children: [
+            makeNode({
+              tagName: 'DIV',
+              className: 'el-collapse',
+              children: [ch1Item, ch2Item, ch3Item]
+            })
+          ]
+        });
+
+        const rootBody = makeNode({ tagName: 'BODY', children: [mainHeader, collapseRoot] });
+        const pageUrl = 'https://wisdom-mooc.zhihuishu.com/study/index?recruitAndCourseId=test142';
+        const mockDocA: any = {
+          title: '智慧树网 - 人工智能通识基础',
+          location: { href: pageUrl },
+          defaultView: {
+            getComputedStyle: (el: any) => ({
+              display: el?.style?.display || 'block',
+              visibility: el?.style?.visibility || 'visible',
+              backgroundColor: el?._bg || 'transparent'
+            })
+          },
+          querySelectorAll: (sel: string) => {
+            if (sel === 'video' || sel.includes('#vjs_container_html5_api')) return [video1];
+            return rootBody.querySelectorAll(sel);
+          },
+          querySelector: (sel: string) => {
+            if (sel === 'video' || sel.includes('#vjs_container_html5_api')) return video1;
+            return rootBody.querySelector(sel);
+          }
+        };
+
+        // 1. 必须保留 .el-collapse-item__header 作为章节折叠头（不可降级为内层 .chapter-title）
+        const headers = findZhihuishuChapterHeaders(mockDocA);
+        assert.deepEqual(headers, [ch1Header, ch2Header, ch3Header], '必须锁定 .el-collapse-item__header 保留 aria-expanded');
+        assert.deepEqual(findZhihuishuAiLessonItems(mockDocA), [lesson11Box, lesson14Box], '必须精准识别 .item-box 课时并排除测试与顶部返回栏');
+
+        // 2. 启动播放（此时 1.4 进度 95.5% 未亮勾），80ms 后模拟平台亮起 img.finish-icon -> 立刻提前切入第二章 2.1
+        setTimeout(() => {
+          lesson14FinishIcon.style.display = 'inline-block';
+        }, 70);
+
+        await playZhihuishuVideoTask(
+          mockDocA,
+          { signal: new AbortController().signal, isCurrent: () => true },
+          { pollIntervalMs: 30, switchWaitTimeoutMs: 400, chapterExpandDelayMs: 30 }
+        );
+
+        assert.equal(backBtn.clicked, 0, '绝不可点击顶部返回按钮');
+        assert.equal(ch2Header.clicked, 1, '必须展开第二章');
+        assert.equal(ch3Header.clicked, 0, '绝不可跳章连点第三章');
+        assert.equal(lesson21Box.clicked, 1, '左侧亮蓝勾后必须提前切入第二章 2.1');
+
+        // ===== 子场景 B：安全验证弹窗检测 + 暂停防抢播 + 三重提醒（红警/标题闪烁/桌面通知）+ 手动关闭后自动续播 =====
+        store.acknowledgeAllErrors();
+        store.logs = [];
+        let notifyCalls = 0;
+        (globalThis as any).GM_notification = () => {
+          notifyCalls++;
+        };
+
+        const captchaModal = makeNode({
+          tagName: 'DIV',
+          className: 'el-dialog verify-dialog',
+          attrs: { role: 'dialog' },
+          style: { display: 'none', visibility: '' },
+          text: '请完成安全验证 请点击立方体颜色一样的大写N'
+        });
+        const aiPracticeModal = makeNode({
+          tagName: 'DIV',
+          className: 'el-dialog',
+          attrs: { role: 'dialog' },
+          style: { display: 'block', visibility: '' },
+          text: 'AI随堂练习 1. [单选题] 测试题目 提交作答'
+        });
+
+        const listenersB: Record<string, Set<() => void>> = {
+          timeupdate: new Set(),
+          pause: new Set(),
+          ended: new Set()
+        };
+        const videoB: any = {
+          tagName: 'VIDEO',
+          src: 'https://video.zhihuishu.com/2-1.mp4',
+          currentSrc: 'https://video.zhihuishu.com/2-1.mp4',
+          duration: 300,
+          currentTime: 60,
+          ended: false,
+          paused: false,
+          muted: false,
+          playbackRate: 1,
+          isConnected: true,
+          playCalls: 0,
+          play: async () => {
+            videoB.playCalls++;
+            videoB.paused = false;
+          },
+          pause: () => {
+            videoB.paused = true;
+          },
+          addEventListener: (ev: string, fn: () => void) => listenersB[ev]?.add(fn),
+          removeEventListener: (ev: string, fn: () => void) => listenersB[ev]?.delete(fn)
+        };
+
+        const bodyB = makeNode({ tagName: 'BODY', children: [captchaModal, aiPracticeModal] });
+        const mockDocB: any = {
+          title: '智慧树课程页',
+          location: { href: pageUrl },
+          defaultView: {
+            getComputedStyle: (el: any) => ({
+              display: el?.style?.display || 'block',
+              visibility: el?.style?.visibility || 'visible',
+              backgroundColor: 'transparent'
+            })
+          },
+          querySelectorAll: (sel: string) => {
+            if (sel === 'video' || sel.includes('#vjs_container_html5_api')) return [videoB];
+            return bodyB.querySelectorAll(sel);
+          },
+          querySelector: (sel: string) => {
+            if (sel === 'video' || sel.includes('#vjs_container_html5_api')) return videoB;
+            return bodyB.querySelector(sel);
+          }
+        };
+
+        // 确认 AI随堂练习绝不被误判为安全验证
+        assert.equal(findVisibleZhihuishuCaptchaDialog(mockDocB), null, 'AI随堂练习绝不可误判为安全验证');
+        aiPracticeModal.style.display = 'none';
+
+        const controllerB = new AbortController();
+        const taskB = playZhihuishuVideoTask(
+          mockDocB,
+          { signal: controllerB.signal, isCurrent: () => !controllerB.signal.aborted },
+          { pollIntervalMs: 30 }
+        );
+
+        await new Promise((r) => setTimeout(r, 80));
+        const playsBeforeCaptcha = videoB.playCalls;
+
+        // 模拟安全验证弹窗出现并暂停视频
+        captchaModal.style.display = 'block';
+        videoB.paused = true;
+        listenersB.pause.forEach((fn) => fn());
+
+        await new Promise((r) => setTimeout(r, 120));
+
+        assert.equal(captchaModal.clicked, 0, '绝不可点击或尝试绕过安全验证弹窗');
+        assert.equal(videoB.playCalls, playsBeforeCaptcha, '安全验证弹窗期间绝不可抢播 video.play()');
+        assert.equal(store.progress.status, 'paused');
+        assert.equal(store.progress.currentTime, '等待安全验证');
+        assert.equal(notifyCalls, 1, '弹出安全验证必须触发桌面通知');
+        assert.ok(mockDocB.title.includes('【请完成安全验证】'), '页面标题必须切换为安全验证闪烁提醒');
+        assert.ok(
+          store.pinnedErrors.some((e) => e.message.includes('请完成安全验证')),
+          '面板必须写入红色置顶安全验证提醒'
+        );
+
+        // 模拟用户手动完成验证（弹窗消失）-> 标题恢复且自动续播
+        captchaModal.style.display = 'none';
+        await new Promise((r) => setTimeout(r, 120));
+
+        assert.equal(mockDocB.title, '智慧树课程页', '安全验证关闭后必须恢复原标题');
+        assert.ok(videoB.playCalls > playsBeforeCaptcha, '安全验证关闭后必须自动恢复播放');
+
+        controllerB.abort();
+        await taskB;
+      } finally {
+        clearZhihuishuCompletionSuppression();
+        (globalThis as any).GM_notification = prevNotify;
+        store.config.autoNextChapter = prevAutoNext;
+        store.config.randomDelayBase = prevDelayBase;
+        store.config.randomDelayJitter = prevDelayJitter;
+        store.acknowledgeAllErrors();
       }
     });
   });

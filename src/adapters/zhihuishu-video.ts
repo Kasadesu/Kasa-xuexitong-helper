@@ -81,7 +81,7 @@ const NAV_OR_HOME_ITEM_RE =
   /^\s*(?:首页|主页|主界面|返回|返回首页|返回主页|返回课程|返回学习|课程首页|课程主页|我的课程|学习中心|课程详情|课程目录|目录|知识图谱|图谱|AI学伴|智能体|AI互动室|互动室|成绩|学习成绩|学习进度|公告|课程公告|通知|讨论区|问答|笔记|个人中心|退出|退出登录|登录|帮助|设置|反馈)\s*$/i;
 const NAV_BACK_PREFIX_RE = /^(?:返回|回到)(?:首页|主页|主界面|课程|上一页|列表|学习中心)/;
 const FINISH_TOKEN_RE =
-  /(?:^|[\s_-])(?:finish(?:ed)?|complet(?:e|ed)|done|learned|studied|icofinish|circle-check|check-circle|success)(?:$|[\s_-])/i;
+  /(?:^|[\s_-])(?:finish(?:ed)?|complet(?:e|ed)|done|learned|studied|icofinish|wancheng|circle-check|check-circle|check-filled|success-filled|success)(?:$|[\s_-])/i;
 const UNFINISH_TOKEN_RE = /(?:un|in|not[-_]?|no[-_]?)(?:finish|complet|done|learn|stud)/i;
 const ACTIVE_TOKEN_RE =
   /(?:^|[\s_-])(?:current_?play|current|active|selected|playing|is-active|is-current|highlight)(?:$|[\s_-])/i;
@@ -149,7 +149,7 @@ const isInsideHelperOrDialog = (el: HTMLElement): boolean =>
 const isInsideNavigationOrHeader = (el: HTMLElement): boolean => {
   if (typeof el.closest !== 'function') return false;
   return !!el.closest(
-    'header, nav, [role="navigation"], [role="banner"], [class*="navbar"], [class*="nav-bar"], [class*="topbar"], [class*="top-bar"], [class*="breadcrumb"], [class*="crumb"], [class*="go-back"], [class*="goback"], [class*="back-btn"], [class*="backBtn"], [class*="page-header"], [class*="site-header"], [class*="app-header"]'
+    'header, nav, [role="navigation"], [role="banner"], .main-header, .header-com, .top-box, .operate-btn, .ability-btn-box, [class*="navbar"], [class*="nav-bar"], [class*="topbar"], [class*="top-bar"], [class*="breadcrumb"], [class*="crumb"], [class*="go-back"], [class*="goback"], [class*="back-btn"], [class*="backBtn"], [class*="page-header"], [class*="site-header"], [class*="app-header"]'
   );
 };
 
@@ -239,7 +239,11 @@ const isNonVideoCatalogItem = (item: HTMLElement): boolean => {
   return false;
 };
 
-const isAiLessonItemFinished = (item: HTMLElement, doc: Document): boolean => {
+const isAiLessonItemFinished = (
+  item: HTMLElement,
+  doc: Document,
+  options?: { ignoreSessionCache?: boolean }
+): boolean => {
   if (
     item.classList?.contains('finish') ||
     item.classList?.contains('completed') ||
@@ -271,7 +275,7 @@ const isAiLessonItemFinished = (item: HTMLElement, doc: Document): boolean => {
 
   const text = getNormalizedText(item);
   if (text) {
-    if (sessionCompletedLessonLabels.has(text)) return true;
+    if (!options?.ignoreSessionCache && sessionCompletedLessonLabels.has(text)) return true;
     if (/(?:已完成|已学完|100%)/.test(text) && !/未(?:完成|学完)/.test(text)) {
       return true;
     }
@@ -279,7 +283,7 @@ const isAiLessonItemFinished = (item: HTMLElement, doc: Document): boolean => {
 
   if (typeof item.querySelector === 'function') {
     const finishIcon = item.querySelector<HTMLElement>(
-      '.time_icofinish, .fl.time_icofinish, .finish, .icon-finish, [class*="icofinish"]'
+      '.finish-icon, .time_icofinish, .fl.time_icofinish, .finish, .icon-finish, [class*="icofinish"], [class*="finish-icon"]'
     );
     if (finishIcon && !isElementOrAncestorHidden(finishIcon, doc)) {
       return true;
@@ -357,6 +361,18 @@ const isAiLessonItemActive = (item: HTMLElement): boolean => {
     }
   }
 
+  const parent = item.parentElement;
+  if (parent) {
+    const pCls = getElementClassString(parent);
+    if (
+      /(?:^|\s)(?:chapter-item|lesson-item|section-item)(?:\s|$)/.test(pCls) &&
+      ACTIVE_TOKEN_RE.test(pCls) &&
+      !INACTIVE_TOKEN_RE.test(pCls)
+    ) {
+      return true;
+    }
+  }
+
   return false;
 };
 
@@ -371,6 +387,14 @@ const findActiveAiLessonIndex = (items: HTMLElement[], doc: Document): number =>
         const bg = (doc.defaultView.getComputedStyle(items[i])?.backgroundColor || '').trim();
         if (bg && !NON_HIGHLIGHT_BG_RE.test(bg)) {
           highlightedIndices.push(i);
+          continue;
+        }
+        const parent = items[i].parentElement;
+        if (parent && /(?:^|\s)(?:chapter-item|lesson-item)(?:\s|$)/.test(getElementClassString(parent))) {
+          const pBg = (doc.defaultView.getComputedStyle(parent)?.backgroundColor || '').trim();
+          if (pBg && !NON_HIGHLIGHT_BG_RE.test(pBg)) {
+            highlightedIndices.push(i);
+          }
         }
       } catch {
         // Ignore computed style lookup error on mock nodes
@@ -382,6 +406,25 @@ const findActiveAiLessonIndex = (items: HTMLElement[], doc: Document): number =>
   }
 
   return -1;
+};
+
+const getLessonIconFingerprint = (el: HTMLElement | null): string => {
+  if (!el || typeof el.querySelectorAll !== 'function') return '';
+  const icons = Array.from(el.querySelectorAll<HTMLElement>('img, svg, i, [class*="icon"]'));
+  if (icons.length === 0) return '';
+  return icons
+    .map((ic) => {
+      const tag = (ic.tagName || '').toUpperCase();
+      const cls = getElementClassString(ic);
+      const src = typeof ic.getAttribute === 'function' ? ic.getAttribute('src') || '' : '';
+      const href =
+        typeof ic.getAttribute === 'function'
+          ? ic.getAttribute('href') || ic.getAttribute('xlink:href') || ''
+          : '';
+      const htmlHead = tag === 'SVG' && typeof ic.innerHTML === 'string' ? ic.innerHTML.slice(0, 120) : '';
+      return `${tag}:${cls}:${src}:${href}:${htmlHead}`;
+    })
+    .join('|');
 };
 
 /**
@@ -766,10 +809,102 @@ const getPopupDialogSignature = (dialog: HTMLElement, doc: Document): string => 
 };
 
 /**
+ * Detects visible Zhihuishu human-verification / security CAPTCHA modals (never interacts with or bypasses them)
+ */
+export const findVisibleZhihuishuCaptchaDialog = (doc: Document): HTMLElement | null => {
+  if (!doc || typeof doc.querySelectorAll !== 'function') return null;
+
+  const isNotHelper = (el: HTMLElement): boolean =>
+    !(typeof el.closest === 'function' && el.closest('kasa-helper-panel, .kasa-card'));
+
+  const knownCaptchaSelectors =
+    '.yidun_modal, .yidun_popup, .geetest_panel, .geetest_box, .nc_wrapper, [class*="captcha-modal"], [class*="captchaModal"], [class*="safety-verify"], [class*="safetyVerify"], [class*="security-verify"], [class*="verify-dialog"], [class*="verifyDialog"]';
+  const knownCandidates = Array.from(doc.querySelectorAll<HTMLElement>(knownCaptchaSelectors));
+  for (const el of knownCandidates) {
+    if (!isNotHelper(el) || isElementOrAncestorHidden(el, doc)) continue;
+    const txt = getNormalizedText(el);
+    if (/(?:AI随堂练习|随堂练习|随堂测验|\[(?:单选|多选|判断)题?\])/.test(txt)) continue;
+    return el;
+  }
+
+  const modalCandidates = Array.from(
+    doc.querySelectorAll<HTMLElement>(
+      '.el-dialog, .el-dialog__wrapper, .el-overlay-dialog, .el-overlay, [role="dialog"], [class*="dialog"], [class*="modal"], [class*="popup"], [class*="verify"]'
+    )
+  ).filter((el) => {
+    if (!isNotHelper(el) || isElementOrAncestorHidden(el, doc)) return false;
+    const txt = getNormalizedText(el);
+    if (!txt || txt.length > 300) return false;
+    if (/(?:AI随堂练习|随堂练习|随堂测验|\[(?:单选|多选|判断)题?\]|提交作答)/.test(txt)) {
+      return false;
+    }
+    if (/请完成安全验证|行为验证|人机验证|滑动拼图验证|安全校验/.test(txt)) {
+      return true;
+    }
+    if (/安全验证/.test(txt) && /(?:点击|拖动|滑动|拼图|验证码|立方体|验证|刷新)/.test(txt)) {
+      return true;
+    }
+    if (/请点击.*(?:大写|小写|汉字|字母|图形|颜色一样|依次点击)/.test(txt)) {
+      return true;
+    }
+    return false;
+  });
+
+  if (modalCandidates.length === 0) return null;
+  const innermost = modalCandidates.find(
+    (node, i, arr) =>
+      !arr.some((other, j) => i !== j && typeof node.contains === 'function' && node.contains(other))
+  );
+  return innermost || modalCandidates[0];
+};
+
+const notifyUserCaptchaRequired = (lessonTitle: string): void => {
+  const title = '智慧树安全验证提醒';
+  const body = `【${lessonTitle || '智慧树视频课程'}】弹出“请完成安全验证”，挂机已自动暂停，请手动完成验证！`;
+  try {
+    // @ts-ignore
+    if (typeof GM_notification === 'function') {
+      // @ts-ignore
+      GM_notification({ title, text: body, timeout: 10000 });
+    } else if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+      new Notification(title, { body });
+    }
+  } catch {
+    // Ignore notification restrictions
+  }
+
+  try {
+    const AudioCtx = (globalThis as any).AudioContext || (globalThis as any).webkitAudioContext;
+    if (typeof AudioCtx === 'function') {
+      const ctx = new AudioCtx();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(880, ctx.currentTime);
+      osc.frequency.setValueAtTime(660, ctx.currentTime + 0.16);
+      gain.gain.setValueAtTime(0.08, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.35);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.36);
+      setTimeout(() => {
+        try {
+          void ctx.close?.();
+        } catch {}
+      }, 500);
+    }
+  } catch {
+    // Ignore audio context autoplay restrictions
+  }
+};
+
+/**
  * Dismisses lightweight Zhihuishu tip/guidance dialogs (e.g. "videoConfigTip01" with "好的")
  */
 export const dismissZhihuishuTipDialog = (doc: Document): boolean => {
   if (!doc || typeof doc.querySelectorAll !== 'function') return false;
+  if (findVisibleZhihuishuCaptchaDialog(doc)) return false;
 
   const activeQuizDialog = findVisiblePopupTestDialog(doc);
   const candidates = Array.from(
@@ -1224,6 +1359,33 @@ const isInsideVideoHeaderOrBreadcrumb = (el: HTMLElement): boolean =>
 export const findZhihuishuChapterHeaders = (doc: Document): HTMLElement[] => {
   if (!doc || typeof doc.querySelectorAll !== 'function') return [];
 
+  // Prefer native Element Plus / Ant Design collapse headers first so aria-expanded stays intact
+  const nativeCollapseHeaders = Array.from(
+    doc.querySelectorAll<HTMLElement>('.el-collapse-item__header, .ant-collapse-header')
+  ).filter((el) => {
+    if (
+      isInsideHelperOrDialog(el) ||
+      isInsideNavigationOrHeader(el) ||
+      isElementOrAncestorHidden(el, doc)
+    ) {
+      return false;
+    }
+    if (isNavigatingAwayLink(el, doc)) return false;
+    const text = getNormalizedText(el);
+    if (text.length < 1 || text.length > 120) return false;
+    if (NAV_OR_HOME_ITEM_RE.test(text) || NAV_BACK_PREFIX_RE.test(text)) return false;
+    return CHAPTER_HEADER_RE.test(text) || (!AI_LESSON_NUMBER_RE.test(text) && !isNonVideoCatalogItem(el));
+  });
+  if (nativeCollapseHeaders.length > 0) {
+    const dedupedNative = dedupeInnermostElements(nativeCollapseHeaders);
+    const nativeChapterCount = dedupedNative.filter((el) =>
+      CHAPTER_HEADER_RE.test(getNormalizedText(el))
+    ).length;
+    if (nativeChapterCount >= 1) {
+      return dedupedNative;
+    }
+  }
+
   const explicitSelector = [
     '.el-collapse-item__header',
     '.ant-collapse-header',
@@ -1346,11 +1508,13 @@ export const findZhihuishuAiLessonItems = (doc: Document): HTMLElement[] => {
       !arr.some((other, j) => i !== j && typeof other.contains === 'function' && other.contains(el))
   );
 
-  // Priority selector for wisdom-mooc.zhihuishu.com/study/index fusion shared courses
-  const wisdomMoocSelector = '.chapter-content-second, [class*="chapter-content-second"]';
+  // Priority selector for wisdom-mooc.zhihuishu.com/study/index AI & fusion shared courses
+  const wisdomMoocSelector =
+    '.chapter-content-second, [class*="chapter-content-second"], .item-box';
 
   const explicitLessonSelector = [
     '.chapter-content-second',
+    '.item-box',
     '.lesson-item',
     '.section-item',
     '.node-item',
@@ -1388,7 +1552,17 @@ export const findZhihuishuAiLessonItems = (doc: Document): HTMLElement[] => {
     if (typeof root.querySelectorAll !== 'function') return [];
 
     const wisdomMoocLessons = dedupeInnermostElements(
-      Array.from(root.querySelectorAll<HTMLElement>(wisdomMoocSelector)).filter(isValidLessonCandidate)
+      Array.from(root.querySelectorAll<HTMLElement>(wisdomMoocSelector)).filter((el) => {
+        if (!isValidLessonCandidate(el)) return false;
+        const cls = getElementClassString(el);
+        if (/(?:^|\s)item-box(?:\s|$)/.test(cls)) {
+          const inCatalog =
+            typeof el.closest !== 'function' ||
+            !!el.closest('.chapter-content, .chapter-item, .el-collapse-item, .course-catalog, .catalog-com');
+          if (!inCatalog) return false;
+        }
+        return true;
+      })
     );
     if (wisdomMoocLessons.length > 0) return wisdomMoocLessons;
 
@@ -1713,11 +1887,13 @@ export const findOrExpandNextZhihuishuVideoItem = async (
 
   const startIdx = currentChapterIndex >= 0 ? currentChapterIndex + 1 : 0;
   const maxExpands = options?.maxChapterExpands ?? 20;
-  const expandDelayMs = options?.expandDelayMs ?? 450;
+  const hasExplicitDelay = options?.expandDelayMs !== undefined;
+  const expandDelayMs = hasExplicitDelay ? options!.expandDelayMs! : Math.round(1800 + Math.random() * 800);
   let expandsDone = 0;
 
   for (let i = startIdx; i < headers.length && expandsDone < maxExpands; i++) {
     if (!isCurrent() || signal.aborted) return null;
+    if (findVisibleZhihuishuCaptchaDialog(doc)) return null;
 
     const header = headers[i];
     if (isChapterExpanded(header, findZhihuishuAiLessonItems(doc))) {
@@ -1731,32 +1907,51 @@ export const findOrExpandNextZhihuishuVideoItem = async (
     expandsDone++;
     header.click();
 
-    try {
-      await sleep(expandDelayMs, signal);
-    } catch {
-      return null;
-    }
-    if (!isCurrent() || signal.aborted) return null;
+    const findExpandedCandidate = (): HTMLElement | null => {
+      const nextAfterExpand = findNextZhihuishuVideoItem(doc);
+      if (nextAfterExpand) return nextAfterExpand;
 
-    const nextAfterExpand = findNextZhihuishuVideoItem(doc);
-    if (nextAfterExpand) return nextAfterExpand;
-
-    const afterItems = findZhihuishuAiLessonItems(doc);
-    const newlyAppeared = afterItems.filter((el) => !beforeSet.has(el));
-    for (const item of newlyAppeared) {
-      if (!isAiLessonItemFinished(item, doc)) {
-        const innerTarget =
-          typeof item.querySelector === 'function'
-            ? item.querySelector<HTMLElement>('a, [onclick]')
-            : null;
-        if (innerTarget && isSafeLessonClickTarget(innerTarget, doc)) {
-          return innerTarget;
-        }
-        if (isSafeLessonClickTarget(item, doc)) {
-          return item;
+      const afterItems = findZhihuishuAiLessonItems(doc);
+      const newlyAppeared = afterItems.filter((el) => !beforeSet.has(el));
+      for (const item of newlyAppeared) {
+        if (!isAiLessonItemFinished(item, doc)) {
+          const innerTarget =
+            typeof item.querySelector === 'function'
+              ? item.querySelector<HTMLElement>('a, [onclick]')
+              : null;
+          if (innerTarget && isSafeLessonClickTarget(innerTarget, doc)) {
+            return innerTarget;
+          }
+          if (isSafeLessonClickTarget(item, doc)) {
+            return item;
+          }
         }
       }
+      return null;
+    };
+
+    const stepMs = hasExplicitDelay ? Math.max(10, expandDelayMs) : 300;
+    const minWaitMs = hasExplicitDelay ? expandDelayMs : Math.min(expandDelayMs, 700);
+    let waited = 0;
+    while (waited < expandDelayMs) {
+      const chunk = Math.min(stepMs, expandDelayMs - waited);
+      try {
+        await sleep(chunk, signal);
+      } catch {
+        return null;
+      }
+      waited += chunk;
+      if (!isCurrent() || signal.aborted) return null;
+      if (findVisibleZhihuishuCaptchaDialog(doc)) return null;
+
+      if (waited >= minWaitMs) {
+        const candidate = findExpandedCandidate();
+        if (candidate) return candidate;
+      }
     }
+
+    const finalCandidate = findExpandedCandidate();
+    if (finalCandidate) return finalCandidate;
   }
 
   return null;
@@ -1788,8 +1983,91 @@ export const playZhihuishuVideoTask = async (
     let isSolvingPopup = false;
     let isHandlingFinish = false;
     let isRecoveringPause = false;
+    let isWaitingForCaptcha = false;
+    let captchaTitleTimer: ReturnType<typeof setInterval> | null = null;
+    let savedDocTitle: string | null = null;
+    let startedActiveEl: HTMLElement | null = null;
+    let startedIconFingerprint = '';
     let videoElement: HTMLVideoElement | null = null;
     let checkInterval: ReturnType<typeof setInterval>;
+
+    const restoreCaptchaTitle = () => {
+      if (captchaTitleTimer) {
+        clearInterval(captchaTitleTimer);
+        captchaTitleTimer = null;
+      }
+      if (savedDocTitle !== null) {
+        try {
+          if (typeof (doc as any).title === 'string') {
+            (doc as any).title = savedDocTitle;
+          }
+        } catch {}
+        savedDocTitle = null;
+      }
+    };
+
+    const enterCaptchaWait = () => {
+      if (isWaitingForCaptcha) return;
+      isWaitingForCaptcha = true;
+      const lessonTitle = getLessonTitle();
+      store.updateProgress({
+        title: lessonTitle,
+        status: 'paused',
+        currentTime: '等待安全验证'
+      });
+      store.addLog(
+        '检测到智慧树【请完成安全验证】弹窗，已自动暂停挂机以防风控跳回主页；请手动完成验证，通过后将自动继续播放！',
+        'error'
+      );
+      try {
+        if (typeof (doc as any).title === 'string') {
+          if (savedDocTitle === null) {
+            savedDocTitle = (doc as any).title;
+          }
+          const baseTitle = savedDocTitle;
+          let flashFlag = false;
+          (doc as any).title = `【请完成安全验证】${baseTitle}`;
+          if (captchaTitleTimer) clearInterval(captchaTitleTimer);
+          captchaTitleTimer = globalThis.setInterval(() => {
+            flashFlag = !flashFlag;
+            try {
+              (doc as any).title = flashFlag
+                ? `【刷课已暂停】${baseTitle}`
+                : `【请完成安全验证】${baseTitle}`;
+            } catch {}
+          }, 1000);
+        }
+      } catch {}
+      notifyUserCaptchaRequired(lessonTitle);
+    };
+
+    const exitCaptchaWait = async () => {
+      if (!isWaitingForCaptcha) return;
+      isWaitingForCaptcha = false;
+      restoreCaptchaTitle();
+      store.addLog('安全验证弹窗已关闭，正在自动恢复 1.0x 原速播放...', 'success');
+
+      if (
+        !settled &&
+        !isHandlingFinish &&
+        context.isCurrent() &&
+        !context.signal.aborted &&
+        videoElement &&
+        videoElement.paused &&
+        !isCurrentVideoFinished()
+      ) {
+        try {
+          videoElement.playbackRate = 1.0;
+          videoElement.muted = true;
+          await videoElement.play();
+          if (!settled) {
+            store.updateProgress({ status: 'playing' });
+          }
+        } catch (err) {
+          store.addLog(`安全验证通过后恢复播放失败，将在下次轮询重试: ${String(err)}`, 'warning');
+        }
+      }
+    };
 
     const popupAttemptMap = new WeakMap<HTMLElement, number>();
     const popupSigAttempts = new Map<string, number>();
@@ -1814,13 +2092,34 @@ export const playZhihuishuVideoTask = async (
     };
 
     const isCurrentVideoFinished = (): boolean => {
+      if (findVisibleZhihuishuCaptchaDialog(doc) || findVisiblePopupTestDialog(doc)) {
+        return false;
+      }
       const currentPlay = doc.querySelector<HTMLElement>('.current_play, .currentPlay');
       if (currentPlay && typeof currentPlay.querySelector === 'function') {
         const finishIcon = currentPlay.querySelector<HTMLElement>(
-          '.time_icofinish, .fl.time_icofinish, .finish, .icon-finish, [class*="icofinish"]'
+          '.finish-icon, .time_icofinish, .fl.time_icofinish, .finish, .icon-finish, [class*="icofinish"], [class*="finish-icon"]'
         );
         if (finishIcon && !isElementOrAncestorHidden(finishIcon, doc)) {
           return true;
+        }
+      }
+      const activeEl = findCurrentZhihuishuPlayElement(doc);
+      if (activeEl) {
+        if (isAiLessonItemFinished(activeEl, doc, { ignoreSessionCache: true })) {
+          return true;
+        }
+        if (
+          startedActiveEl === activeEl &&
+          startedIconFingerprint &&
+          videoElement &&
+          videoElement.duration > 0 &&
+          videoElement.currentTime / videoElement.duration >= 0.8
+        ) {
+          const curFingerprint = getLessonIconFingerprint(activeEl);
+          if (curFingerprint && curFingerprint !== startedIconFingerprint) {
+            return true;
+          }
         }
       }
       if (videoElement) {
@@ -1856,6 +2155,7 @@ export const playZhihuishuVideoTask = async (
 
     const cleanup = () => {
       clearInterval(checkInterval);
+      restoreCaptchaTitle();
       detachVideoListeners(videoElement);
       context.signal.removeEventListener('abort', onAbort);
     };
@@ -1925,6 +2225,10 @@ export const playZhihuishuVideoTask = async (
             return finish();
           }
           if (!settled && context.isCurrent() && !context.signal.aborted) {
+            if (findVisibleZhihuishuCaptchaDialog(doc)) {
+              enterCaptchaWait();
+              return finish();
+            }
             if (!isSafeLessonClickTarget(nextItem, doc)) {
               zhihuishuSwitchCooldownUntil = Date.now() + 5000;
               store.addLog('检测到待点击切集目标为导航/返回元素，已自动拦截以防跳回主界面', 'warning');
@@ -2024,6 +2328,10 @@ export const playZhihuishuVideoTask = async (
       if (settled || !context.isCurrent()) {
         return finish(true);
       }
+      if (findVisibleZhihuishuCaptchaDialog(doc) || isWaitingForCaptcha) {
+        enterCaptchaWait();
+        return;
+      }
       if (isHandlingFinish || isCurrentVideoFinished() || isRecoveringPause) {
         return;
       }
@@ -2050,6 +2358,11 @@ export const playZhihuishuVideoTask = async (
 
         if (settled || !context.isCurrent()) {
           return finish(true);
+        }
+
+        if (findVisibleZhihuishuCaptchaDialog(doc) || isWaitingForCaptcha) {
+          enterCaptchaWait();
+          return;
         }
 
         if (
@@ -2082,6 +2395,10 @@ export const playZhihuishuVideoTask = async (
 
     const onEnded = () => {
       if (!settled && context.isCurrent()) {
+        if (findVisibleZhihuishuCaptchaDialog(doc) || isWaitingForCaptcha) {
+          enterCaptchaWait();
+          return;
+        }
         store.addLog('智慧树视频播放结束', 'info');
         void handleVideoFinished();
       }
@@ -2110,6 +2427,16 @@ export const playZhihuishuVideoTask = async (
         }
 
         if (isSolvingPopup) return;
+
+        const captchaDialog = findVisibleZhihuishuCaptchaDialog(doc);
+        if (captchaDialog) {
+          enterCaptchaWait();
+          return;
+        }
+        if (isWaitingForCaptcha) {
+          await exitCaptchaWait();
+          return;
+        }
 
         dismissZhihuishuTipDialog(doc);
 
@@ -2212,6 +2539,8 @@ export const playZhihuishuVideoTask = async (
 
             isStarted = true;
             lastCompletedLessonKey = null;
+            startedActiveEl = findCurrentZhihuishuPlayElement(doc);
+            startedIconFingerprint = getLessonIconFingerprint(startedActiveEl);
             try {
               // Strictly enforce 1.0x original playback rate and muted autoplay
               videoElement.playbackRate = 1.0;

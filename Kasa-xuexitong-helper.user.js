@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Kasa-xuexitong-helper
 // @namespace    kasa.ai
-// @version      1.4.1
+// @version      1.4.2
 // @author       Kasa
 // @description  超星学习通与知到智慧树双平台辅助脚本：支持视频自动播放、章节连播、随堂弹题过关与作业测验作答。
 // @icon         data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext x='50' y='54' text-anchor='middle' dominant-baseline='central' font-size='82' font-family='Apple Color Emoji,Segoe UI Emoji,Noto Color Emoji,sans-serif'%3E%F0%9F%92%AF%3C/text%3E%3C/svg%3E
@@ -13,6 +13,7 @@
 // @match        *://*.zhihuishu.com/*
 // @connect      *
 // @grant        GM_getValue
+// @grant        GM_notification
 // @grant        GM_setValue
 // @grant        GM_xmlhttpRequest
 // @grant        unsafeWindow
@@ -2545,7 +2546,7 @@ input:checked + .toggle-slider:before {
         <div class="kasa-card">
           <div class="kasa-header" id="drag-handle">
             <div class="kasa-title-group">
-              <span class="kasa-badge">v1.4.1</span>
+              <span class="kasa-badge">v1.4.2</span>
               <span class="kasa-title">Kasa 学习通助手</span>
             </div>
             <div class="kasa-actions">
@@ -2891,7 +2892,7 @@ input:checked + .toggle-slider:before {
         <p style="margin:4px 0;">• <strong>作业与测验</strong>：在「AI 设置」中填好 API Key 与模型，进入超星或智慧树作业/考试页点击右上角「开始答题」即可自动作答。</p>
         <p style="margin:4px 0;">• <strong>数据安全</strong>：配置与 Key 仅保存在当前浏览器本地，直接请求服务商接口。</p>
         <div style="margin-top:12px;padding-top:8px;border-top:1px solid var(--kasa-border);color:var(--kasa-text-muted);font-size:11px;">
-          提示：遇到遮挡可点击右上角最小化面板 · v1.4.1
+          提示：遇到遮挡可点击右上角最小化面板 · v1.4.2
         </div>
       </div>
     `;
@@ -27636,7 +27637,7 @@ input:checked + .toggle-slider:before {
 	var NON_VIDEO_ITEM_RE = /^\s*(?:\d+(?:\.\d+)*\s*)?(?:章节|单元|随堂|课后|阶段|综合|期末|期中|课程)?(?:测试|测验|小测|自测|作业|考试|讨论|主题讨论|问卷|答疑|阅读|课件|文档|资料|拓展阅读|参考资料)(?:\s*[一二三四五六七八九十\d]+)?\s*$/i;
 	var NAV_OR_HOME_ITEM_RE = /^\s*(?:首页|主页|主界面|返回|返回首页|返回主页|返回课程|返回学习|课程首页|课程主页|我的课程|学习中心|课程详情|课程目录|目录|知识图谱|图谱|AI学伴|智能体|AI互动室|互动室|成绩|学习成绩|学习进度|公告|课程公告|通知|讨论区|问答|笔记|个人中心|退出|退出登录|登录|帮助|设置|反馈)\s*$/i;
 	var NAV_BACK_PREFIX_RE = /^(?:返回|回到)(?:首页|主页|主界面|课程|上一页|列表|学习中心)/;
-	var FINISH_TOKEN_RE = /(?:^|[\s_-])(?:finish(?:ed)?|complet(?:e|ed)|done|learned|studied|icofinish|circle-check|check-circle|success)(?:$|[\s_-])/i;
+	var FINISH_TOKEN_RE = /(?:^|[\s_-])(?:finish(?:ed)?|complet(?:e|ed)|done|learned|studied|icofinish|wancheng|circle-check|check-circle|check-filled|success-filled|success)(?:$|[\s_-])/i;
 	var UNFINISH_TOKEN_RE = /(?:un|in|not[-_]?|no[-_]?)(?:finish|complet|done|learn|stud)/i;
 	var ACTIVE_TOKEN_RE = /(?:^|[\s_-])(?:current_?play|current|active|selected|playing|is-active|is-current|highlight)(?:$|[\s_-])/i;
 	var INACTIVE_TOKEN_RE = /(?:in|un|not[-_]?)(?:active|current|selected)/i;
@@ -27688,7 +27689,7 @@ input:checked + .toggle-slider:before {
 	var isInsideHelperOrDialog = (el) => typeof el.closest === "function" && !!el.closest("kasa-helper-panel, .kasa-card, .dialog-test, .el-dialog, .el-dialog__wrapper, [role=\"dialog\"], .el-overlay");
 	var isInsideNavigationOrHeader = (el) => {
 		if (typeof el.closest !== "function") return false;
-		return !!el.closest("header, nav, [role=\"navigation\"], [role=\"banner\"], [class*=\"navbar\"], [class*=\"nav-bar\"], [class*=\"topbar\"], [class*=\"top-bar\"], [class*=\"breadcrumb\"], [class*=\"crumb\"], [class*=\"go-back\"], [class*=\"goback\"], [class*=\"back-btn\"], [class*=\"backBtn\"], [class*=\"page-header\"], [class*=\"site-header\"], [class*=\"app-header\"]");
+		return !!el.closest("header, nav, [role=\"navigation\"], [role=\"banner\"], .main-header, .header-com, .top-box, .operate-btn, .ability-btn-box, [class*=\"navbar\"], [class*=\"nav-bar\"], [class*=\"topbar\"], [class*=\"top-bar\"], [class*=\"breadcrumb\"], [class*=\"crumb\"], [class*=\"go-back\"], [class*=\"goback\"], [class*=\"back-btn\"], [class*=\"backBtn\"], [class*=\"page-header\"], [class*=\"site-header\"], [class*=\"app-header\"]");
 	};
 	var isNavigatingAwayLink = (el, doc) => {
 		const linkEl = (el.tagName || "").toUpperCase() === "A" ? el : typeof el.closest === "function" ? el.closest("a") : null;
@@ -27731,7 +27732,7 @@ input:checked + .toggle-slider:before {
 		if (/(?:quiz|exam|homework|discuss|pencil|edit-icon|test-icon|doc-icon|pdf-icon)/i.test(iconHints) && !/video|play/i.test(iconHints) && !AI_LESSON_NUMBER_RE.test(text)) return true;
 		return false;
 	};
-	var isAiLessonItemFinished = (item, doc) => {
+	var isAiLessonItemFinished = (item, doc, options) => {
 		if (item.classList?.contains("finish") || item.classList?.contains("completed") || item.classList?.contains("is-finish") || item.classList?.contains("is-completed")) return true;
 		const selfCls = getElementClassString(item);
 		if (FINISH_TOKEN_RE.test(selfCls) && !UNFINISH_TOKEN_RE.test(selfCls)) return true;
@@ -27752,11 +27753,11 @@ input:checked + .toggle-slider:before {
 		}
 		const text = getNormalizedText(item);
 		if (text) {
-			if (sessionCompletedLessonLabels.has(text)) return true;
+			if (!options?.ignoreSessionCache && sessionCompletedLessonLabels.has(text)) return true;
 			if (/(?:已完成|已学完|100%)/.test(text) && !/未(?:完成|学完)/.test(text)) return true;
 		}
 		if (typeof item.querySelector === "function") {
-			const finishIcon = item.querySelector(".time_icofinish, .fl.time_icofinish, .finish, .icon-finish, [class*=\"icofinish\"]");
+			const finishIcon = item.querySelector(".finish-icon, .time_icofinish, .fl.time_icofinish, .finish, .icon-finish, [class*=\"icofinish\"], [class*=\"finish-icon\"]");
 			if (finishIcon && !isElementOrAncestorHidden(finishIcon, doc)) return true;
 		}
 		if (typeof item.querySelectorAll === "function") {
@@ -27790,6 +27791,11 @@ input:checked + .toggle-slider:before {
 		if (typeof item.querySelector === "function") {
 			if (item.querySelector(".current_play, .currentPlay, .active, .is-active, .selected")) return true;
 		}
+		const parent = item.parentElement;
+		if (parent) {
+			const pCls = getElementClassString(parent);
+			if (/(?:^|\s)(?:chapter-item|lesson-item|section-item)(?:\s|$)/.test(pCls) && ACTIVE_TOKEN_RE.test(pCls) && !INACTIVE_TOKEN_RE.test(pCls)) return true;
+		}
 		return false;
 	};
 	var findActiveAiLessonIndex = (items, doc) => {
@@ -27799,11 +27805,28 @@ input:checked + .toggle-slider:before {
 			const highlightedIndices = [];
 			for (let i = 0; i < items.length; i++) try {
 				const bg = (doc.defaultView.getComputedStyle(items[i])?.backgroundColor || "").trim();
-				if (bg && !NON_HIGHLIGHT_BG_RE.test(bg)) highlightedIndices.push(i);
+				if (bg && !NON_HIGHLIGHT_BG_RE.test(bg)) {
+					highlightedIndices.push(i);
+					continue;
+				}
+				const parent = items[i].parentElement;
+				if (parent && /(?:^|\s)(?:chapter-item|lesson-item)(?:\s|$)/.test(getElementClassString(parent))) {
+					const pBg = (doc.defaultView.getComputedStyle(parent)?.backgroundColor || "").trim();
+					if (pBg && !NON_HIGHLIGHT_BG_RE.test(pBg)) highlightedIndices.push(i);
+				}
 			} catch {}
 			if (highlightedIndices.length === 1) return highlightedIndices[0];
 		}
 		return -1;
+	};
+	var getLessonIconFingerprint = (el) => {
+		if (!el || typeof el.querySelectorAll !== "function") return "";
+		const icons = Array.from(el.querySelectorAll("img, svg, i, [class*=\"icon\"]"));
+		if (icons.length === 0) return "";
+		return icons.map((ic) => {
+			const tag = (ic.tagName || "").toUpperCase();
+			return `${tag}:${getElementClassString(ic)}:${typeof ic.getAttribute === "function" ? ic.getAttribute("src") || "" : ""}:${typeof ic.getAttribute === "function" ? ic.getAttribute("href") || ic.getAttribute("xlink:href") || "" : ""}:${tag === "SVG" && typeof ic.innerHTML === "string" ? ic.innerHTML.slice(0, 120) : ""}`;
+		}).join("|");
 	};
 	var getZhihuishuLessonKey = (doc, videoEl) => {
 		const currentPlayEl = doc ? findCurrentZhihuishuPlayElement(doc) : null;
@@ -28003,8 +28026,66 @@ input:checked + .toggle-slider:before {
 		const fallbackText = (dialog.innerText || dialog.textContent || "").trim().slice(0, 80);
 		return titleText || fallbackText || "popup-dialog";
 	};
+	var findVisibleZhihuishuCaptchaDialog = (doc) => {
+		if (!doc || typeof doc.querySelectorAll !== "function") return null;
+		const isNotHelper = (el) => !(typeof el.closest === "function" && el.closest("kasa-helper-panel, .kasa-card"));
+		const knownCandidates = Array.from(doc.querySelectorAll(".yidun_modal, .yidun_popup, .geetest_panel, .geetest_box, .nc_wrapper, [class*=\"captcha-modal\"], [class*=\"captchaModal\"], [class*=\"safety-verify\"], [class*=\"safetyVerify\"], [class*=\"security-verify\"], [class*=\"verify-dialog\"], [class*=\"verifyDialog\"]"));
+		for (const el of knownCandidates) {
+			if (!isNotHelper(el) || isElementOrAncestorHidden(el, doc)) continue;
+			const txt = getNormalizedText(el);
+			if (/(?:AI随堂练习|随堂练习|随堂测验|\[(?:单选|多选|判断)题?\])/.test(txt)) continue;
+			return el;
+		}
+		const modalCandidates = Array.from(doc.querySelectorAll(".el-dialog, .el-dialog__wrapper, .el-overlay-dialog, .el-overlay, [role=\"dialog\"], [class*=\"dialog\"], [class*=\"modal\"], [class*=\"popup\"], [class*=\"verify\"]")).filter((el) => {
+			if (!isNotHelper(el) || isElementOrAncestorHidden(el, doc)) return false;
+			const txt = getNormalizedText(el);
+			if (!txt || txt.length > 300) return false;
+			if (/(?:AI随堂练习|随堂练习|随堂测验|\[(?:单选|多选|判断)题?\]|提交作答)/.test(txt)) return false;
+			if (/请完成安全验证|行为验证|人机验证|滑动拼图验证|安全校验/.test(txt)) return true;
+			if (/安全验证/.test(txt) && /(?:点击|拖动|滑动|拼图|验证码|立方体|验证|刷新)/.test(txt)) return true;
+			if (/请点击.*(?:大写|小写|汉字|字母|图形|颜色一样|依次点击)/.test(txt)) return true;
+			return false;
+		});
+		if (modalCandidates.length === 0) return null;
+		return modalCandidates.find((node, i, arr) => !arr.some((other, j) => i !== j && typeof node.contains === "function" && node.contains(other))) || modalCandidates[0];
+	};
+	var notifyUserCaptchaRequired = (lessonTitle) => {
+		const title = "智慧树安全验证提醒";
+		const body = `【${lessonTitle || "智慧树视频课程"}】弹出“请完成安全验证”，挂机已自动暂停，请手动完成验证！`;
+		try {
+			if (typeof GM_notification === "function") GM_notification({
+				title,
+				text: body,
+				timeout: 1e4
+			});
+			else if (typeof Notification !== "undefined" && Notification.permission === "granted") new Notification(title, { body });
+		} catch {}
+		try {
+			const AudioCtx = globalThis.AudioContext || globalThis.webkitAudioContext;
+			if (typeof AudioCtx === "function") {
+				const ctx = new AudioCtx();
+				const osc = ctx.createOscillator();
+				const gain = ctx.createGain();
+				osc.type = "sine";
+				osc.frequency.setValueAtTime(880, ctx.currentTime);
+				osc.frequency.setValueAtTime(660, ctx.currentTime + .16);
+				gain.gain.setValueAtTime(.08, ctx.currentTime);
+				gain.gain.exponentialRampToValueAtTime(.001, ctx.currentTime + .35);
+				osc.connect(gain);
+				gain.connect(ctx.destination);
+				osc.start();
+				osc.stop(ctx.currentTime + .36);
+				setTimeout(() => {
+					try {
+						ctx.close?.();
+					} catch {}
+				}, 500);
+			}
+		} catch {}
+	};
 	var dismissZhihuishuTipDialog = (doc) => {
 		if (!doc || typeof doc.querySelectorAll !== "function") return false;
+		if (findVisibleZhihuishuCaptchaDialog(doc)) return false;
 		const activeQuizDialog = findVisiblePopupTestDialog(doc);
 		const candidates = Array.from(doc.querySelectorAll(".el-dialog, .el-dialog__wrapper, .el-message-box__wrapper, [role=\"dialog\"], [class*=\"dialog\"], [class*=\"modal\"], [class*=\"tip\"], [class*=\"popup\"]")).filter((el) => {
 			if (typeof el.closest === "function" && el.closest("kasa-helper-panel, .kasa-card")) return false;
@@ -28276,6 +28357,18 @@ input:checked + .toggle-slider:before {
 	var isInsideVideoHeaderOrBreadcrumb = (el) => typeof el.closest === "function" && !!el.closest("[class*=\"breadcrumb\"], [class*=\"crumb\"]");
 	var findZhihuishuChapterHeaders = (doc) => {
 		if (!doc || typeof doc.querySelectorAll !== "function") return [];
+		const nativeCollapseHeaders = Array.from(doc.querySelectorAll(".el-collapse-item__header, .ant-collapse-header")).filter((el) => {
+			if (isInsideHelperOrDialog(el) || isInsideNavigationOrHeader(el) || isElementOrAncestorHidden(el, doc)) return false;
+			if (isNavigatingAwayLink(el, doc)) return false;
+			const text = getNormalizedText(el);
+			if (text.length < 1 || text.length > 120) return false;
+			if (NAV_OR_HOME_ITEM_RE.test(text) || NAV_BACK_PREFIX_RE.test(text)) return false;
+			return CHAPTER_HEADER_RE.test(text) || !AI_LESSON_NUMBER_RE.test(text) && !isNonVideoCatalogItem(el);
+		});
+		if (nativeCollapseHeaders.length > 0) {
+			const dedupedNative = dedupeInnermostElements(nativeCollapseHeaders);
+			if (dedupedNative.filter((el) => CHAPTER_HEADER_RE.test(getNormalizedText(el))).length >= 1) return dedupedNative;
+		}
 		const explicitSelector = [
 			".el-collapse-item__header",
 			".ant-collapse-header",
@@ -28350,9 +28443,10 @@ input:checked + .toggle-slider:before {
 			"[class*=\"directory\"]"
 		].join(", ");
 		const topScopes = Array.from(doc.querySelectorAll(scopeSelector)).filter((el) => typeof el.querySelectorAll === "function" && !isInsideHelperOrDialog(el) && !isInsideNavigationOrHeader(el) && !isElementOrAncestorHidden(el, doc)).filter((el, i, arr) => !arr.some((other, j) => i !== j && typeof other.contains === "function" && other.contains(el)));
-		const wisdomMoocSelector = ".chapter-content-second, [class*=\"chapter-content-second\"]";
+		const wisdomMoocSelector = ".chapter-content-second, [class*=\"chapter-content-second\"], .item-box";
 		const explicitLessonSelector = [
 			".chapter-content-second",
+			".item-box",
 			".lesson-item",
 			".section-item",
 			".node-item",
@@ -28380,7 +28474,14 @@ input:checked + .toggle-slider:before {
 		};
 		const scanRoot = (root) => {
 			if (typeof root.querySelectorAll !== "function") return [];
-			const wisdomMoocLessons = dedupeInnermostElements(Array.from(root.querySelectorAll(wisdomMoocSelector)).filter(isValidLessonCandidate));
+			const wisdomMoocLessons = dedupeInnermostElements(Array.from(root.querySelectorAll(wisdomMoocSelector)).filter((el) => {
+				if (!isValidLessonCandidate(el)) return false;
+				const cls = getElementClassString(el);
+				if (/(?:^|\s)item-box(?:\s|$)/.test(cls)) {
+					if (!(typeof el.closest !== "function" || !!el.closest(".chapter-content, .chapter-item, .el-collapse-item, .course-catalog, .catalog-com"))) return false;
+				}
+				return true;
+			}));
 			if (wisdomMoocLessons.length > 0) return wisdomMoocLessons;
 			const explicit = dedupeInnermostElements(Array.from(root.querySelectorAll(explicitLessonSelector)).filter(isValidLessonCandidate));
 			if (explicit.length > 0) return explicit;
@@ -28557,10 +28658,12 @@ input:checked + .toggle-slider:before {
 		}
 		const startIdx = currentChapterIndex >= 0 ? currentChapterIndex + 1 : 0;
 		const maxExpands = options?.maxChapterExpands ?? 20;
-		const expandDelayMs = options?.expandDelayMs ?? 450;
+		const hasExplicitDelay = options?.expandDelayMs !== void 0;
+		const expandDelayMs = hasExplicitDelay ? options.expandDelayMs : Math.round(1800 + Math.random() * 800);
 		let expandsDone = 0;
 		for (let i = startIdx; i < headers.length && expandsDone < maxExpands; i++) {
 			if (!isCurrent() || signal.aborted) return null;
+			if (findVisibleZhihuishuCaptchaDialog(doc)) return null;
 			const header = headers[i];
 			if (isChapterExpanded(header, findZhihuishuAiLessonItems(doc))) continue;
 			const beforeSet = new Set(findZhihuishuAiLessonItems(doc));
@@ -28568,20 +28671,37 @@ input:checked + .toggle-slider:before {
 			store.addLog(`当前章节已学完，正在展开下一章【${headerTitle}】...`, "info");
 			expandsDone++;
 			header.click();
-			try {
-				await sleep(expandDelayMs, signal);
-			} catch {
+			const findExpandedCandidate = () => {
+				const nextAfterExpand = findNextZhihuishuVideoItem(doc);
+				if (nextAfterExpand) return nextAfterExpand;
+				const newlyAppeared = findZhihuishuAiLessonItems(doc).filter((el) => !beforeSet.has(el));
+				for (const item of newlyAppeared) if (!isAiLessonItemFinished(item, doc)) {
+					const innerTarget = typeof item.querySelector === "function" ? item.querySelector("a, [onclick]") : null;
+					if (innerTarget && isSafeLessonClickTarget(innerTarget, doc)) return innerTarget;
+					if (isSafeLessonClickTarget(item, doc)) return item;
+				}
 				return null;
+			};
+			const stepMs = hasExplicitDelay ? Math.max(10, expandDelayMs) : 300;
+			const minWaitMs = hasExplicitDelay ? expandDelayMs : Math.min(expandDelayMs, 700);
+			let waited = 0;
+			while (waited < expandDelayMs) {
+				const chunk = Math.min(stepMs, expandDelayMs - waited);
+				try {
+					await sleep(chunk, signal);
+				} catch {
+					return null;
+				}
+				waited += chunk;
+				if (!isCurrent() || signal.aborted) return null;
+				if (findVisibleZhihuishuCaptchaDialog(doc)) return null;
+				if (waited >= minWaitMs) {
+					const candidate = findExpandedCandidate();
+					if (candidate) return candidate;
+				}
 			}
-			if (!isCurrent() || signal.aborted) return null;
-			const nextAfterExpand = findNextZhihuishuVideoItem(doc);
-			if (nextAfterExpand) return nextAfterExpand;
-			const newlyAppeared = findZhihuishuAiLessonItems(doc).filter((el) => !beforeSet.has(el));
-			for (const item of newlyAppeared) if (!isAiLessonItemFinished(item, doc)) {
-				const innerTarget = typeof item.querySelector === "function" ? item.querySelector("a, [onclick]") : null;
-				if (innerTarget && isSafeLessonClickTarget(innerTarget, doc)) return innerTarget;
-				if (isSafeLessonClickTarget(item, doc)) return item;
-			}
+			const finalCandidate = findExpandedCandidate();
+			if (finalCandidate) return finalCandidate;
 		}
 		return null;
 	};
@@ -28595,8 +28715,66 @@ input:checked + .toggle-slider:before {
 			let isSolvingPopup = false;
 			let isHandlingFinish = false;
 			let isRecoveringPause = false;
+			let isWaitingForCaptcha = false;
+			let captchaTitleTimer = null;
+			let savedDocTitle = null;
+			let startedActiveEl = null;
+			let startedIconFingerprint = "";
 			let videoElement = null;
 			let checkInterval;
+			const restoreCaptchaTitle = () => {
+				if (captchaTitleTimer) {
+					clearInterval(captchaTitleTimer);
+					captchaTitleTimer = null;
+				}
+				if (savedDocTitle !== null) {
+					try {
+						if (typeof doc.title === "string") doc.title = savedDocTitle;
+					} catch {}
+					savedDocTitle = null;
+				}
+			};
+			const enterCaptchaWait = () => {
+				if (isWaitingForCaptcha) return;
+				isWaitingForCaptcha = true;
+				const lessonTitle = getLessonTitle();
+				store.updateProgress({
+					title: lessonTitle,
+					status: "paused",
+					currentTime: "等待安全验证"
+				});
+				store.addLog("检测到智慧树【请完成安全验证】弹窗，已自动暂停挂机以防风控跳回主页；请手动完成验证，通过后将自动继续播放！", "error");
+				try {
+					if (typeof doc.title === "string") {
+						if (savedDocTitle === null) savedDocTitle = doc.title;
+						const baseTitle = savedDocTitle;
+						let flashFlag = false;
+						doc.title = `【请完成安全验证】${baseTitle}`;
+						if (captchaTitleTimer) clearInterval(captchaTitleTimer);
+						captchaTitleTimer = globalThis.setInterval(() => {
+							flashFlag = !flashFlag;
+							try {
+								doc.title = flashFlag ? `【刷课已暂停】${baseTitle}` : `【请完成安全验证】${baseTitle}`;
+							} catch {}
+						}, 1e3);
+					}
+				} catch {}
+				notifyUserCaptchaRequired(lessonTitle);
+			};
+			const exitCaptchaWait = async () => {
+				if (!isWaitingForCaptcha) return;
+				isWaitingForCaptcha = false;
+				restoreCaptchaTitle();
+				store.addLog("安全验证弹窗已关闭，正在自动恢复 1.0x 原速播放...", "success");
+				if (!settled && !isHandlingFinish && context.isCurrent() && !context.signal.aborted && videoElement && videoElement.paused && !isCurrentVideoFinished()) try {
+					videoElement.playbackRate = 1;
+					videoElement.muted = true;
+					await videoElement.play();
+					if (!settled) store.updateProgress({ status: "playing" });
+				} catch (err) {
+					store.addLog(`安全验证通过后恢复播放失败，将在下次轮询重试: ${String(err)}`, "warning");
+				}
+			};
 			const popupAttemptMap = new WeakMap();
 			const popupSigAttempts = new Map();
 			let trippedPopupSig = null;
@@ -28611,10 +28789,19 @@ input:checked + .toggle-slider:before {
 				return getNormalizedText(findCurrentZhihuishuPlayElement(doc)) || "智慧树视频课程";
 			};
 			const isCurrentVideoFinished = () => {
+				if (findVisibleZhihuishuCaptchaDialog(doc) || findVisiblePopupTestDialog(doc)) return false;
 				const currentPlay = doc.querySelector(".current_play, .currentPlay");
 				if (currentPlay && typeof currentPlay.querySelector === "function") {
-					const finishIcon = currentPlay.querySelector(".time_icofinish, .fl.time_icofinish, .finish, .icon-finish, [class*=\"icofinish\"]");
+					const finishIcon = currentPlay.querySelector(".finish-icon, .time_icofinish, .fl.time_icofinish, .finish, .icon-finish, [class*=\"icofinish\"], [class*=\"finish-icon\"]");
 					if (finishIcon && !isElementOrAncestorHidden(finishIcon, doc)) return true;
+				}
+				const activeEl = findCurrentZhihuishuPlayElement(doc);
+				if (activeEl) {
+					if (isAiLessonItemFinished(activeEl, doc, { ignoreSessionCache: true })) return true;
+					if (startedActiveEl === activeEl && startedIconFingerprint && videoElement && videoElement.duration > 0 && videoElement.currentTime / videoElement.duration >= .8) {
+						const curFingerprint = getLessonIconFingerprint(activeEl);
+						if (curFingerprint && curFingerprint !== startedIconFingerprint) return true;
+					}
 				}
 				if (videoElement) {
 					if (videoElement.ended) return true;
@@ -28644,6 +28831,7 @@ input:checked + .toggle-slider:before {
 			};
 			const cleanup = () => {
 				clearInterval(checkInterval);
+				restoreCaptchaTitle();
 				detachVideoListeners(videoElement);
 				context.signal.removeEventListener("abort", onAbort);
 			};
@@ -28687,6 +28875,10 @@ input:checked + .toggle-slider:before {
 							return finish();
 						}
 						if (!settled && context.isCurrent() && !context.signal.aborted) {
+							if (findVisibleZhihuishuCaptchaDialog(doc)) {
+								enterCaptchaWait();
+								return finish();
+							}
 							if (!isSafeLessonClickTarget(nextItem, doc)) {
 								zhihuishuSwitchCooldownUntil = Date.now() + 5e3;
 								store.addLog("检测到待点击切集目标为导航/返回元素，已自动拦截以防跳回主界面", "warning");
@@ -28744,6 +28936,10 @@ input:checked + .toggle-slider:before {
 			};
 			const onPause = async () => {
 				if (settled || !context.isCurrent()) return finish(true);
+				if (findVisibleZhihuishuCaptchaDialog(doc) || isWaitingForCaptcha) {
+					enterCaptchaWait();
+					return;
+				}
 				if (isHandlingFinish || isCurrentVideoFinished() || isRecoveringPause) return;
 				if (findVisiblePopupTestDialog(doc) || isSolvingPopup) {
 					store.updateProgress({ status: "paused" });
@@ -28761,6 +28957,10 @@ input:checked + .toggle-slider:before {
 						return finish(true);
 					}
 					if (settled || !context.isCurrent()) return finish(true);
+					if (findVisibleZhihuishuCaptchaDialog(doc) || isWaitingForCaptcha) {
+						enterCaptchaWait();
+						return;
+					}
 					if (isHandlingFinish || isCurrentVideoFinished() || !videoElement || !videoElement.paused || findVisiblePopupTestDialog(doc) || isSolvingPopup) return;
 					dismissZhihuishuTipDialog(doc);
 					try {
@@ -28777,6 +28977,10 @@ input:checked + .toggle-slider:before {
 			};
 			const onEnded = () => {
 				if (!settled && context.isCurrent()) {
+					if (findVisibleZhihuishuCaptchaDialog(doc) || isWaitingForCaptcha) {
+						enterCaptchaWait();
+						return;
+					}
 					store.addLog("智慧树视频播放结束", "info");
 					handleVideoFinished();
 				}
@@ -28794,6 +28998,14 @@ input:checked + .toggle-slider:before {
 						isStarted = false;
 					}
 					if (isSolvingPopup) return;
+					if (findVisibleZhihuishuCaptchaDialog(doc)) {
+						enterCaptchaWait();
+						return;
+					}
+					if (isWaitingForCaptcha) {
+						await exitCaptchaWait();
+						return;
+					}
 					dismissZhihuishuTipDialog(doc);
 					const visibleDialog = findVisiblePopupTestDialog(doc);
 					if (visibleDialog) {
@@ -28856,6 +29068,8 @@ input:checked + .toggle-slider:before {
 							}
 							isStarted = true;
 							lastCompletedLessonKey = null;
+							startedActiveEl = findCurrentZhihuishuPlayElement(doc);
+							startedIconFingerprint = getLessonIconFingerprint(startedActiveEl);
 							try {
 								videoElement.playbackRate = 1;
 								videoElement.muted = true;

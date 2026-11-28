@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Kasa-xuexitong-helper",
-  "version": "1.4.1",
+  "version": "1.4.2",
   "description": "超星学习通与知到智慧树双平台课程与作业辅助扩展",
   "permissions": [
     "storage",

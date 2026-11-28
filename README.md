@@ -1,4 +1,4 @@
-# Kasa-xuexitong-helper (v1.4.1)
+# Kasa-xuexitong-helper (v1.4.2)
 
 支持 **超星学习通** 与 **知到智慧树（Zhihuishu）** 双平台的课程学习与作业考试辅助脚本。
 
